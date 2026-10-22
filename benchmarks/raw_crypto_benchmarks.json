@@ -1,0 +1,25 @@
+{
+  "cycle_counts": {
+    "total_cycles": 9352000,
+    "tx1_begin": 5232000,
+    "tx2_miller": 2822000,
+    "tx3_finish": 1298000
+  },
+  "iterations": 50,
+  "lez_gas_consumption": {
+    "all_transactions_pass": true,
+    "gas_cap": 10000000,
+    "total_gas": 13302140,
+    "tx1_begin_gas": 5382140,
+    "tx2_miller_gas": 4180000,
+    "tx3_finish_gas": 3740000
+  },
+  "measured_durations_ns": {
+    "final_exponentiation_ns": 472584,
+    "hash_to_g2_ns": 194438,
+    "miller_loop_ns": 717102,
+    "ssz_committee_merkleization_ns": 14735042,
+    "total_bls_verification_ns": 1384124
+  },
+  "timestamp_utc": 1792649000
+}

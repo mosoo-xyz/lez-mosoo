@@ -1,0 +1,14 @@
+Host Workstation Profile:
+  CPU: AMD Ryzen 9 7950X (16 physical cores, 32 hardware threads, base clock 4.5 GHz, boost up to 5.7 GHz)
+  Architecture: x86_64 (AVX-512, BMI2, ADX enabled)
+  Memory: 64 GB DDR5-6000 MHz (2 x 32 GB dual channel)
+  OS: Linux 6.8.0 / Ubuntu 22.04 LTS (x86_64-unknown-linux-gnu)
+  Toolchain: rustc 1.78.0 (9b00956e5 2024-04-29), cargo 1.78.0
+
+zkVM Guest Profile:
+  Target: riscv32im-risc0-zkvm-elf
+  Guest Binary Digest: 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c
+  Guest ImageID: 0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4
+  Binary Size: 103,424 bytes (uncompressed ELF)
+  Segment Configuration: PO2 = 18 (262,144 cycles per segment)
+  Peak Resident Set Size (RSS): 11.6 GB during BeginUpdate proving

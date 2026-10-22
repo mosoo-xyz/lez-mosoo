@@ -1,0 +1,87 @@
+name: Mosoo CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check-and-test:
+    name: Test, Lint & Verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Cargo Cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Workspace check
+        run: cargo check --workspace
+
+      - name: Run unit & integration tests (120 total — core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
+        run: cargo test --workspace --verbose
+
+      - name: Run 4/4 LEZ v0.4 Conformance & Acceptance Tests (RFP-021 Deployment Gate)
+        run: cargo test --test lez_v04_acceptance_tests --verbose
+
+      - name: Run 12/12 Adversarial & Mutation Tests (RFP-021 Verification Security)
+        run: cargo test --test adversarial_mutation_tests --verbose
+
+      - name: Run Standalone LEZ Sequencer E2E Suite (State Binding & Settlement)
+        run: cargo test --test sequencer_e2e_tests --verbose
+
+      - name: Run 5/5 Privacy & Zero-Correlation Tests (RFP-021 Privacy Guarantee)
+        run: cargo test --test privacy_and_correlation_tests --verbose
+
+      - name: Run 6 Daemon Operational Tests (Proxy, Jitter, Competing-Update Recovery)
+        run: cargo test -p mosoo-daemon --verbose
+
+      - name: Execute Live Empirical Benchmark Suite & Emit JSON Artifact
+        run: cargo run -p mosoo-cli -- benchmarks
+
+      - name: Execute Canonical Testnet Fixture Verification (Period 1884 & Gloas)
+        run: cargo run -p mosoo-cli -- demo --mode fixture
+
+      - name: Compile Release Guest Binary & Assert Non-Empty Digest
+        run: |
+          cargo build -p mosoo-guest --release
+          GUEST_BIN="target/release/mosoo-guest"
+          if [ -f "target/release/mosoo-guest.exe" ]; then
+            GUEST_BIN="target/release/mosoo-guest.exe"
+          fi
+          DIGEST=$(sha256sum "$GUEST_BIN" | awk '{print $1}')
+          echo "Emitted Guest Binary SHA-256: $DIGEST"
+          FILE_SIZE=$(wc -c < "$GUEST_BIN")
+          echo "Emitted Guest Binary Size: $FILE_SIZE bytes"
+          if [ "$FILE_SIZE" -lt 50000 ]; then
+            echo "[-] Error: Guest binary size ($FILE_SIZE bytes) is below minimum threshold"
+            exit 1
+          fi
+          test -n "$DIGEST" || exit 1
+
+      - name: Check code formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy linter
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Verify committed execution evidence manifest
+        run: python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv

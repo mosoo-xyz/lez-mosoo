@@ -1,0 +1,157 @@
+# Mosoo
+
+[![CI](https://github.com/mosoo-xyz/lez-mosoo/actions/workflows/ci.yml/badge.svg)](https://github.com/mosoo-xyz/lez-mosoo/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+[![Rust](https://img.shields.io/badge/Rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
+
+Mosoo is a trustless Ethereum consensus and state attestation module running inside the RISC Zero zkVM on the Logos Execution Zone (LEZ), developed for [Logos RFP-021](https://github.com/logos-co/rfp).
+
+In two sentences: A LEZ module that verifies 512-validator Ethereum sync-committee aggregate signatures across a 3-transaction split, then proves Ethereum account balances, storage slots, and receipt logs inside the zkVM for consuming smart contracts. No signers, multi-sigs, or trusted relayers.
+
+---
+
+## Quickstart (Verifiable from a Clean Clone)
+
+```console
+git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
+
+# 1. Run all 120 automated unit and integration tests (0 failing, 0 warnings)
+cargo test --workspace
+
+# 2. Run the 12 adversarial mutation attack tests (rejection of fabricated headers, bad quorums, forged branches)
+cargo test --test adversarial_mutation_tests
+
+# 3. Run the simulated LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
+cargo test --test sequencer_e2e_tests
+
+# 4. Run the strict offline sequencer harness evidence verification runner
+python3 scripts/verify-evidence.py
+
+# 5. Run cryptographic verification against canonical Ethereum Period 1884 test vectors
+cargo run -p mosoo-cli -- demo --mode fixture
+
+# 6. Run empirical CPU crypto benchmarks (50 iterations)
+cargo run -p mosoo-cli -- benchmarks
+
+# 7. Run the complete 11-step verification suite (build, tests, clippy, fmt, manifest checker)
+./scripts/verify_all.sh                                           # Linux / macOS
+powershell -ExecutionPolicy Bypass -File .\scripts\verify_all.ps1  # Windows
+```
+
+A complete console execution log of this verification suite is committed at [`evidence/verify_all_output.txt`](evidence/verify_all_output.txt).
+
+---
+
+## What is Built, and What is Not
+
+### What is Built Today (Milestone M0 Foundation)
+
+- **The Verification Core (`mosoo-core/`)**: Altair sync committee verification, 2/3 participation threshold check (minimum 342/512 signers), domain separation across Bellatrix, Capella, Deneb (32-leaf SSZ payload header), Electra, Fulu, and Gloas (Sepolia slot 7,077,888). Merkle-Patricia Trie account balance and EIP-2718 receipt log inclusion proofs via `alloy-trie`.
+- **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
+- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
+- **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
+- **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
+- **120 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+
+### What is Not Built Yet (Priced as Remaining Milestone Work)
+
+- **Live Public Testnet Deployment (Milestone M1)**: Dependent on Logos Core releasing public LEZ v0.4 devnet RPC endpoints and network freeze. All current traces are verified via the in-memory sequencer harness; live testnet deployment executes in M1.
+- **Logos Core Module Catalog & SPEL Integration (Milestone M2)**: Upstreaming into the official Logos Core module catalog and SPEL compiler tooling.
+- **Production Daemon Telemetry (Milestone M3)**: Multi-RPC weighted failover, automated re-org detection, and Prometheus metrics.
+- **Independent Security Audit (Milestone M4)**: Formal third-party engagement with an external security firm (\$10,000 / 3 weeks budgeted upon grant approval).
+
+### Lifecycle & Verification Matrix
+
+To ensure absolute transparency regarding what is functioning today versus what depends on future Logos infrastructure releases, the matrix below maps each component's verification tier:
+
+| Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
+| :--- | :---: | :--- | :--- |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Production-Ready (120/120 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
+| **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
+| **Adversarial Invariant Hardening** | M0 (Delivered) | 12 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
+| **Execution Manifest & Verification Script** | M0 (Delivered) | Hardened with Strict Exit Codes | Offline Python/Bash runner (`scripts/verify-evidence.py`) |
+| **Public LEZ Testnet RPC & On-Chain Deployment** | M1 (Grant) | Architecture Planned | Live JSON-RPC queries to public LEZ testnet nodes |
+| **SPEL IDL Upstreaming & Logos Core Modules** | M2 (Grant) | IDL Specification Defined | Integration with Logos Core module compiler |
+| **Production Consensus Daemon Telemetry** | M3 (Grant) | Prototype Working | Live Prometheus telemetry & automated re-org handler |
+| **Third-Party Security Audit** | M4 (Grant) | Budget Allocated (\$10,000 / 3 wks) | Independent security audit firm certification |
+
+---
+
+## Why a 3-Transaction Split? (Gas Feasibility)
+
+Verifying a 512-validator aggregate BLS12-381 signature inside the zkVM takes roughly **13.3M gas** in one shot. LEZ enforces a per-transaction gas limit of approximately **10,000,000 gas**.
+
+Because host-level BLS precompiles are not yet available on LEZ, an update cannot fit in a single transaction today. Mosoo splits the update along the pairing's natural seam into three discrete transactions linked through an on-chain `JobAccount` PDA:
+
+1. **`begin_update` (5.38M gas, 46.2% headroom)**: Asserts monotonic slot progression, verifies the 64-byte committee bitfield, checks the 2/3 participation threshold (>= 342 signers), aggregates participating public keys, and maps the signing root to G2.
+2. **`miller_update` (4.18M gas, 58.2% headroom)**: Computes the dual Miller loop pairings `e(sig, G1) * e(msg, agg_pk)^-1` using assembly-optimized `blst`.
+3. **`finish_update` (3.74M gas, 62.6% headroom)**: Computes the final exponentiation in F_p12, verifies identity, authenticates the execution payload header Merkle branch (gindex 25, 32 leaves for Deneb/Gloas), writes the verified `HeaderRecord` PDA, and closes the job.
+
+Once a `HeaderRecord` is committed, consuming contracts request state proofs via `attest_state`:
+- **Receipt Log Attestation**: 852,400 gas (91.5% headroom)
+- **Account Balance Attestation**: 680,200 gas (93.2% headroom)
+- **Consumer Claim & Settlement**: 98,000 to 118,000 gas (98.8% headroom)
+
+Detailed cycle breakdowns, hardware profiles, and library comparisons (`blst` vs `arkworks` vs `substrate-bls12-381`) are documented in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+---
+
+## Replay Protection & Privacy Model
+
+When a state attestation succeeds, Mosoo emits a `VerifiedStatement` identified by a deterministic 32-byte nullifier:
+
+```text
+statement_id = sha256(chain_id || subject_key || proof_type || value || predicate)
+```
+
+For event logs, `subject_key` binds:
+
+```text
+subject_key = block_hash || slot || tx_index || log_index || emitter || topic0
+```
+
+- **Replay Resistance**: Consuming contracts record the `statement_id` in a dedicated nullifier set. Attempting to claim the same deposit or balance proof twice immediately fails with `AlreadyClaimed`.
+- **Identity Shielding**: Claimant Ethereum addresses, private keys, and raw balances are not written into consumer contract state diffs on LEZ. Only the 32-byte nullifier is stored.
+- **Caveat**: As with any public blockchain, external network observers can attempt traffic analysis on public deposit timing or amounts.
+
+---
+
+## Repository Layout
+
+```
+mosoo/
+├── mosoo-core/          Core cryptographic types, BLS12-381 verifier, MPT prover, predicate engine
+├── methods/guest/       RISC0 zkVM guest program (riscv32im-risc0-zkvm-elf)
+├── daemon/              Headless consensus updater with randomized jitter and RPC failover
+├── cli/                 Developer CLI, fixture verification, and benchmark runner
+├── consumers/
+│   ├── erc20-receiver/  Reference dApp: trustless ERC-20 minting from verified Ethereum deposits
+│   └── ether-receiver/  Reference dApp: trustless ETH accounting from verified balances
+├── test_vectors/        Committed canonical Ethereum consensus and proof fixtures
+├── evidence/            Committed sequencer harness manifests and verification logs
+├── benchmarks/          Raw benchmark JSON measurements and hardware profiles
+├── docker/              Reproducible Docker build environment
+├── scripts/             Build, test, and verification automation scripts
+└── docs/                Architecture specifications, threat model, ADRs, and guides
+```
+
+---
+
+## Technical Documentation & Decision Logs
+
+- [RFP-021 Technical Specification & Mapping](docs/criteria-checklist.md) — Comprehensive spec compliance and implementation mapping.
+- [Security Threat Model & Invariants](docs/security-review.md) — Cryptographic thresholds, adversary model, and 12 attack vectors.
+- [ADR 001: 3-Transaction BLS Split](docs/decisions/001-3tx-bls-verification-split.md) — Rationale, rejected alternatives, and gas trade-offs.
+- [ADR 002: Daemon Liveness & Recovery](docs/decisions/002-permissionless-daemon-liveness.md) — Liveness strategy, front-running mitigation, and recovery.
+- [ADR 003: Evaluation of Helios & Prior Art](docs/decisions/003-evaluation-of-helios-and-prior-art.md) — Architectural comparison with Helios and ZK light clients.
+- [Cycle Counts & Benchmark Profiling](docs/BENCHMARKS.md) — Empirical benchmarks, memory usage, and BLS library comparison.
+- [Sequencer Harness Manifests](docs/SEQUENCER_HARNESS.md) — Simulated LEZ sequencer transaction receipts and state diffs.
+- [Daemon Operator Guide](docs/DAEMON.md) — Configuration, RPC failover, and operational flags.
+- [Logos SPEL IDL Specification](docs/SPEL_IDL.md) — Interface definitions and type encodings.
+
+---
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) and [Apache 2.0](LICENSE-APACHE).

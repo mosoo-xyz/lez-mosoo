@@ -1,0 +1,163 @@
+# Mosoo Security Architecture, Invariant Testing & Threat Model
+
+This document specifies the cryptographic threat model, core protocol invariants, adversarial test suite, and independent audit plan for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ).
+
+> [!NOTE]
+> **Audit Boundary & Milestones:**
+> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, and 12 mutation attack tests passing in CI (`tests/adversarial_mutation_tests.rs`).
+> - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
+
+---
+
+## 1. Threat Model & Trust Assumptions
+
+Mosoo operates as an on-chain Ethereum consensus verification engine and state prover inside the RISC Zero zkVM on LEZ. The security architecture addresses the following threat vectors:
+
+### Consensus Layer Assumptions & Cryptographic Thresholds
+- **Safety Threshold (>= 342 / 512 Signers):** The light client enforces Ethereum's 2/3 aggregate participation threshold (>= 342 of 512 sync committee validators). Under the standard Ethereum consensus security model, an adversary cannot forge a valid BLS aggregate signature over an invalid or fabricated block header unless Byzantine actors control at least 342 validators (a >= 2/3 Byzantine supermajority).
+- **Liveness Threshold (<= 170 / 512 Byzantine / Offline Validators):** If more than 170 validators (> 1/3 of the 512 sync committee) fail to participate or are Byzantine, the remaining honest validators (< 342) cannot reach the 2/3 quorum. In this scenario, header updates temporarily stall until validator participation recovers or the committee rotates at the next period boundary (~8,192 slots / ~27.3 hours). This is a liveness halt, not a safety violation (no invalid headers can be accepted).
+- **Weak-Subjectivity Window:** Bootstrap checkpoints must fall within the Ethereum weak-subjectivity window (~8,192 slots / ~27.3 hours). Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks.
+
+### Untrusted Prover & Environment Assumptions
+- **Byzantine Operator / Host VM:** The zkVM guest code makes zero assumptions about the honesty of the transaction submitter or the LEZ host VM. All Merkle branches, signatures, and RLP encodings are validated in-guest.
+- **Untrusted Consumer Caller:** Consumer smart contracts cannot trust caller-supplied claims. State inclusion proofs and predicate evaluations execute directly against an authenticated `HeaderRecord` committed by Mosoo.
+- **Replay & Double-Spend Attacks:** Any state claim (e.g. token deposit, event log emission) must be claimable exactly once across all transactions, slots, and fork boundaries.
+
+---
+
+## 2. Core Protocol Invariants & Boundary Hardening
+
+During protocol design and engineering, we identified and hardened eight critical boundary conditions:
+
+### Invariant 1: Quorum & Sync Aggregate Strictness
+**Vulnerability:** Altair sync committees consist of 512 validators represented as a 64-byte bitfield and a 96-byte aggregate BLS signature. If bitfield length is not strictly enforced, an attacker could supply trailing bytes with set bits. With 341 valid signers, adding an extraneous bit would bypass the 342/512 threshold without corresponding to any validator in the committee.  
+**Enforcement:** `verify_sync_aggregate_lengths()` strictly asserts `bits.len() == 64` and `signature.len() == 96`:
+```rust
+pub const SYNC_COMMITTEE_BITS_BYTES: usize = 64;
+pub const BLS_SIGNATURE_BYTES: usize = 96;
+
+pub fn verify_sync_aggregate_lengths(bits: &[u8], signature: &[u8]) -> Result<(), MosooError> {
+    if bits.len() != SYNC_COMMITTEE_BITS_BYTES {
+        return Err(MosooError::InvalidSyncCommitteeBitsLength {
+            actual: bits.len(),
+            expected: SYNC_COMMITTEE_BITS_BYTES,
+        });
+    }
+    if signature.len() != BLS_SIGNATURE_BYTES {
+        return Err(MosooError::InvalidSyncCommitteeSignatureLength {
+            actual: signature.len(),
+            expected: BLS_SIGNATURE_BYTES,
+        });
+    }
+    Ok(())
+}
+```
+*Validated in:* `test_sync_committee_bits_strict_64_bytes_enforcement` and `test_mutation_attack_2_sub_threshold_quorum_rejected`.
+
+---
+
+### Invariant 2: Multi-Fork SSZ Compatibility (Deneb 32 Leaves)
+**Vulnerability:** Pre-Deneb execution payload headers contain 14 or 15 fields, padding to 16 leaves (depth 4). Deneb introduced `blob_gas_used` and `excess_blob_gas`, bringing the field count to 17. Merkleizing 17 fields into a 16-leaf tree silently corrupts the computed root. Additionally, SSZ `ByteList[32]` for `extra_data` requires hashing the 32-byte chunk mixed with length bytes.  
+**Enforcement:** Dynamic Merkleization pads to 16 leaves for Bellatrix/Capella and 32 leaves (depth 5) for Deneb/Electra/Gloas, with length-mixed `extra_data` hashing:
+```rust
+let mut chunk = [0u8; 32];
+chunk[..header.extra_data.len()].copy_from_slice(&header.extra_data);
+let mut len_bytes = [0u8; 32];
+len_bytes[..8].copy_from_slice(&(header.extra_data.len() as u64).to_le_bytes());
+let mut h = Sha256::new();
+h.update(chunk);
+h.update(len_bytes);
+let extra_data_root: [u8; 32] = h.finalize().into();
+```
+*Validated in:* `test_deneb_execution_payload_header_32_leaves` and `test_sepolia_gloas_and_hoodi_fork_boundary_and_domain_separation`.
+
+---
+
+### Invariant 3: Bootstrap Checkpoint Committee Authentication
+**Vulnerability:** If `initial_next_committee` is supplied during bootstrap initialization (`handle_initialize`), storing it without verifying its Merkle proof allows an attacker to plant a malicious sync committee that activates upon the next period boundary.  
+**Enforcement:** `InitializeArgs` requires `initial_next_committee_branch`. When provided, it is cryptographically verified at generalized index 55 against `bootstrap_header.state_root`.  
+*Validated in:* `test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forgery_rejection`.
+
+---
+
+### Invariant 4: Historical Block Root Accumulator Anchoring
+**Vulnerability:** Proving past Ethereum blocks against `instance.current_header_hash` fails because the beacon block header hash is not the beacon state root.  
+**Enforcement:** Historical block proofs compute generalized index `(37 << 13) | (slot % 8192)` (depth 18) and verify the branch directly against the `BeaconState.block_roots` accumulator anchored in `instance.current_state_root`.  
+*Validated in:* `test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection`.
+
+---
+
+### Invariant 5: Cross-Stage Pipeline Binding (`update_digest`)
+**Vulnerability:** Splitting BLS pairing verification into 3 transactions (`begin_update` -> `miller_update` -> `finish_update`) coordinates through an on-chain `JobAccount` PDA. Without cryptographic binding between stages, an attacker could tamper with `job.update` between stages 2 and 3.  
+**Enforcement:** `JobAccount` records `update_digest`:
+```text
+update_digest = sha256(slot || attested_root || finalized_root || bits || signature)
+```
+Both `handle_miller_update` and `handle_finish_update` recompute and verify this digest.  
+*Validated in:* `test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejected`.
+
+---
+
+### Invariant 6: Atomic Same-Transaction Consumer Settlement
+**Vulnerability:** If reference consumers accept caller-supplied statements out-of-band, an attacker could fabricate a statement struct without valid consensus backing.  
+**Enforcement:** `claim_atomic` in `erc20-receiver` and `claim_ether_atomic` in `ether-receiver` execute state proof verification directly against the light client's authenticated `HeaderRecord` within the consuming transaction. Any forged proof or invalid header causes the entire transaction to revert atomically.  
+*Validated in:* `test_claim_atomic_receipt_log_succeeds`, `test_claim_ether_atomic_account_balance_succeeds`, and negative rejection tests in both consumer crates.
+
+---
+
+### Invariant 7: Collision-Resistant Event & Statement Nullifiers
+**Vulnerability:** Variable-length event logs with identical trailing bytes could collide if naively truncated to 32 bytes. Identical transfers in different blocks could also produce colliding nullifiers.  
+**Enforcement:** Event payloads > 32 bytes use domain-separated Keccak-256 hashing: `keccak256("MOSOO_EVENT_PAYLOAD_HASH:" || data)`. Event subject keys explicitly bind `block_hash || slot || tx_index || log_index || emitter || topic0`.  
+*Validated in:* `test_variable_length_log_data_prevents_silent_truncation_collision` and `test_mutation_attack_9_cross_block_event_nullifier_uniqueness`.
+
+---
+
+### Invariant 8: Strict Merkle Proof Depth Validation
+**Vulnerability:** Accepting variable-length Merkle branches without enforcing depth permits path malleability attacks.  
+**Enforcement:** `compute_branch_root_checked()` verifies that branch length exactly matches tree depth: `branch.len() == (63 - gindex.leading_zeros())`.  
+*Validated in:* `test_branch_depth_strict_validation` and `test_mutation_attack_4_forged_committee_branch_rejected`.
+
+---
+
+## 3. Automated Adversarial Test Harness
+
+All 12 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
+
+| Test Name | Attack Scenario Tested | Expected Rejection |
+| :--- | :--- | :--- |
+| `test_mutation_attack_1` | Fabricated beacon header with forged signing root | `MosooError::InvalidSignature` |
+| `test_mutation_attack_2` | Sub-threshold quorum (< 342/512 validators) | `MosooError::InsufficientParticipation` |
+| `test_mutation_attack_3` | Non-64-byte sync committee bitfield | `MosooError::InvalidSyncCommitteeBitsLength` |
+| `test_mutation_attack_4` | Forged next sync committee branch at gindex 55 | `MosooError::SyncCommitteeBranchInvalid` |
+| `test_mutation_attack_5` | Non-monotonic slot updates (stale / retrogressive) | `MosooError::StaleUpdate` |
+| `test_mutation_attack_6` | Cross-chain replay across Mainnet and Sepolia | `MosooError::DomainSeparationFailed` |
+| `test_mutation_attack_7` | Corrupted MPT receipts & double-claim replay | `MosooError::InvalidTrieProof` / `AlreadyClaimed` |
+| `test_mutation_attack_8` | State proof against unauthenticated header record | `MosooError::UnauthenticatedHeaderRecord` |
+| `test_mutation_attack_9` | Cross-block event nullifier collision attempt | Unique statement IDs asserted |
+| `test_mutation_attack_10`| Cross-stage job parameter tampering | `MosooError::JobDigestMismatch` |
+| `test_mutation_attack_11`| Bootstrap unauthenticated next sync committee | `MosooError::BootstrapNextCommitteeBranchInvalid` |
+| `test_mutation_attack_12`| Forged historical block accumulator root | `MosooError::UnauthenticatedHeaderRecord` |
+
+---
+
+## 4. Privacy & Zero-Correlation Guarantees
+
+In accordance with RFP-021 privacy requirements, Mosoo shields claimant identity on LEZ:
+- **Zero Address Leakage:** Claimant Ethereum addresses and signature bytes are not written to consumer contract state diffs.
+- **Unlinkability:** Statement IDs act as one-way cryptographic nullifiers:
+  ```text
+  statement_id = sha256(chain_id || subject_key || proof_type || value || predicate)
+  ```
+- **Caveat:** Network-level traffic analysis (transaction timing, deposit amounts) remains observable on public chains.
+
+Automated in `tests/privacy_and_correlation_tests.rs` (5 tests verifying zero address leakage and memory state diff shielding).
+
+---
+
+## 5. Independent Security Audit Plan (Milestone M4)
+
+A formal third-party audit is budgeted and scheduled as Milestone M4 in the RFP-021 roadmap:
+- **Earmarked Budget:** \$10,000 (pre-allocated from grant funds)
+- **Target Timeline:** 3 weeks following public devnet deployment (Milestone M1–M3)
+- **Candidate Audit Firms:** Veridise, Trail of Bits, or Least Authority
+- **Audit Scope:** In-guest `blst` pairing split, MPT trie verification logic, SPEL IDL deserialization safety, and consumer nullifier persistence.
