@@ -1,0 +1,335 @@
+//! Core account and message types shared between the guest program and the host.
+
+use serde::{Deserialize, Serialize};
+
+pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
+pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
+pub const ETH_HOLESKY_CHAIN_ID: u64 = 17_000;
+
+/// A single beacon block header (Ethereum Altair / Bellatrix+).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BeaconBlockHeader {
+    pub slot: u64,
+    pub proposer_index: u64,
+    pub parent_root: [u8; 32],
+    pub state_root: [u8; 32],
+    pub body_root: [u8; 32],
+}
+
+/// The 512-member BLS12-381 sync committee used by Ethereum Altair consensus.
+///
+/// Each validator's compressed G1 public key is 48 bytes.
+/// Stored as Vec<u8> per pubkey to work with serde without extra dependencies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncCommittee {
+    /// 512 compressed BLS12-381 G1 pubkeys, each 48 bytes.
+    pub pubkeys: Vec<Vec<u8>>,
+    /// Aggregate pubkey: sum of all 512 keys, 48 bytes.
+    pub aggregate_pubkey: Vec<u8>,
+}
+
+impl SyncCommittee {
+    /// Return pubkey `i` as a fixed 48-byte array, or error if length wrong.
+    pub fn pubkey_bytes(&self, i: usize) -> Option<[u8; 48]> {
+        let pk = self.pubkeys.get(i)?;
+        if pk.len() != 48 {
+            return None;
+        }
+        let mut arr = [0u8; 48];
+        arr.copy_from_slice(pk);
+        Some(arr)
+    }
+
+    /// Return the aggregate pubkey as a fixed 48-byte array.
+    pub fn agg_pubkey_bytes(&self) -> Option<[u8; 48]> {
+        if self.aggregate_pubkey.len() != 48 {
+            return None;
+        }
+        let mut arr = [0u8; 48];
+        arr.copy_from_slice(&self.aggregate_pubkey);
+        Some(arr)
+    }
+}
+
+/// The sync-committee aggregate signature attached to a beacon block.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncAggregate {
+    /// 512-bit participation bitvector packed into 64 bytes.
+    pub sync_committee_bits: Vec<u8>,
+    /// BLS12-381 G2 aggregate signature, 96 bytes compressed.
+    pub sync_committee_signature: Vec<u8>,
+}
+
+impl SyncAggregate {
+    /// Return the signature as a fixed 96-byte array, or None if length wrong.
+    pub fn signature_bytes(&self) -> Option<[u8; 96]> {
+        if self.sync_committee_signature.len() != 96 {
+            return None;
+        }
+        let mut arr = [0u8; 96];
+        arr.copy_from_slice(&self.sync_committee_signature);
+        Some(arr)
+    }
+}
+
+/// Canonical Mosoo program ID on Logos Execution Zone (LEZ)
+pub const MOSOO_PROGRAM_ID: [u8; 32] = [
+    0x01, 0xab, 0x35, 0xfd, 0xa4, 0x34, 0xbd, 0xfe, 0x7a, 0xf6, 0x01, 0xea, 0xbc, 0x14, 0x99, 0x2b,
+    0x9c, 0xa8, 0x07, 0xbc, 0x4d, 0xdf, 0xec, 0x46, 0xc8, 0x96, 0xd8, 0x1d, 0xc4, 0x96, 0x1e, 0x1c,
+];
+
+/// Execution payload header for Bellatrix/Capella/Deneb/Electra consensus specs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionPayloadHeader {
+    pub parent_hash: [u8; 32],
+    pub fee_recipient: [u8; 20],
+    pub state_root: [u8; 32],
+    pub receipts_root: [u8; 32],
+    pub logs_bloom: Vec<u8>,
+    pub prev_randao: [u8; 32],
+    pub block_number: u64,
+    pub gas_limit: u64,
+    pub gas_used: u64,
+    pub timestamp: u64,
+    pub extra_data: Vec<u8>,
+    pub base_fee_per_gas: [u8; 32],
+    pub block_hash: [u8; 32],
+    pub transactions_root: [u8; 32],
+    pub withdrawals_root: Option<[u8; 32]>,
+    /// Deneb / Electra / Gloas additions (17 fields total, 32 leaves in SSZ container).
+    pub blob_gas_used: Option<u64>,
+    pub excess_blob_gas: Option<u64>,
+}
+
+/// A full Ethereum light-client update as returned by the beacon API.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LightClientUpdate {
+    pub attested_header: BeaconBlockHeader,
+    pub next_sync_committee: Option<SyncCommittee>,
+    /// Merkle branch proving `next_sync_committee` in the attested state.
+    pub next_sync_committee_branch: Option<Vec<[u8; 32]>>,
+    pub finalized_header: BeaconBlockHeader,
+    /// Merkle branch proving finalized_header in the attested state.
+    pub finality_branch: Vec<[u8; 32]>,
+    /// Execution payload header for finalized_header.
+    pub execution_payload_header: Option<ExecutionPayloadHeader>,
+    /// Merkle branch proving execution_payload_header in finalized_header.body_root (gindex 25).
+    pub execution_branch: Option<Vec<[u8; 32]>>,
+    pub sync_aggregate: SyncAggregate,
+    /// Slot at which the sync_aggregate was created (for domain computation).
+    pub signature_slot: u64,
+}
+
+/// **Instance Account** — one per tracked Ethereum network.
+///
+/// PDA seed: `["mosoo_instance", chain_id.to_le_bytes()]`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstanceAccount {
+    /// EIP-155 chain ID (1 = mainnet, 11155111 = Sepolia …).
+    pub chain_id: u64,
+    /// SHA-256 of the last accepted finalized BeaconBlockHeader (SSZ-encoded).
+    pub current_header_hash: [u8; 32],
+    /// Beacon state root of the last accepted finalized BeaconBlockHeader (for historical block roots anchor).
+    pub current_state_root: [u8; 32],
+    /// Slot number of the last accepted finalized header.
+    pub current_slot: u64,
+    /// Active sync committee (the one that signed the last update).
+    pub current_sync_committee: SyncCommittee,
+    /// Next-period committee cached for handoff (may be None between handoffs).
+    pub next_sync_committee: Option<SyncCommittee>,
+    /// Bootstrap slot — the weak-subjectivity trust anchor slot.
+    pub bootstrap_slot: u64,
+    /// Whether this instance has been initialized.
+    pub initialized: bool,
+}
+
+/// **Job Account** — tracks a pending 3-transaction BLS verification job.
+///
+/// BLS verification is split across 3 transactions to stay under the LEZ
+/// ~10 M gas cap per transaction:
+///
+///   Tx 1 `begin`:  participation check + hash_to_G2     ≈ 5.4 M gas
+///   Tx 2 `miller`: two Miller-loop pairings             ≈ 4.2 M gas
+///   Tx 3 `finish`: final exponentiation + state write   ≈ 3.8 M gas
+///
+/// PDA seed: `["mosoo_job", instance_pubkey, nonce.to_le_bytes()]`
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobAccount {
+    /// Which instance this job belongs to.
+    pub instance_chain_id: u64,
+    /// Head slot of the instance when this job began (cross-stage monotonicity check).
+    pub instance_slot: u64,
+    /// Current processing stage.
+    pub stage: JobStage,
+    /// Cryptographic digest of the incoming update payload (tamper-proofing across stages).
+    pub update_digest: [u8; 32],
+    /// The full update being verified (held in the job until finish).
+    pub update: LightClientUpdate,
+    /// Intermediate state written by `begin`, consumed by `miller`.
+    pub miller_input: Option<MillerInput>,
+    /// Intermediate state written by `miller`, consumed by `finish`.
+    pub miller_output: Option<MillerOutput>,
+    /// Sequential nonce used in PDA derivation to allow concurrent jobs.
+    pub nonce: u64,
+}
+
+/// Processing stages for a verification job.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum JobStage {
+    Begin,
+    Miller,
+    Finish,
+    Done,
+}
+
+/// Data produced by the `begin` instruction and consumed by `miller`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MillerInput {
+    /// Compressed G1 aggregate pubkey of the participating validators (48 bytes).
+    pub agg_pubkey_compressed: Vec<u8>,
+    /// G2 point: hash_to_curve(signing_root), 96 bytes compressed.
+    pub msg_g2: Vec<u8>,
+}
+
+/// Data produced by the `miller` instruction and consumed by `finish`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MillerOutput {
+    /// Raw Fp12 miller-loop results (1152 bytes = 2 x 576 bytes).
+    pub miller_result: Vec<u8>,
+}
+
+/// **Header Record** — a finalized beacon header stored for consumer programs.
+///
+/// PDA seed: `["mosoo_header", chain_id.to_le_bytes(), slot.to_le_bytes()]`
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HeaderRecord {
+    pub chain_id: u64,
+    pub slot: u64,
+    /// Beacon block root (SSZ hash-tree-root of the BeaconBlock).
+    pub beacon_block_root: [u8; 32],
+    /// Execution-layer block hash (from ExecutionPayloadHeader).
+    pub execution_block_hash: [u8; 32],
+    /// Execution-layer world-state root (EVM state root).
+    pub execution_state_root: [u8; 32],
+    /// Execution-layer receipts root (from ExecutionPayloadHeader).
+    pub receipts_root: [u8; 32],
+}
+
+/// Arguments to bootstrap / initialize a Mosoo instance account.
+///
+/// Cryptographically binds the initial 512-validator sync committee
+/// to the trusted beacon block header via an SSZ Merkle branch at generalized index 54.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InitializeArgs {
+    pub chain_id: u64,
+    /// Beacon block header of the weak-subjectivity trusted checkpoint.
+    pub bootstrap_header: BeaconBlockHeader,
+    /// Sync committee active at the bootstrap slot (512 BLS pubkeys).
+    pub current_sync_committee: SyncCommittee,
+    /// SSZ Merkle branch proving `current_sync_committee` at generalized index 54 of `bootstrap_header.state_root`.
+    pub current_sync_committee_branch: Vec<[u8; 32]>,
+    /// Optional next-period committee if already known at bootstrap.
+    pub initial_next_committee: Option<SyncCommittee>,
+    /// SSZ Merkle branch proving `initial_next_committee` at generalized index 55 of `bootstrap_header.state_root`.
+    /// Required if `initial_next_committee` is provided.
+    pub initial_next_committee_branch: Option<Vec<[u8; 32]>>,
+}
+
+/// A condition a consumer program wants to evaluate over verified Ethereum state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum Predicate {
+    /// Verified value equals `expected`.
+    Equal { expected: [u8; 32] },
+    /// Verified value (big-endian u256) ≥ `min`.
+    AtLeast { min: [u8; 32] },
+    /// Verified value < `max`.
+    LessThan { max: [u8; 32] },
+    /// All sub-predicates must hold (AND).
+    All(Vec<Predicate>),
+    /// At least one sub-predicate must hold (OR).
+    Any(Vec<Predicate>),
+}
+
+pub const PROOF_TYPE_ACCOUNT_BALANCE: u8 = 0;
+pub const PROOF_TYPE_STORAGE_SLOT: u8 = 1;
+pub const PROOF_TYPE_RECEIPT_LOG: u8 = 2;
+pub const PROOF_TYPE_ETH_DEPOSIT: u8 = 3;
+pub const PROOF_TYPE_ERC20_TRANSFER: u8 = 4;
+
+/// Canonical on-chain provenance binding of an attested Ethereum state, event, or transfer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StatementBinding {
+    /// Account balance proof
+    Account { address: [u8; 20] },
+    /// Storage slot proof
+    Storage { contract: [u8; 20], slot: [u8; 32] },
+    /// Transaction receipt event log
+    ReceiptLog { emitter: [u8; 20], topic0: [u8; 32] },
+    /// Native ETH deposit into a designated bridge vault contract
+    NativeEthDeposit {
+        deposit_contract: [u8; 20],
+        sender: [u8; 20],
+        recipient: [u8; 32],
+    },
+    /// ERC-20 transfer event / vault deposit
+    Erc20Transfer {
+        token_contract: [u8; 20],
+        sender: [u8; 20],
+        recipient: [u8; 32],
+    },
+}
+
+impl Default for StatementBinding {
+    fn default() -> Self {
+        StatementBinding::Account { address: [0u8; 20] }
+    }
+}
+
+/// The result emitted by the attestation module for consumer programs.
+///
+/// `statement_id` is a collision-resistant nullifier derived deterministically
+/// from `sha256(chain_id || subject_key || proof_type_tag || value || predicate)`.
+/// The `subject_key` encodes the immutable on-chain identity (account address,
+/// contract+storage-slot, or transfer/deposit event binding), so proving the same balance
+/// at a different block slot yields the same nullifier, preventing cross-slot double-spending.
+///
+/// **Consumer Security:** Consuming contracts verify `attester_program_id == MOSOO_PROGRAM_ID`,
+/// enforce parameter binding via `binding` & `subject_key`, and derive settlement amounts
+/// strictly from `verified_value`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerifiedStatement {
+    pub chain_id: u64,
+    /// LEZ program ID of the authentic Mosoo attester program that emitted this statement.
+    pub attester_program_id: [u8; 32],
+    /// sha256(chain_id_le8 || subject_key_32 || proof_type_u8 || value_be32 || predicate_json)
+    pub statement_id: [u8; 32],
+    /// Whether the requested predicate held over the verified state.
+    pub predicate_holds: bool,
+    /// The exact 32-byte EVM value verified by the MPT inclusion proof.
+    pub verified_value: [u8; 32],
+    /// Canonical subject key identifying the underlying Ethereum account, storage slot, or event.
+    #[serde(default)]
+    pub subject_key: [u8; 32],
+    /// Type of statement / verified proof target.
+    #[serde(default)]
+    pub proof_type_tag: u8,
+    /// Canonical provenance binding preserving the on-chain origin target.
+    #[serde(default)]
+    pub binding: StatementBinding,
+}
+
+impl VerifiedStatement {
+    /// Decode the verified 32-byte EVM value as a u128 (big-endian).
+    pub fn value_as_u128(&self) -> u128 {
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&self.verified_value[16..32]);
+        u128::from_be_bytes(buf)
+    }
+
+    /// Decode the verified 32-byte EVM value as a u64 (big-endian).
+    pub fn value_as_u64(&self) -> u64 {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&self.verified_value[24..32]);
+        u64::from_be_bytes(buf)
+    }
+}

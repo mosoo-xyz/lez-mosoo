@@ -1,0 +1,323 @@
+//! Predicate engine for evaluating conditions over verified Ethereum state.
+
+use serde_json;
+use sha2::{Digest, Sha256};
+
+use crate::error::MosooError;
+use crate::inclusion::VerifiedValue;
+use crate::types::{Predicate, VerifiedStatement};
+
+/// Evaluate a `Predicate` over a `VerifiedValue` and produce a `VerifiedStatement`.
+///
+/// The `statement_id` is derived deterministically from:
+/// `sha256(chain_id LE || subject_key_32 || proof_type_tag || value_bytes || predicate_bytes)`.
+/// Binding to the exact on-chain target (account address or contract+storage slot) ensures that
+/// proving the same balance across different block slots still maps to the identical nullifier,
+/// preventing duplicate cross-slot claim attacks.
+///
+/// # Examples
+///
+/// ```
+/// use mosoo_core::predicate;
+/// use mosoo_core::types::Predicate;
+/// use mosoo_core::inclusion::VerifiedValue;
+/// use alloy_primitives::U256;
+///
+/// let pred = Predicate::AtLeast { min: [0u8; 32] };
+/// let val = VerifiedValue::EthBalance(U256::from(100u64));
+/// let statement = predicate::evaluate(&pred, &val, 1, [0xaa; 32], 0).unwrap();
+/// assert!(statement.predicate_holds);
+/// ```
+pub fn evaluate(
+    predicate: &Predicate,
+    value: &VerifiedValue,
+    chain_id: u64,
+    subject_key: [u8; 32],
+    proof_type_tag: u8,
+) -> Result<VerifiedStatement, MosooError> {
+    let holds = check(predicate, value)?;
+    let statement_id =
+        derive_statement_id(chain_id, &subject_key, proof_type_tag, value, predicate);
+    Ok(VerifiedStatement {
+        chain_id,
+        attester_program_id: crate::types::MOSOO_PROGRAM_ID,
+        statement_id,
+        predicate_holds: holds,
+        verified_value: value.as_bytes32(),
+        subject_key,
+        proof_type_tag,
+        binding: crate::types::StatementBinding::default(),
+    })
+}
+
+/// Evaluate a `Predicate` over a `VerifiedValue` with an explicit canonical provenance `StatementBinding`.
+pub fn evaluate_with_binding(
+    predicate: &Predicate,
+    value: &VerifiedValue,
+    chain_id: u64,
+    subject_key: [u8; 32],
+    proof_type_tag: u8,
+    binding: crate::types::StatementBinding,
+) -> Result<VerifiedStatement, MosooError> {
+    let holds = check(predicate, value)?;
+    let statement_id =
+        derive_statement_id(chain_id, &subject_key, proof_type_tag, value, predicate);
+    Ok(VerifiedStatement {
+        chain_id,
+        attester_program_id: crate::types::MOSOO_PROGRAM_ID,
+        statement_id,
+        predicate_holds: holds,
+        verified_value: value.as_bytes32(),
+        subject_key,
+        proof_type_tag,
+        binding,
+    })
+}
+
+fn check(predicate: &Predicate, value: &VerifiedValue) -> Result<bool, MosooError> {
+    let v = value.as_bytes32();
+    match predicate {
+        Predicate::Equal { expected } => Ok(v == *expected),
+        Predicate::AtLeast { min } => Ok(v >= *min),
+        Predicate::LessThan { max } => Ok(v < *max),
+        Predicate::All(subs) => {
+            for sub in subs {
+                if !check(sub, value)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Predicate::Any(subs) => {
+            for sub in subs {
+                if check(sub, value)? {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// Derive a collision-resistant statement ID.
+///
+/// sha256(chain_id_le8 || subject_key_32 || proof_type_u8 || value_be32 || predicate_json)
+pub fn derive_statement_id(
+    chain_id: u64,
+    subject_key: &[u8; 32],
+    proof_type_tag: u8,
+    value: &VerifiedValue,
+    predicate: &Predicate,
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(chain_id.to_le_bytes());
+    h.update(subject_key);
+    h.update([proof_type_tag]);
+    h.update(value.as_bytes32());
+    if let Ok(pred_bytes) = serde_json::to_vec(predicate) {
+        h.update(&pred_bytes);
+    }
+    h.finalize().into()
+}
+
+/// Derives a globally unique, collision-resistant event subject key for transaction receipt logs.
+/// Incorporates block hash, slot, transaction index, log index, emitter address, and event topic.
+/// This prevents cross-block event nullifier collision attacks where identical transfers
+/// in different blocks would otherwise collapse into the same statement identifier.
+pub fn derive_receipt_log_subject_key(
+    execution_block_hash: &[u8; 32],
+    slot: u64,
+    tx_index: u64,
+    log_index: usize,
+    emitter: &[u8; 20],
+    topic0: &[u8; 32],
+) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(execution_block_hash);
+    hasher.update(slot.to_be_bytes());
+    hasher.update(tx_index.to_be_bytes());
+    hasher.update((log_index as u64).to_be_bytes());
+    hasher.update(emitter);
+    hasher.update(topic0);
+    hasher.finalize().into()
+}
+
+/// Derives the canonical subject key for an Ethereum native ETH deposit to a vault/contract.
+///
+/// Binds the expected Ethereum deposit contract address, sender Ethereum address,
+/// and recipient LEZ address into a collision-resistant 32-byte identifier:
+/// `sha256("MOSOO_ETH_DEPOSIT" || deposit_contract_20 || sender_20 || recipient_32)`.
+pub fn derive_eth_deposit_subject_key(
+    deposit_contract: &[u8; 20],
+    sender: &[u8; 20],
+    recipient: &[u8; 32],
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"MOSOO_ETH_DEPOSIT");
+    h.update(deposit_contract);
+    h.update(sender);
+    h.update(recipient);
+    h.finalize().into()
+}
+
+/// Derives the canonical subject key for an Ethereum ERC-20 transfer.
+///
+/// Binds the ERC-20 token contract address, sender Ethereum address,
+/// and recipient LEZ address into a collision-resistant 32-byte identifier:
+/// `sha256("MOSOO_ERC20_TRANSFER" || token_contract_20 || sender_20 || recipient_32)`.
+pub fn derive_erc20_transfer_subject_key(
+    token_contract: &[u8; 20],
+    sender: &[u8; 20],
+    recipient: &[u8; 32],
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"MOSOO_ERC20_TRANSFER");
+    h.update(token_contract);
+    h.update(sender);
+    h.update(recipient);
+    h.finalize().into()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::inclusion::VerifiedValue;
+    use alloy_primitives::U256;
+
+    fn val(n: u64) -> VerifiedValue {
+        VerifiedValue::EthBalance(U256::from(n))
+    }
+
+    #[test]
+    fn equal_predicate_matches_exact_value() {
+        let mut expected = [0u8; 32];
+        expected[31] = 100;
+        let p = Predicate::Equal { expected };
+        let subject = [0xaa; 32];
+        let stmt = evaluate(&p, &val(100), 1, subject, 0).unwrap();
+        assert!(stmt.predicate_holds);
+    }
+
+    #[test]
+    fn equal_predicate_rejects_different_value() {
+        let mut expected = [0u8; 32];
+        expected[31] = 100;
+        let p = Predicate::Equal { expected };
+        let subject = [0xaa; 32];
+        let stmt = evaluate(&p, &val(99), 1, subject, 0).unwrap();
+        assert!(!stmt.predicate_holds);
+    }
+
+    #[test]
+    fn at_least_predicate() {
+        let mut min = [0u8; 32];
+        min[31] = 50;
+        let p = Predicate::AtLeast { min };
+        let subject = [0xbb; 32];
+        assert!(
+            evaluate(&p, &val(50), 1, subject, 0)
+                .unwrap()
+                .predicate_holds
+        );
+        assert!(
+            evaluate(&p, &val(100), 1, subject, 0)
+                .unwrap()
+                .predicate_holds
+        );
+        assert!(
+            !evaluate(&p, &val(49), 1, subject, 0)
+                .unwrap()
+                .predicate_holds
+        );
+    }
+
+    #[test]
+    fn all_predicate() {
+        let mut min = [0u8; 32];
+        min[31] = 10;
+        let mut max = [0u8; 32];
+        max[31] = 20;
+        let p = Predicate::All(vec![
+            Predicate::AtLeast { min },
+            Predicate::LessThan { max },
+        ]);
+        let s = [0xcc; 32];
+        assert!(evaluate(&p, &val(15), 1, s, 0).unwrap().predicate_holds);
+        assert!(!evaluate(&p, &val(9), 1, s, 0).unwrap().predicate_holds);
+        assert!(!evaluate(&p, &val(20), 1, s, 0).unwrap().predicate_holds);
+    }
+
+    #[test]
+    fn statement_id_is_deterministic() {
+        let mut exp = [0u8; 32];
+        exp[31] = 1;
+        let p = Predicate::Equal { expected: exp };
+        let s1 = evaluate(&p, &val(1), 1, [0x11; 32], 0).unwrap();
+        let s2 = evaluate(&p, &val(1), 1, [0x11; 32], 0).unwrap();
+        assert_eq!(s1.statement_id, s2.statement_id);
+    }
+
+    #[test]
+    fn statement_id_differs_by_chain() {
+        let mut exp = [0u8; 32];
+        exp[31] = 1;
+        let p = Predicate::Equal { expected: exp };
+        let s1 = evaluate(&p, &val(1), 1, [0x11; 32], 0).unwrap();
+        let s2 = evaluate(&p, &val(1), 11155111, [0x11; 32], 0).unwrap();
+        assert_ne!(s1.statement_id, s2.statement_id);
+    }
+
+    #[test]
+    fn statement_id_differs_by_subject() {
+        let mut exp = [0u8; 32];
+        exp[31] = 1;
+        let p = Predicate::Equal { expected: exp };
+        let s1 = evaluate(&p, &val(1), 1, [0x11; 32], 0).unwrap();
+        let s2 = evaluate(&p, &val(1), 1, [0x22; 32], 0).unwrap();
+        assert_ne!(s1.statement_id, s2.statement_id);
+    }
+
+    #[test]
+    fn test_cross_block_event_identity_prevents_nullifier_collision() {
+        let block_hash_a = [0x11; 32];
+        let block_hash_b = [0x22; 32]; // Different block!
+        let slot_a = 15_433_728;
+        let slot_b = 15_433_760;
+        let tx_index = 0;
+        let log_index = 0;
+        let emitter = [0xaa; 20];
+        let topic0 = [0xdd; 32];
+
+        // Same tx_index and log_index in different blocks
+        let key_a = derive_receipt_log_subject_key(
+            &block_hash_a,
+            slot_a,
+            tx_index,
+            log_index,
+            &emitter,
+            &topic0,
+        );
+        let key_b = derive_receipt_log_subject_key(
+            &block_hash_b,
+            slot_b,
+            tx_index,
+            log_index,
+            &emitter,
+            &topic0,
+        );
+
+        assert_ne!(
+            key_a, key_b,
+            "Events at identical tx/log index in different blocks MUST produce distinct subject keys"
+        );
+
+        let pred = Predicate::AtLeast { min: [0; 32] };
+        let stmt_a = evaluate(&pred, &val(100), 1, key_a, 2).unwrap();
+        let stmt_b = evaluate(&pred, &val(100), 1, key_b, 2).unwrap();
+
+        assert_ne!(
+            stmt_a.statement_id, stmt_b.statement_id,
+            "Statement IDs for separate block occurrences MUST NOT collide"
+        );
+    }
+}

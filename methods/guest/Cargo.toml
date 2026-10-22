@@ -1,0 +1,28 @@
+[package]
+name        = "mosoo-guest"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+description = "Mosoo LEZ guest program — runs inside the RISC0 zkVM on LEZ"
+
+# IMPORTANT: this crate targets the RISC0 zkVM ELF target.
+# It is compiled separately from the host with:
+#   cargo build --target riscv32im-risc0-zkvm-elf -p mosoo-guest
+# The resulting ELF is embedded into the host binary by risc0-build.
+
+[[bin]]
+name = "mosoo-guest"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+risc0-zkvm  = { workspace = true, features = ["std"] }
+mosoo-core  = { path = "../../mosoo-core" }
+serde       = { workspace = true }
+serde_json  = { workspace = true }
+sha2        = { workspace = true }
+blst        = { workspace = true }
+
+[features]
+default = []

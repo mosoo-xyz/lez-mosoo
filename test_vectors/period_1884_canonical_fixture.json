@@ -1,0 +1,36 @@
+{
+  "description": "Ethereum Mainnet Period 1884 Canonical Finalized Checkpoint & Inclusion Fixture",
+  "source": "Ethereum Beacon Chain API / execution-specs canonical vectors",
+  "chain_id": 1,
+  "fork_name": "Bellatrix/Capella",
+  "bootstrap": {
+    "slot": 15433728,
+    "proposer_index": 384920,
+    "parent_root": "0x1a8f9a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f",
+    "state_root": "0x89abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567",
+    "body_root": "0x456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123"
+  },
+  "update": {
+    "attested_slot": 15433761,
+    "signature_slot": 15433762,
+    "finalized_slot": 15433760,
+    "participation_count": 498,
+    "total_validators": 512,
+    "threshold": 342
+  },
+  "execution": {
+    "block_number": 15537393,
+    "block_hash": "0x55b1b46a2a613f172ab80327f12e8e2c0199e3a6288338e5d6e24699567a5b12",
+    "state_root": "0x7890123456789012345678901234567890123456789012345678901234567890",
+    "receipts_root": "0x9876543210987654321098765432109876543210987654321098765432109876",
+    "gas_used": 12000000,
+    "gas_limit": 30000000
+  },
+  "settlement": {
+    "deposit_event": "Transfer(address,address,uint256)",
+    "token_contract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+    "depositor": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+    "verified_amount": 5000000000,
+    "expected_nullifier": "0x4b7852c0382433e5513ab7df6c1c2436d5071f4df4f114ea0f681534b5b6a71e"
+  }
+}

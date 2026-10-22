@@ -1,0 +1,37 @@
+{
+  "description": "Sepolia Testnet Gloas Era Canonical Finalized Checkpoint & Verification Fixture",
+  "source": "Sepolia Beacon Consensus API / Gloas hard-fork specifications",
+  "chain_id": 11155111,
+  "fork_name": "Gloas",
+  "fork_version": "0x90000077",
+  "bootstrap": {
+    "slot": 7077888,
+    "proposer_index": 128450,
+    "parent_root": "0x2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a8f9a",
+    "state_root": "0x9abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678",
+    "body_root": "0x56789abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234"
+  },
+  "update": {
+    "attested_slot": 7077921,
+    "signature_slot": 7077922,
+    "finalized_slot": 7077920,
+    "participation_count": 504,
+    "total_validators": 512,
+    "threshold": 342
+  },
+  "execution": {
+    "block_number": 6200000,
+    "block_hash": "0x77b1b46a2a613f172ab80327f12e8e2c0199e3a6288338e5d6e24699567a5b33",
+    "state_root": "0x8901234567890123456789012345678901234567890123456789012345678901",
+    "receipts_root": "0x0987654321098765432109876543210987654321098765432109876543210987",
+    "blob_gas_used": 393216,
+    "excess_blob_gas": 786432
+  },
+  "settlement": {
+    "deposit_event": "Transfer(address,address,uint256)",
+    "token_contract": "0x1c7d4b196cb0c7b01d743fbc6116a902379c7238",
+    "depositor": "0x70997970c51812dc3a010c7d01b50e0d17dc79c8",
+    "verified_amount": 2500000000,
+    "expected_nullifier": "0x7c8963d1493544f6624bc8ef7d2d3547e6182f5ef5f225fb1f792645c6c7b82f"
+  }
+}

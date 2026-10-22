@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "mosoo-core",
+    "methods/guest",
+    "daemon",
+    "consumers/erc20-receiver",
+    "consumers/ether-receiver",
+    "cli",
+]
+
+# Shared dependency versions across all crates in this workspace
+[workspace.dependencies]
+
+# RISC Zero zkVM
+risc0-zkvm       = { version = "1.0", features = ["std"] }
+risc0-build      = "1.0"
+
+# Cryptography
+blst             = "0.3"
+
+# Ethereum types & RLP
+alloy-primitives = { version = "0.8", features = ["serde"] }
+alloy-trie       = "0.6"
+alloy-consensus  = "0.4"
+alloy-rlp        = "0.3"
+nybbles          = "0.2"
+
+# Ethereum JSON-RPC client (daemon)
+alloy            = { version = "0.4", features = ["full"] }
+
+# Serialization
+serde            = { version = "1", features = ["derive"] }
+serde_json       = "1"
+hex              = { version = "0.4", features = ["serde"] }
+
+# Async runtime
+tokio            = { version = "1", features = ["full"] }
+
+# Logging
+tracing              = "0.1"
+tracing-subscriber   = { version = "0.3", features = ["env-filter", "json"] }
+
+# CLI
+clap             = { version = "4", features = ["derive", "env"] }
+
+# Hashing
+sha2             = "0.10"
+
+# Error handling
+anyhow           = "1"
+thiserror        = "1"
+
+# Utilities
+rand             = "0.8"
+
+[profile.release]
+opt-level = 3
+lto       = true
+
+# RISC0 guest programs ke liye optimized profile
+[profile.guest-release]
+inherits  = "release"
+opt-level = "z"   # size-optimize for zkVM image
+panic     = "abort"

@@ -1,0 +1,28 @@
+# Rust build artifacts
+/target/
+**/target/
+
+# Cargo lock (keep for binaries, gitignore for libs - we keep it for workspace)
+# Cargo.lock is kept intentionally
+
+# IDE files
+.idea/
+.vscode/settings.json
+*.iml
+
+# RISC0 proof cache
+**/.risc0/
+**/risc0_cache/
+
+# Environment / secrets
+.env
+.env.local
+*.key
+keypair.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Benchmark output (keep the docs, not raw dumps)
+benchmarks/*.json.raw

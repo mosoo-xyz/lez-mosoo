@@ -1,0 +1,1025 @@
+//! ERC-20 receiver — reference consumer for the Mosoo attestation module.
+//!
+//! This LEZ program shows how a dApp consumes a `VerifiedStatement` produced
+//! by the `mosoo` attestation module to trustlessly mint LEZ tokens in exchange
+//! for an on-chain Ethereum ERC-20 transfer, with no bridge or oracle.
+//!
+//! ## How it works
+//!
+//! 1. User transfers ERC-20 tokens on Ethereum mainnet to a designated vault.
+//! 2. User (or relayer) calls `mosoo::attest_state` with an `eth_getProof`
+//!    for the storage slot that records the transfer.
+//! 3. Mosoo returns a `VerifiedStatement` with `predicate_holds = true`.
+//! 4. User calls `erc20_receiver::claim` with the `VerifiedStatement`.
+//! 5. This program checks the statement, stores the nullifier, and mints tokens.
+//!
+//! ## Replay protection
+//!
+//! `VerifiedStatement.statement_id` is a deterministic hash of the Ethereum
+//! state that was verified.  The contract stores it as a nullifier — the same
+//! statement cannot be claimed twice.
+
+use mosoo_core::predicate::derive_erc20_transfer_subject_key;
+use mosoo_core::types::{
+    StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
+    PROOF_TYPE_ERC20_TRANSFER,
+};
+use std::collections::HashMap;
+use thiserror::Error;
+
+#[derive(Debug, Error, PartialEq, Eq)]
+pub enum ReceiverError {
+    #[error("predicate did not hold — the Ethereum transfer was not verified")]
+    PredicateFailed,
+
+    #[error("unauthenticated attester: statement was not signed by authentic Mosoo program ID")]
+    UnauthenticatedAttester,
+
+    #[error("this statement has already been claimed (replay attempt)")]
+    AlreadyClaimed,
+
+    #[error("statement is for chain {0}, but this receiver only accepts mainnet (chain 1)")]
+    WrongChain(u64),
+
+    #[error("expected at least {min_amount} tokens, verified statement value is {actual}")]
+    AmountTooLow { min_amount: u64, actual: u64 },
+
+    #[error("invalid statement type: expected ERC-20 transfer proof (tag 4), got tag {0}")]
+    InvalidStatementType(u8),
+
+    #[error("token contract mismatch: expected {expected:?}, got {actual:?}")]
+    TokenContractMismatch {
+        expected: [u8; 20],
+        actual: [u8; 20],
+    },
+
+    #[error("sender mismatch: expected {expected:?}, got {actual:?}")]
+    SenderMismatch {
+        expected: [u8; 20],
+        actual: [u8; 20],
+    },
+
+    #[error("recipient mismatch: expected {expected:?}, got {actual:?}")]
+    RecipientMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+
+    #[error("subject key cryptographic tampering detected: statement subject_key does not match canonical parameters")]
+    SubjectKeyMismatch,
+
+    #[error("state attestation failed: {0}")]
+    AttestationFailed(String),
+}
+
+/// In-memory nullifier store mapping verified statement IDs to spent state.
+/// On LEZ runtime, this maps to distinct PDA accounts per statement_id.
+#[derive(Default)]
+pub struct NullifierSet {
+    used: HashMap<[u8; 32], bool>,
+}
+
+impl NullifierSet {
+    pub fn new() -> Self {
+        Self {
+            used: HashMap::new(),
+        }
+    }
+
+    pub fn is_used(&self, id: &[u8; 32]) -> bool {
+        self.used.contains_key(id)
+    }
+
+    pub fn mark_used(&mut self, id: [u8; 32]) {
+        self.used.insert(id, true);
+    }
+}
+
+/// Verify a VerifiedStatement from Mosoo and mint LEZ-side tokens.
+///
+/// Ensures:
+/// 1. Attester origin authentication (`statement.attester_program_id == MOSOO_PROGRAM_ID`).
+/// 2. Settlement binding: minted tokens derive strictly from `statement.value_as_u64()` (cannot claim arbitrary amounts).
+/// 3. Replay prevention: atomic marking in `NullifierSet`.
+///
+/// # Examples
+///
+/// ```
+/// use erc20_receiver::{claim, NullifierSet};
+/// use mosoo_core::types::{VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID};
+///
+/// let mut nullifiers = NullifierSet::new();
+/// let mut verified_value = [0u8; 32];
+/// verified_value[24..32].copy_from_slice(&100u64.to_be_bytes());
+///
+/// let statement = VerifiedStatement {
+///     chain_id: ETH_MAINNET_CHAIN_ID,
+///     attester_program_id: MOSOO_PROGRAM_ID,
+///     statement_id: [0x42; 32],
+///     predicate_holds: true,
+///     verified_value,
+///     subject_key: [0u8; 32],
+///     proof_type_tag: 0,
+///     binding: Default::default(),
+/// };
+///
+/// let minted = claim(&statement, &mut nullifiers, 100).expect("first claim succeeds");
+/// assert_eq!(minted, 100);
+/// ```
+pub fn claim(
+    statement: &VerifiedStatement,
+    nullifiers: &mut NullifierSet,
+    min_amount: u64,
+) -> Result<u64, ReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(statement.chain_id));
+    }
+
+    // Authenticate the attester program identity
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    // Derive credited amount strictly from the verified statement value
+    let verified_amount = statement.value_as_u64();
+    if verified_amount < min_amount {
+        return Err(ReceiverError::AmountTooLow {
+            min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+
+    // Tokens credited 1:1 on LEZ matching the verified on-chain Ethereum value
+    let minted_amount = verified_amount;
+    Ok(minted_amount)
+}
+
+/// Detailed parameters for claiming a verified ERC-20 token transfer or vault deposit.
+///
+/// In accordance with Logos RFP-021 reference consumer specifications, this proves that
+/// a specific `sender` transferred a specific `min_amount` of `token_contract` tokens
+/// for the benefit of a `recipient` on LEZ.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Erc20TransferClaim {
+    /// The verified statement emitted by the Mosoo attestation module.
+    pub statement: VerifiedStatement,
+    /// The intended ERC-20 token contract address on Ethereum (e.g., DAI, USDC).
+    pub token_contract: [u8; 20],
+    /// The Ethereum sender / depositor address.
+    pub sender: [u8; 20],
+    /// The designated LEZ recipient address.
+    pub recipient: [u8; 32],
+    /// Minimum tokens expected.
+    pub min_amount: u64,
+}
+
+/// Process a verified ERC-20 token transfer event, proving token contract,
+/// sender, recipient, and amount in accordance with RFP-021 reference consumer semantics.
+pub fn claim_erc20_transfer(
+    claim: &Erc20TransferClaim,
+    nullifiers: &mut NullifierSet,
+) -> Result<u64, ReceiverError> {
+    if claim.statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(claim.statement.chain_id));
+    }
+
+    // Authenticate the attester program identity
+    if claim.statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+
+    if !claim.statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    // Verify statement proof type tag is ERC-20 transfer
+    if claim.statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+        return Err(ReceiverError::InvalidStatementType(
+            claim.statement.proof_type_tag,
+        ));
+    }
+
+    // Match statement binding against caller's expected parameters
+    match &claim.statement.binding {
+        StatementBinding::Erc20Transfer {
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if *token_contract != claim.token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: claim.token_contract,
+                    actual: *token_contract,
+                });
+            }
+            if *sender != claim.sender {
+                return Err(ReceiverError::SenderMismatch {
+                    expected: claim.sender,
+                    actual: *sender,
+                });
+            }
+            if *recipient != claim.recipient {
+                return Err(ReceiverError::RecipientMismatch {
+                    expected: claim.recipient,
+                    actual: *recipient,
+                });
+            }
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                claim.statement.proof_type_tag,
+            ));
+        }
+    }
+
+    // Verify canonical subject key cryptographic derivation
+    let expected_subject_key =
+        derive_erc20_transfer_subject_key(&claim.token_contract, &claim.sender, &claim.recipient);
+    if claim.statement.subject_key != expected_subject_key {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    // Derive credited amount strictly from verified statement value
+    let verified_amount = claim.statement.value_as_u64();
+    if verified_amount < claim.min_amount {
+        return Err(ReceiverError::AmountTooLow {
+            min_amount: claim.min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    if nullifiers.is_used(&claim.statement.statement_id) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(claim.statement.statement_id);
+
+    Ok(verified_amount)
+}
+
+/// Execution parameters for atomic same-transaction ERC-20 claim.
+///
+/// In compliance with Logos RFP-021 Functionality requirements, state inclusion verification
+/// and predicate evaluation execute within the consuming transaction itself against the
+/// authenticated light client instance and header record. This ensures caller-supplied
+/// statements cannot be fabricated or accepted out-of-band.
+#[derive(Debug, Clone)]
+pub struct AtomicErc20ClaimArgs {
+    /// Active authenticated light client instance account
+    pub instance: mosoo_core::types::InstanceAccount,
+    /// Authenticated header record for the target block
+    pub header: mosoo_core::types::HeaderRecord,
+    /// Optional historical branch if proving against past block in weak-subjectivity window
+    pub header_history_branch: Option<Vec<[u8; 32]>>,
+    /// State inclusion proof (receipt log proof or storage proof)
+    pub proof: mosoo_core::inclusion::StateProof,
+    /// Predicate evaluated against verified state
+    pub predicate: mosoo_core::types::Predicate,
+    /// Expected ERC-20 token contract address on Ethereum
+    pub expected_token_contract: [u8; 20],
+    /// Expected sender address on Ethereum (optional for general storage slot claims)
+    pub expected_sender: Option<[u8; 20]>,
+    /// Expected recipient identifier on LEZ
+    pub recipient: [u8; 32],
+    /// Minimum required token amount
+    pub min_amount: u64,
+}
+
+/// Execute atomic same-transaction ERC-20 token claim.
+///
+/// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
+/// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts target contract
+/// identity, derives the deterministic statement nullifier, checks for replay, and credits tokens.
+pub fn claim_atomic(
+    args: AtomicErc20ClaimArgs,
+    nullifiers: &mut NullifierSet,
+) -> Result<u64, ReceiverError> {
+    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(args.instance.chain_id));
+    }
+
+    let attest_args = mosoo_core::verifier::AttestStateArgs {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        proof: args.proof,
+        predicate: args.predicate,
+    };
+
+    let output = mosoo_core::verifier::handle_attest_state(attest_args)
+        .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
+
+    let statement = match output {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => {
+            return Err(ReceiverError::AttestationFailed(
+                "unexpected instruction output from handle_attest_state".into(),
+            ))
+        }
+    };
+
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    match &statement.binding {
+        StatementBinding::Storage { contract, .. } => {
+            if *contract != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *contract,
+                });
+            }
+        }
+        StatementBinding::ReceiptLog { emitter, .. } => {
+            if *emitter != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *emitter,
+                });
+            }
+        }
+        StatementBinding::Erc20Transfer {
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if *token_contract != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *token_contract,
+                });
+            }
+            if let Some(expected_sender) = args.expected_sender {
+                if *sender != expected_sender {
+                    return Err(ReceiverError::SenderMismatch {
+                        expected: expected_sender,
+                        actual: *sender,
+                    });
+                }
+            }
+            if *recipient != args.recipient {
+                return Err(ReceiverError::RecipientMismatch {
+                    expected: args.recipient,
+                    actual: *recipient,
+                });
+            }
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ));
+        }
+    }
+
+    let verified_amount = statement.value_as_u64();
+    if verified_amount < args.min_amount {
+        return Err(ReceiverError::AmountTooLow {
+            min_amount: args.min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+
+    Ok(verified_amount)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn min_32(v: u64) -> [u8; 32] {
+        let mut out = [0u8; 32];
+        out[24..32].copy_from_slice(&v.to_be_bytes());
+        out
+    }
+
+    fn make_statement(
+        chain_id: u64,
+        holds: bool,
+        id_seed: u8,
+        amount: u64,
+        attester: [u8; 32],
+    ) -> VerifiedStatement {
+        let mut verified_value = [0u8; 32];
+        verified_value[24..32].copy_from_slice(&amount.to_be_bytes());
+        VerifiedStatement {
+            chain_id,
+            attester_program_id: attester,
+            statement_id: [id_seed; 32],
+            predicate_holds: holds,
+            verified_value,
+            subject_key: [0u8; 32],
+            proof_type_tag: 0,
+            binding: StatementBinding::Account { address: [0u8; 20] },
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_erc20_statement(
+        chain_id: u64,
+        holds: bool,
+        id_seed: u8,
+        amount: u64,
+        attester: [u8; 32],
+        token_contract: [u8; 20],
+        sender: [u8; 20],
+        recipient: [u8; 32],
+    ) -> VerifiedStatement {
+        let mut verified_value = [0u8; 32];
+        verified_value[24..32].copy_from_slice(&amount.to_be_bytes());
+        let subject_key = derive_erc20_transfer_subject_key(&token_contract, &sender, &recipient);
+        VerifiedStatement {
+            chain_id,
+            attester_program_id: attester,
+            statement_id: [id_seed; 32],
+            predicate_holds: holds,
+            verified_value,
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+            binding: StatementBinding::Erc20Transfer {
+                token_contract,
+                sender,
+                recipient,
+            },
+        }
+    }
+
+    #[test]
+    fn valid_claim_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x01, 100, MOSOO_PROGRAM_ID);
+        let result = claim(&statement, &mut nullifiers, 100);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), 100);
+    }
+
+    #[test]
+    fn duplicate_claim_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x02, 100, MOSOO_PROGRAM_ID);
+        claim(&statement, &mut nullifiers, 100).unwrap();
+        let result = claim(&statement, &mut nullifiers, 100);
+        assert!(matches!(result, Err(ReceiverError::AlreadyClaimed)));
+    }
+
+    #[test]
+    fn wrong_chain_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_statement(ETH_SEPOLIA_CHAIN_ID, true, 0x03, 100, MOSOO_PROGRAM_ID);
+        let result = claim(&statement, &mut nullifiers, 100);
+        assert!(matches!(result, Err(ReceiverError::WrongChain(_))));
+    }
+
+    #[test]
+    fn failed_predicate_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_statement(ETH_MAINNET_CHAIN_ID, false, 0x04, 100, MOSOO_PROGRAM_ID);
+        let result = claim(&statement, &mut nullifiers, 100);
+        assert!(matches!(result, Err(ReceiverError::PredicateFailed)));
+    }
+
+    #[test]
+    fn unauthenticated_attester_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let bogus_attester = [0xde; 32];
+        let statement = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x05, 100, bogus_attester);
+        let result = claim(&statement, &mut nullifiers, 100);
+        assert_eq!(result, Err(ReceiverError::UnauthenticatedAttester));
+    }
+
+    #[test]
+    fn claim_amount_too_low_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x06, 50, MOSOO_PROGRAM_ID);
+        let result = claim(&statement, &mut nullifiers, 100);
+        assert_eq!(
+            result,
+            Err(ReceiverError::AmountTooLow {
+                min_amount: 100,
+                actual: 50
+            })
+        );
+    }
+
+    #[test]
+    fn test_erc20_transfer_claim_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x07,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let minted = claim_erc20_transfer(&claim, &mut nullifiers)
+            .expect("Valid ERC20 transfer claim should succeed");
+        assert_eq!(minted, 500_000);
+    }
+
+    #[test]
+    fn test_erc20_transfer_wrong_token_contract_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x08,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x99; 20], // wrong token contract
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(
+            result,
+            Err(ReceiverError::TokenContractMismatch {
+                expected: [0x99; 20],
+                actual: [0x11; 20],
+            })
+        );
+    }
+
+    #[test]
+    fn test_erc20_transfer_wrong_sender_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x09,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x88; 20], // wrong sender
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(
+            result,
+            Err(ReceiverError::SenderMismatch {
+                expected: [0x88; 20],
+                actual: [0x22; 20],
+            })
+        );
+    }
+
+    #[test]
+    fn test_erc20_transfer_wrong_recipient_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x0a,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x77; 32], // wrong recipient
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(
+            result,
+            Err(ReceiverError::RecipientMismatch {
+                expected: [0x77; 32],
+                actual: [0x33; 32],
+            })
+        );
+    }
+
+    #[test]
+    fn test_erc20_transfer_wrong_statement_type_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        // Raw account balance statement instead of Erc20Transfer
+        let statement = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x0b, 500_000, MOSOO_PROGRAM_ID);
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(result, Err(ReceiverError::InvalidStatementType(0)));
+    }
+
+    #[test]
+    fn test_erc20_transfer_subject_key_tamper_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let mut statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x0c,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        // Tamper with subject_key
+        statement.subject_key[0] ^= 0xff;
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(result, Err(ReceiverError::SubjectKeyMismatch));
+    }
+
+    #[test]
+    fn test_erc20_transfer_insufficient_amount_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x0d,
+            50,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(
+            result,
+            Err(ReceiverError::AmountTooLow {
+                min_amount: 100,
+                actual: 50
+            })
+        );
+    }
+
+    #[test]
+    fn test_erc20_transfer_duplicate_replay_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x0e,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        claim_erc20_transfer(&claim, &mut nullifiers).unwrap();
+        let replay_result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(replay_result, Err(ReceiverError::AlreadyClaimed));
+    }
+
+    #[test]
+    fn test_erc20_transfer_unauthenticated_attester_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let bogus_attester = [0x55; 32];
+        let statement = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x0f,
+            500_000,
+            bogus_attester,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(result, Err(ReceiverError::UnauthenticatedAttester));
+    }
+
+    #[test]
+    fn test_erc20_transfer_wrong_chain_rejected() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_SEPOLIA_CHAIN_ID, // Sepolia instead of Mainnet
+            true,
+            0x10,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(result, Err(ReceiverError::WrongChain(ETH_SEPOLIA_CHAIN_ID)));
+    }
+
+    #[test]
+    fn test_claim_atomic_receipt_log_succeeds() {
+        use alloy_primitives::{keccak256, Address, U256};
+        use mosoo_core::inclusion::test_helpers::{
+            build_leaf_mpt_proof, build_test_eip1559_transfer_receipt,
+        };
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = NullifierSet::new();
+        let emitter_addr = [0xaa; 20];
+        let from_addr = [0x11; 20];
+        let to_addr = [0x22; 20];
+        let amount_u64: u64 = 42_000_000;
+        let amount = U256::from(amount_u64);
+
+        let receipt_rlp = build_test_eip1559_transfer_receipt(
+            Address::from(emitter_addr),
+            Address::from(from_addr),
+            Address::from(to_addr),
+            amount,
+        );
+        let tx_index: u64 = 0;
+        let key_bytes = alloy_rlp::encode(tx_index);
+        let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
+
+        let instance = InstanceAccount {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            initialized: true,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::ReceiptLog {
+                tx_index,
+                log_index: 0,
+                emitter: Address::from(emitter_addr),
+                topic0: keccak256("Transfer(address,address,uint256)"),
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let args = AtomicErc20ClaimArgs {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast {
+                min: min_32(1_000_000),
+            },
+            expected_token_contract: emitter_addr,
+            expected_sender: None,
+            recipient: [0x33; 32],
+            min_amount: 1_000_000,
+        };
+
+        let minted = claim_atomic(args.clone(), &mut nullifiers)
+            .expect("Atomic receipt log claim must succeed");
+        assert_eq!(minted, amount_u64);
+
+        // Replay rejection in the same state
+        let replay = claim_atomic(args, &mut nullifiers);
+        assert_eq!(replay, Err(ReceiverError::AlreadyClaimed));
+    }
+
+    #[test]
+    fn test_claim_atomic_rejects_unauthenticated_header() {
+        use alloy_primitives::{keccak256, Address, U256};
+        use mosoo_core::inclusion::test_helpers::{
+            build_leaf_mpt_proof, build_test_eip1559_transfer_receipt,
+        };
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = NullifierSet::new();
+        let emitter_addr = [0xaa; 20];
+        let amount = U256::from(42_000_000u64);
+        let receipt_rlp = build_test_eip1559_transfer_receipt(
+            Address::from(emitter_addr),
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            amount,
+        );
+        let (receipts_root, proof_nodes) =
+            build_leaf_mpt_proof(&alloy_rlp::encode(0u64), &receipt_rlp);
+
+        let instance = InstanceAccount {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            initialized: true,
+        };
+
+        // Forged beacon block root
+        let forged_header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0xba; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::ReceiptLog {
+                tx_index: 0,
+                log_index: 0,
+                emitter: Address::from(emitter_addr),
+                topic0: keccak256("Transfer(address,address,uint256)"),
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let args = AtomicErc20ClaimArgs {
+            instance,
+            header: forged_header,
+            header_history_branch: None,
+            proof,
+            predicate: Predicate::AtLeast {
+                min: min_32(1_000_000),
+            },
+            expected_token_contract: emitter_addr,
+            expected_sender: None,
+            recipient: [0x33; 32],
+            min_amount: 1_000_000,
+        };
+
+        let res = claim_atomic(args, &mut nullifiers);
+        assert!(matches!(res, Err(ReceiverError::AttestationFailed(_))));
+    }
+
+    #[test]
+    fn test_claim_atomic_rejects_contract_mismatch() {
+        use alloy_primitives::{keccak256, Address, U256};
+        use mosoo_core::inclusion::test_helpers::{
+            build_leaf_mpt_proof, build_test_eip1559_transfer_receipt,
+        };
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = NullifierSet::new();
+        let emitter_addr = [0xaa; 20];
+        let amount = U256::from(42_000_000u64);
+        let receipt_rlp = build_test_eip1559_transfer_receipt(
+            Address::from(emitter_addr),
+            Address::repeat_byte(0x11),
+            Address::repeat_byte(0x22),
+            amount,
+        );
+        let (receipts_root, proof_nodes) =
+            build_leaf_mpt_proof(&alloy_rlp::encode(0u64), &receipt_rlp);
+
+        let instance = InstanceAccount {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            initialized: true,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::ReceiptLog {
+                tx_index: 0,
+                log_index: 0,
+                emitter: Address::from(emitter_addr),
+                topic0: keccak256("Transfer(address,address,uint256)"),
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let args = AtomicErc20ClaimArgs {
+            instance,
+            header,
+            header_history_branch: None,
+            proof,
+            predicate: Predicate::AtLeast {
+                min: min_32(1_000_000),
+            },
+            expected_token_contract: [0xbb; 20], // mismatched contract
+            expected_sender: None,
+            recipient: [0x33; 32],
+            min_amount: 1_000_000,
+        };
+
+        let res = claim_atomic(args, &mut nullifiers);
+        assert!(matches!(
+            res,
+            Err(ReceiverError::TokenContractMismatch { .. })
+        ));
+    }
+
+    // Chain IDs used in tests above
+    const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
+}
