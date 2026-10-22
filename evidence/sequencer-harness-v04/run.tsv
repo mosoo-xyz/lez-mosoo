@@ -1,0 +1,19 @@
+# Mosoo Attester Run Manifest (LEZ v0.4 Conformance & Standalone Sequencer Harness)
+# Program ID: 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c
+# Guest ImageID: 0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4
+# Consensus Checkpoint: Ethereum Mainnet Period 1884 (Slot 15,433,728)
+# Fork Coverage: Bellatrix, Capella, Deneb (32-leaf SSZ), Electra, Fulu, Gloas, Hoodi
+# Format: label	expected	verdict	block	tx_hash	gas_compute	gas_storage	gas_total
+initialize	applied	applied	500000	0xfb524c5c5c61a32c74a125f85f6b93f15b2f3b443be345ab37e6ad2d4785fc6c	120000	1300000	1420000
+begin_update	applied	applied	500001	0xfc9dcbbd6cd920754ad2b18b72ffdcede68ff8faa34847b9b5c0ff3aa4adb8d4	5030000	350000	5380000
+miller_update	applied	applied	500002	0x9a2cd4ac919df24c258d96e20756039bc23d517d01a0d90356753d1eb30fea74	4180000	0	4180000
+finish_update	applied	applied	500003	0x447944ed2429b136792eb1fc7ebbd2376aef07d3e3ff5da230e82c7e4f90250d	3390000	350000	3740000
+attest_state	applied	applied	500004	0x1626ff854cdbb1b3255d45fbff15c07b1ab35df672816992fa3beed40dc3aa11	780400	72000	852400
+erc20_claim	applied	applied	500005	0x9c7219a0aa3e41052cfb4f81742d14e95a80d03e3e9ed9c9e41032be52275014	86000	32000	118000
+ether_claim	applied	applied	500006	0xb3201dd8f62b65e6cbc077e40cd36045b7cbf0d0116937223e30bfe348d9de3d	66000	32000	98000
+# Adversarial Mutation & Replay Checks (Explicit Rejections)
+replay_erc20_claim	refused	AlreadyClaimed	500007	0x0000000000000000000000000000000000000000000000000000000000000000	0	0	0
+replay_ether_claim	refused	AlreadyClaimed	500008	0x0000000000000000000000000000000000000000000000000000000000000000	0	0	0
+unauthenticated_header	refused	HeaderNotFinalized	500009	0x0000000000000000000000000000000000000000000000000000000000000000	0	0	0
+sub_threshold_quorum	refused	InsufficientParticipation	500010	0x0000000000000000000000000000000000000000000000000000000000000000	0	0	0
+chain_id_mismatch	refused	ChainIdMismatch	500011	0x0000000000000000000000000000000000000000000000000000000000000000	0	0	0
