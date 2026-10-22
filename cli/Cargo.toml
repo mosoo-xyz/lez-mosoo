@@ -1,0 +1,25 @@
+[package]
+name        = "mosoo-cli"
+version     = "0.1.0"
+edition     = "2021"
+license     = "MIT OR Apache-2.0"
+description = "Interactive CLI and verification demonstration tool for Mosoo (RFP-021)"
+
+[[bin]]
+name = "mosoo"
+path = "src/main.rs"
+
+[dependencies]
+mosoo-core       = { path = "../mosoo-core" }
+erc20-receiver   = { path = "../consumers/erc20-receiver" }
+ether-receiver   = { path = "../consumers/ether-receiver" }
+sha2             = { workspace = true }
+clap             = { workspace = true }
+alloy-primitives = { workspace = true }
+alloy-rlp        = { workspace = true }
+blst             = { workspace = true }
+hex              = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+tokio            = { workspace = true }

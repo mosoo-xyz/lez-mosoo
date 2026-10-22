@@ -1,0 +1,52 @@
+# syntax=docker/dockerfile:1.4
+# Reproducible build container for Mosoo RISC0 zkVM guest binary
+# Target: riscv32im-risc0-zkvm-elf
+# RFP-021 Verification Requirement
+
+FROM ubuntu:22.04 AS builder
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV RUST_VERSION=1.78.0
+ENV RZUP_VERSION=0.1.0
+ENV CARGO_HOME=/root/.cargo
+ENV RUSTUP_HOME=/root/.rustup
+ENV PATH="/root/.cargo/bin:/root/.risc0/bin:${PATH}"
+ENV SOURCE_DATE_EPOCH=1700000000
+
+# Install minimal build prerequisites
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    ca-certificates \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install pinned Rust toolchain
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
+
+# Install rzup and RISC0 zkVM toolchain
+RUN curl -L https://risczero.com/install | bash \
+    && rzup install cargo-risczero 1.0.5 \
+    && rzup install cpp
+
+WORKDIR /workspace
+
+# Copy workspace sources
+COPY Cargo.toml Cargo.lock ./
+COPY mosoo-core/ mosoo-core/
+COPY methods/ methods/
+
+# Build guest deterministically
+RUN cargo risczero build --manifest-path methods/guest/Cargo.toml --release
+
+# Stage 2: Verification and artifact emission
+FROM alpine:3.19 AS exporter
+
+WORKDIR /out
+COPY --from=builder /workspace/target/riscv32im-risc0-zkvm-elf/release/mosoo-guest /out/mosoo-guest
+
+RUN sha256sum /out/mosoo-guest > /out/mosoo-guest.sha256
+
+CMD ["cat", "/out/mosoo-guest.sha256"]
