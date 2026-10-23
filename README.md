@@ -15,10 +15,10 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 125 unit and integration tests (0 failing, 0 warnings)
+# 1. Run all 138 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
-# 2. Run the 12 adversarial mutation attack tests
+# 2. Run the 24 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
 # 3. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
@@ -72,7 +72,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **125 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **138 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 
@@ -87,10 +87,10 @@ To ensure absolute transparency regarding what is functioning today versus what 
 
 | Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
 | :--- | :---: | :--- | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (125/125 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (138/138 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
 | **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
-| **Adversarial Invariant Hardening** | M0 (Delivered) | 12 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
+| **Adversarial Invariant Hardening** | M0 (Delivered) | 24 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
 | **Execution Manifest & Verification Script** | M0 (Delivered) | Hardened with Strict Exit Codes | Offline Python/Bash runner (`scripts/verify-evidence.py`) |
 | **Public LEZ Testnet RPC & On-Chain Deployment** | M1 (Grant) | Architecture Planned | Live JSON-RPC queries to public LEZ testnet nodes |
 | **SPEL IDL Upstreaming & Logos Core Modules** | M2 (Grant) | IDL Specification Defined | Integration with Logos Core module compiler |

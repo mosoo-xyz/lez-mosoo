@@ -984,7 +984,7 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
         initial_next_committee_branch: None,
-        trusted_head_slot: Some(3_000_000),
+        trusted_head_slot: 3_000_000,
     });
     assert!(
         matches!(
@@ -1005,7 +1005,7 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
         initial_next_committee_branch: None,
-        trusted_head_slot: Some(1_050_000),
+        trusted_head_slot: 1_050_000,
     })
     .unwrap();
 

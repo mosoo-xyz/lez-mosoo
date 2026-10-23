@@ -55,6 +55,9 @@ pub enum MosooError {
     #[error("claimed amount exceeds verified attestation: claimed {claimed}, verified {verified}")]
     ClaimAmountExceedsVerified { claimed: u128, verified: u128 },
 
+    #[error("predicate condition failed to hold over verified state")]
+    PredicateFailed,
+
     // Schema and length validation
     #[error("invalid logs bloom length: actual {actual}, expected {expected}")]
     InvalidLogsBloomLength { actual: usize, expected: usize },

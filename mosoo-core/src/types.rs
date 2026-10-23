@@ -240,9 +240,8 @@ pub struct InitializeArgs {
     /// SSZ Merkle branch proving `initial_next_committee` at generalized index (55 for Altair/Deneb, 87 for Electra/Fulu, 2946 for Gloas).
     /// Required if `initial_next_committee` is provided.
     pub initial_next_committee_branch: Option<Vec<[u8; 32]>>,
-    /// Optional operator-attested trusted network head slot for enforcing weak subjectivity freshness.
-    #[serde(default)]
-    pub trusted_head_slot: Option<u64>,
+    /// Mandatory operator-attested trusted network head slot for enforcing weak subjectivity freshness.
+    pub trusted_head_slot: u64,
 }
 
 /// Arguments to re-anchor a light client instance that has stalled beyond the weak-subjectivity window (>1,728,000 slots).

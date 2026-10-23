@@ -68,16 +68,28 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         ));
     }
 
-    // Weak subjectivity freshness guard: if trusted_head_slot is provided,
-    // bootstrap checkpoint must be within the 1,728,000 slot weak-subjectivity threshold (54,000 epochs / ~240 days).
+    // Mandatory Weak Subjectivity Freshness Guard:
+    // 1. trusted_head_slot cannot be 0.
+    // 2. trusted_head_slot cannot precede the bootstrap header slot.
+    // 3. bootstrap checkpoint must be within the 1,728,000 slot weak-subjectivity threshold (54,000 epochs / ~240 days).
     const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
-    if let Some(head_slot) = args.trusted_head_slot {
-        if head_slot > args.bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
-            return Err(MosooError::WeakSubjectivityExpired {
-                update_slot: args.bootstrap_header.slot,
-                current_slot: head_slot,
-            });
-        }
+    if args.trusted_head_slot == 0 {
+        return Err(MosooError::InvalidBootstrap(
+            "trusted_head_slot is mandatory for weak-subjectivity verification and cannot be zero"
+                .into(),
+        ));
+    }
+    if args.trusted_head_slot < args.bootstrap_header.slot {
+        return Err(MosooError::InvalidBootstrap(format!(
+            "trusted_head_slot ({}) cannot precede bootstrap_header.slot ({})",
+            args.trusted_head_slot, args.bootstrap_header.slot
+        )));
+    }
+    if args.trusted_head_slot > args.bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: args.bootstrap_header.slot,
+            current_slot: args.trusted_head_slot,
+        });
     }
 
     // Cryptographic validation: verify current_sync_committee branch against bootstrap_header.state_root
@@ -672,6 +684,11 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         proof_type_tag,
         binding,
     )?;
+
+    // Guard: Fail-closed architecture. If predicate does not hold, NEVER issue a statement.
+    if !statement.predicate_holds {
+        return Err(MosooError::PredicateFailed);
+    }
 
     Ok(InstructionOutput::StatementIssued(statement))
 }

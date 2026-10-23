@@ -237,7 +237,7 @@ fn test_mutation_attack_4_forged_committee_branch_rejected() {
         current_sync_committee_branch: corrupted_branch,
         initial_next_committee: None,
         initial_next_committee_branch: None,
-        trusted_head_slot: None,
+        trusted_head_slot: 10_000_000,
     });
     assert!(
         matches!(init_res, Err(MosooError::BootstrapCommitteeBranchInvalid)),
@@ -844,7 +844,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         current_sync_committee_branch: current_branch.clone(),
         initial_next_committee: Some(next_comm.clone()),
         initial_next_committee_branch: None, // Missing!
-        trusted_head_slot: None,
+        trusted_head_slot: 10_000_000,
     });
     assert!(matches!(
         res_no_branch,
@@ -860,7 +860,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         current_sync_committee_branch: current_branch.clone(),
         initial_next_committee: Some(next_comm),
         initial_next_committee_branch: Some(corrupted_next_branch),
-        trusted_head_slot: None,
+        trusted_head_slot: 10_000_000,
     });
     assert!(matches!(
         res_bad_branch,
@@ -875,7 +875,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         current_sync_committee_branch: current_branch,
         initial_next_committee: None,
         initial_next_committee_branch: None,
-        trusted_head_slot: None,
+        trusted_head_slot: 10_000_000,
     });
     assert!(matches!(res_clean, Ok(InstructionOutput::Initialized(_))));
 }
@@ -1611,5 +1611,132 @@ fn test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_pre
     assert!(
         matches!(res, Err(MosooError::Internal(msg)) if msg.contains("recursion depth exceeded")),
         "Deeply nested predicate must be rejected by recursion limiter"
+    );
+}
+
+/// Attack 23: Mandatory Weak-Subjectivity Checkpoint Freshness & Invariant Enforcement.
+///
+/// Proves that `trusted_head_slot` is mandatory (fail-closed) and that stale, missing/zero,
+/// preceding, and expired bootstrap checkpoints are strictly rejected.
+#[test]
+fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected() {
+    let committee = make_test_committee(512);
+    let leaf = hash_tree_root_sync_committee(&committee).unwrap();
+    let branch = vec![[0x55; 32]; 5];
+    let computed_root = compute_branch_root(leaf, &branch, 54);
+
+    let header = BeaconBlockHeader {
+        slot: 10_000_000,
+        proposer_index: 0,
+        parent_root: [0; 32],
+        state_root: computed_root,
+        body_root: [0; 32],
+    };
+
+    // Case 1: trusted_head_slot is 0 (missing/zero)
+    let err_zero = handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header.clone(),
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 0,
+    })
+    .expect_err("Zero trusted_head_slot MUST be rejected");
+    assert!(matches!(err_zero, MosooError::InvalidBootstrap(msg) if msg.contains("mandatory")));
+
+    // Case 2: trusted_head_slot precedes bootstrap slot (inconsistent future bootstrap)
+    let err_precede = handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header.clone(),
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 9_999_999, // < 10_000_000
+    })
+    .expect_err("Preceding trusted_head_slot MUST be rejected");
+    assert!(
+        matches!(err_precede, MosooError::InvalidBootstrap(msg) if msg.contains("cannot precede"))
+    );
+
+    // Case 3: trusted_head_slot is past weak subjectivity window (> 1,728,000 slots)
+    let err_expired = handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_000_000 + 1_728_001,
+    })
+    .expect_err("Stale bootstrap past weak subjectivity MUST be rejected");
+    assert!(matches!(
+        err_expired,
+        MosooError::WeakSubjectivityExpired { .. }
+    ));
+}
+
+/// Attack 24: False Predicate Fails Closed (No StatementIssued Output).
+///
+/// Proves that `handle_attest_state` returns `Err(MosooError::PredicateFailed)` when a predicate
+/// condition evaluates to false over verified Ethereum state, and NEVER generates a StatementIssued output.
+#[test]
+fn test_security_audit_attack_24_false_predicate_fails_closed() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100,
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 100,
+        initialized: true,
+    };
+
+    let header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 100,
+        beacon_block_root: [0x11; 32],
+        execution_block_hash: [0x33; 32],
+        execution_state_root: [0x44; 32],
+        receipts_root: [0x55; 32],
+    };
+
+    let user_addr = alloy_primitives::Address::repeat_byte(0x42);
+    let balance = alloy_primitives::U256::from(100u64);
+    let (state_root, proof_nodes, account_rlp) =
+        mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(user_addr, balance);
+
+    let mut valid_header = header;
+    valid_header.execution_state_root = state_root.0;
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance { address: user_addr },
+        account_proof: proof_nodes,
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: Some(account_rlp),
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    // Predicate requires at least 250 wei (actual is 100 wei) -> MUST FAIL
+    let mut min_req = [0u8; 32];
+    min_req[31] = 250;
+    let failing_predicate = Predicate::AtLeast { min: min_req };
+
+    let res = handle_attest_state(AttestStateArgs {
+        instance,
+        header: valid_header,
+        header_history_branch: None,
+        proof,
+        predicate: failing_predicate,
+    });
+
+    assert!(
+        matches!(res, Err(MosooError::PredicateFailed)),
+        "handle_attest_state MUST fail-closed with MosooError::PredicateFailed on unsatisfied condition"
     );
 }

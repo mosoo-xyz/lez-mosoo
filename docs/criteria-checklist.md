@@ -57,13 +57,13 @@ All 12 adversarial attack classes are covered by automated integration tests (`t
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **120 automated tests** passing with 0 warnings:
+The repository test suite consists of **138 automated tests** (135 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
-| **Core Verification & Crypto** | `mosoo-core/src/` | 32 (31 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding |
-| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 12 | 12 explicit attack scenarios tested against guest handlers |
-| **Light Client Suite** | `tests/light_client_tests.rs` | 16 | Canonical Period 1884 vector, bootstrap, multi-network domains |
+| **Core Verification & Crypto** | `mosoo-core/src/` | 33 (32 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding |
+| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 24 | 24 explicit attack scenarios tested against guest handlers |
+| **Light Client Suite** | `tests/light_client_tests.rs` | 21 | Canonical Period 1884 vector, bootstrap, multi-network domains |
 | **LEZ v0.4 Acceptance Suite** | `tests/lez_v04_acceptance_tests.rs` | 4 | Single-tx gas envelopes (<=10M), PDA seeds, CPI dispatch, Core proxy routing |
 | **Privacy & Zero-Correlation** | `tests/privacy_and_correlation_tests.rs` | 5 | Address shielding, unlinkability, byte-level state-diff inspection |
 | **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 20 (19 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, replay rejection, parameter checks |
@@ -73,12 +73,13 @@ The repository test suite consists of **120 automated tests** passing with 0 war
 | **Daemon Operational Suite** | `daemon/src/main.rs` | 6 | Beacon parsing, randomized jitter, competing-update recovery, proxy URL derivations |
 | **CLI Suite** | `cli/src/main.rs` | 1 | CLI argument parser and test vector loading |
 | **Evidence Verification Script** | `scripts/verify-evidence.py` | 1 script (12 checks) | Verifies committed sequencer harness execution manifests and tx receipts |
+| **Live Testnet Verifier Script** | `scripts/verify-onchain.py` | 1 script (3 checks) | Verifies live testnet sequencer blocks, gas engine, and 10M limit |
 
 ---
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, dual reference consumers with atomic same-transaction verification, 120 passing tests, reproducibility scripts, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, dual reference consumers with atomic same-transaction verification, 138 passing tests, reproducibility scripts, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.

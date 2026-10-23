@@ -50,6 +50,22 @@ pub fn evaluate(
     })
 }
 
+/// Evaluate a `Predicate` over a `VerifiedValue` and produce a `VerifiedStatement`.
+/// Fails with `MosooError::PredicateFailed` if the condition does not hold.
+pub fn evaluate_checked(
+    predicate: &Predicate,
+    value: &VerifiedValue,
+    chain_id: u64,
+    subject_key: [u8; 32],
+    proof_type_tag: u8,
+) -> Result<VerifiedStatement, MosooError> {
+    let stmt = evaluate(predicate, value, chain_id, subject_key, proof_type_tag)?;
+    if !stmt.predicate_holds {
+        return Err(MosooError::PredicateFailed);
+    }
+    Ok(stmt)
+}
+
 /// Evaluate a `Predicate` over a `VerifiedValue` with an explicit canonical provenance `StatementBinding`.
 pub fn evaluate_with_binding(
     predicate: &Predicate,
