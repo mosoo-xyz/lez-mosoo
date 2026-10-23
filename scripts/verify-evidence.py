@@ -28,7 +28,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Verify Mosoo execution evidence manifest against LEZ v0.4 Sequencer Harness."
     )
-    default_manifest = os.path.join("evidence", "sequencer-harness-v04", "run.tsv")
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    default_manifest = os.path.join(repo_root, "evidence", "sequencer-harness-v04", "run.tsv")
 
     parser.add_argument(
         "--manifest",
@@ -39,8 +40,12 @@ def main():
 
     manifest_path = args.manifest
     if not os.path.exists(manifest_path):
-        print(f"[!] Error: Manifest file not found at {manifest_path}", file=sys.stderr)
-        sys.exit(1)
+        candidate = os.path.join(repo_root, manifest_path)
+        if os.path.exists(candidate):
+            manifest_path = candidate
+        else:
+            print(f"[!] Error: Manifest file not found at {manifest_path}", file=sys.stderr)
+            sys.exit(1)
 
     print("=" * 80)
     print("Mosoo RFP-021 In-Memory Sequencer Harness Verifier (Milestone M0)")
@@ -108,6 +113,7 @@ def main():
     try:
         proc = subprocess.run(
             cargo_cmd,
+            cwd=repo_root,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
