@@ -66,9 +66,22 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         ));
     }
 
-    // Cryptographic validation: verify current_sync_committee branch against bootstrap_header.state_root.
+    // Weak subjectivity freshness guard: if trusted_head_slot is provided,
+    // bootstrap checkpoint must be within the 1,728,000 slot weak-subjectivity threshold (~14 days).
+    const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
+    if let Some(head_slot) = args.trusted_head_slot {
+        if head_slot > args.bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
+            return Err(MosooError::WeakSubjectivityExpired {
+                update_slot: args.bootstrap_header.slot,
+                current_slot: head_slot,
+            });
+        }
+    }
+
+    // Cryptographic validation: verify current_sync_committee branch against bootstrap_header.state_root
+    // using fork-aware SSZ generalized index (54 for Altair/Deneb, 86 for Electra/Fulu, 2945 for Gloas).
     let committee_leaf = crypto::hash_tree_root_sync_committee(&args.current_sync_committee)?;
-    let gindex: u64 = 54;
+    let gindex = crypto::current_sync_committee_gindex(args.chain_id, args.bootstrap_header.slot);
     let computed_root = crypto::compute_branch_root_checked(
         committee_leaf,
         &args.current_sync_committee_branch,
@@ -79,7 +92,7 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         return Err(MosooError::BootstrapCommitteeBranchInvalid);
     }
 
-    // Cryptographic validation: verify initial_next_committee branch against bootstrap_header.state_root if provided (gindex 55).
+    // Cryptographic validation: verify initial_next_committee branch against bootstrap_header.state_root if provided.
     if let Some(ref next_comm) = args.initial_next_committee {
         if next_comm.pubkeys.len() != 512 {
             return Err(MosooError::Internal(
@@ -91,7 +104,9 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
             .as_ref()
             .ok_or(MosooError::BootstrapNextCommitteeBranchInvalid)?;
         let next_leaf = crypto::hash_tree_root_sync_committee(next_comm)?;
-        let computed_next = crypto::compute_branch_root_checked(next_leaf, branch, 55)?;
+        let next_gindex =
+            crypto::next_sync_committee_gindex(args.chain_id, args.bootstrap_header.slot);
+        let computed_next = crypto::compute_branch_root_checked(next_leaf, branch, next_gindex)?;
         if computed_next != args.bootstrap_header.state_root {
             return Err(MosooError::BootstrapNextCommitteeBranchInvalid);
         }
@@ -109,6 +124,58 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         bootstrap_slot: args.bootstrap_header.slot,
         initialized: true,
     };
+
+    Ok(InstructionOutput::Initialized(instance))
+}
+
+/// Recovers a light client instance that has stalled beyond the weak-subjectivity window (>1,728,000 slots).
+/// Re-anchors the instance to an authenticated contemporary checkpoint after network recovery.
+pub fn handle_recover_instance(
+    args: crate::types::RecoverInstanceArgs,
+) -> Result<InstructionOutput, MosooError> {
+    let mut instance = args.instance;
+    if !instance.initialized {
+        return Err(MosooError::NotInitialized);
+    }
+    const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
+    // Guard: recovery is only permitted if the instance has stalled past the weak-subjectivity threshold
+    if args.current_network_slot <= instance.current_slot + WEAK_SUBJECTIVITY_SLOTS {
+        return Err(MosooError::Internal(
+            "instance is not stale; normal incremental updates must be used".into(),
+        ));
+    }
+    // Verify the new bootstrap checkpoint
+    let committee_leaf = crypto::hash_tree_root_sync_committee(&args.new_sync_committee)?;
+    let gindex =
+        crypto::current_sync_committee_gindex(instance.chain_id, args.new_bootstrap_header.slot);
+    let computed_root = crypto::compute_branch_root_checked(
+        committee_leaf,
+        &args.new_sync_committee_branch,
+        gindex,
+    )?;
+    if computed_root != args.new_bootstrap_header.state_root {
+        return Err(MosooError::BootstrapCommitteeBranchInvalid);
+    }
+
+    if let Some(ref next_comm) = args.initial_next_committee {
+        let branch = args
+            .initial_next_committee_branch
+            .as_ref()
+            .ok_or(MosooError::BootstrapNextCommitteeBranchInvalid)?;
+        let next_leaf = crypto::hash_tree_root_sync_committee(next_comm)?;
+        let next_gindex =
+            crypto::next_sync_committee_gindex(instance.chain_id, args.new_bootstrap_header.slot);
+        let computed_next = crypto::compute_branch_root_checked(next_leaf, branch, next_gindex)?;
+        if computed_next != args.new_bootstrap_header.state_root {
+            return Err(MosooError::BootstrapNextCommitteeBranchInvalid);
+        }
+    }
+
+    instance.current_header_hash = crypto::hash_tree_root_beacon_header(&args.new_bootstrap_header);
+    instance.current_state_root = args.new_bootstrap_header.state_root;
+    instance.current_slot = args.new_bootstrap_header.slot;
+    instance.current_sync_committee = args.new_sync_committee;
+    instance.next_sync_committee = args.initial_next_committee;
 
     Ok(InstructionOutput::Initialized(instance))
 }
@@ -307,6 +374,7 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
 
     // Verify finality branch: finalized_header is in attested_header's state.
     verify_finality_branch(
+        instance.chain_id,
         &update.finalized_header,
         &update.attested_header,
         &update.finality_branch,
@@ -328,17 +396,22 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
         instance.current_sync_committee = next;
     }
 
-    // If this update provides the next sync committee (gindex 55), verify its branch and cache it for the next handoff.
+    // If this update provides the next sync committee, verify its branch and cache it for the next handoff.
     if let Some(ref next_committee) = update.next_sync_committee {
         let branch = update
             .next_sync_committee_branch
             .as_ref()
             .ok_or(MosooError::MissingCommitteeBranch)?;
-        verify_sync_committee_branch(next_committee, &update.attested_header, branch)?;
+        verify_sync_committee_branch(
+            instance.chain_id,
+            next_committee,
+            &update.attested_header,
+            branch,
+        )?;
         instance.next_sync_committee = Some(next_committee.clone());
     }
 
-    // Verify execution payload branch (mandatory on post-merge Ethereum; generalized index 25 in BeaconBlockBody).
+    // Verify execution payload branch.
     let payload_header = update
         .execution_payload_header
         .as_ref()
@@ -348,7 +421,12 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
         .as_ref()
         .ok_or(MosooError::MissingExecutionPayloadBranch)?;
 
-    verify_execution_payload_branch(payload_header, &update.finalized_header, branch)?;
+    verify_execution_payload_branch(
+        instance.chain_id,
+        payload_header,
+        &update.finalized_header,
+        branch,
+    )?;
     let execution_block_hash = payload_header.block_hash;
     let execution_state_root = payload_header.state_root;
     let receipts_root = payload_header.receipts_root;
@@ -398,15 +476,17 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
     } else {
         // Historical block root authentication:
         // In Ethereum consensus specs, BeaconState contains `block_roots: Vector[Root, 8192]`.
-        // Field index of block_roots in BeaconState container = 5 (gindex = 32 + 5 = 37).
+        // Field index of block_roots is 5 (gindex prefix 37 in Altair..Deneb, 69 in Electra..Fulu).
         // Each leaf within block_roots has index = slot % 8192.
-        // Full generalized index in BeaconState = (37 << 13) | (slot % 8192).
-        // Depth = 5 + 13 = 18.
         let branch = args
             .header_history_branch
             .as_ref()
             .ok_or(MosooError::UnauthenticatedHeaderRecord)?;
-        let gindex: u64 = (37u64 << 13) | (args.header.slot % 8192);
+        let gindex = crypto::historical_block_roots_gindex(
+            args.instance.chain_id,
+            args.instance.current_slot,
+            args.header.slot,
+        );
         let computed_state_root =
             crypto::compute_branch_root_checked(args.header.beacon_block_root, branch, gindex)?;
         if computed_state_root != args.instance.current_state_root {
@@ -476,6 +556,48 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
                 },
             )
         }
+        inclusion::ProofTarget::Erc20Transfer {
+            token_contract,
+            sender,
+            recipient,
+            ..
+        } => {
+            let mut tc = [0u8; 20];
+            tc.copy_from_slice(token_contract.as_slice());
+            let mut snd = [0u8; 20];
+            snd.copy_from_slice(sender.as_slice());
+            let key = predicate::derive_erc20_transfer_subject_key(&tc, &snd, recipient);
+            (
+                key,
+                crate::types::PROOF_TYPE_ERC20_TRANSFER,
+                crate::types::StatementBinding::Erc20Transfer {
+                    token_contract: tc,
+                    sender: snd,
+                    recipient: *recipient,
+                },
+            )
+        }
+        inclusion::ProofTarget::NativeEthDeposit {
+            deposit_contract,
+            sender,
+            recipient,
+            ..
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            let mut snd = [0u8; 20];
+            snd.copy_from_slice(sender.as_slice());
+            let key = predicate::derive_eth_deposit_subject_key(&dc, &snd, recipient);
+            (
+                key,
+                crate::types::PROOF_TYPE_ETH_DEPOSIT,
+                crate::types::StatementBinding::NativeEthDeposit {
+                    deposit_contract: dc,
+                    sender: snd,
+                    recipient: *recipient,
+                },
+            )
+        }
     };
     let statement = predicate::evaluate_with_binding(
         &args.predicate,
@@ -490,15 +612,15 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
 }
 
 /// Verify that `finalized_header` appears in the `attested_header` state trie
-/// at the known generalized index for the finalized checkpoint.
+/// at the fork's generalized index for the finalized checkpoint.
 pub fn verify_finality_branch(
+    chain_id: u64,
     finalized: &BeaconBlockHeader,
     attested: &BeaconBlockHeader,
     branch: &[[u8; 32]],
 ) -> Result<(), MosooError> {
     let leaf = crypto::hash_tree_root_beacon_header(finalized);
-    // Generalized index for finalized_checkpoint.root in BeaconState = 105 (depth 6)
-    let gindex: u64 = 105;
+    let gindex = crypto::finalized_root_gindex(chain_id, attested.slot);
     let root = crypto::compute_branch_root_checked(leaf, branch, gindex)?;
 
     if root != attested.state_root {
@@ -509,14 +631,14 @@ pub fn verify_finality_branch(
 
 /// Verify that `committee` appears in the `attested_header` state trie.
 pub fn verify_sync_committee_branch(
+    chain_id: u64,
     committee: &SyncCommittee,
     attested: &BeaconBlockHeader,
     branch: &[[u8; 32]],
 ) -> Result<(), MosooError> {
     // Spec-compliant SSZ hash-tree-root of the SyncCommittee struct.
     let leaf = crypto::hash_tree_root_sync_committee(committee)?;
-    // Generalized index for next_sync_committee in BeaconState = 55 (depth 5)
-    let gindex: u64 = 55;
+    let gindex = crypto::next_sync_committee_gindex(chain_id, attested.slot);
     let root = crypto::compute_branch_root_checked(leaf, branch, gindex)?;
 
     if root != attested.state_root {
@@ -525,15 +647,19 @@ pub fn verify_sync_committee_branch(
     Ok(())
 }
 
-/// Verify that `payload_header` appears in the `finalized_header` body at generalized index 25.
+/// Verify that `payload_header` appears in the `finalized_header` body at the fork's generalized index.
 pub fn verify_execution_payload_branch(
+    chain_id: u64,
     payload: &ExecutionPayloadHeader,
     finalized: &BeaconBlockHeader,
     branch: &[[u8; 32]],
 ) -> Result<(), MosooError> {
-    let leaf = crypto::hash_tree_root_execution_payload_header(payload)?;
-    // Generalized index for execution_payload in BeaconBlockBody = 25 (depth 4)
-    let gindex: u64 = 25;
+    let gindex = crypto::execution_proof_gindex(chain_id, finalized.slot);
+    let leaf = if gindex == crypto::EXECUTION_BLOCK_HASH_GINDEX_GLOAS {
+        payload.block_hash
+    } else {
+        crypto::hash_tree_root_execution_payload_header(payload)?
+    };
     let root = crypto::compute_branch_root_checked(leaf, branch, gindex)?;
 
     if root != finalized.body_root {

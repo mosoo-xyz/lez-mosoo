@@ -200,7 +200,7 @@ fn test_mutation_attack_4_forged_committee_branch_rejected() {
     corrupted_branch[2][0] ^= 0xFF;
 
     let attested_header = BeaconBlockHeader {
-        slot: 12_000_000,
+        slot: 10_000_000,
         proposer_index: 42,
         parent_root: [0; 32],
         state_root: genuine_state_root,
@@ -208,7 +208,12 @@ fn test_mutation_attack_4_forged_committee_branch_rejected() {
     };
 
     // 1. Invoking verify_sync_committee_branch directly on corrupted branch MUST fail with typed error
-    let res = verify_sync_committee_branch(&committee, &attested_header, &corrupted_branch);
+    let res = verify_sync_committee_branch(
+        ETH_MAINNET_CHAIN_ID,
+        &committee,
+        &attested_header,
+        &corrupted_branch,
+    );
     assert!(
         matches!(res, Err(MosooError::SyncCommitteeBranchInvalid)),
         "Corrupted sync committee branch MUST be rejected with MosooError::SyncCommitteeBranchInvalid"
@@ -229,6 +234,7 @@ fn test_mutation_attack_4_forged_committee_branch_rejected() {
         current_sync_committee_branch: corrupted_branch,
         initial_next_committee: None,
         initial_next_committee_branch: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(init_res, Err(MosooError::BootstrapCommitteeBranchInvalid)),
@@ -276,8 +282,12 @@ fn test_mutation_attack_5_tampered_execution_payload_rejected() {
     // Scenario A: Attacker mutates execution state_root (forged execution payload header)
     let mut tampered_header = legitimate_exec_header.clone();
     tampered_header.state_root = [0x99; 32]; // Forged root!
-    let res_tampered =
-        verify_execution_payload_branch(&tampered_header, &finalized_header, &branch);
+    let res_tampered = verify_execution_payload_branch(
+        ETH_MAINNET_CHAIN_ID,
+        &tampered_header,
+        &finalized_header,
+        &branch,
+    );
     assert!(
         matches!(res_tampered, Err(MosooError::ExecutionPayloadBranchInvalid)),
         "verify_execution_payload_branch MUST reject tampered execution header with MosooError::ExecutionPayloadBranchInvalid"
@@ -287,6 +297,7 @@ fn test_mutation_attack_5_tampered_execution_payload_rejected() {
     let mut corrupted_branch = branch;
     corrupted_branch[0][15] ^= 0xEE;
     let res_corrupted_branch = verify_execution_payload_branch(
+        ETH_MAINNET_CHAIN_ID,
         &legitimate_exec_header,
         &finalized_header,
         &corrupted_branch,
@@ -830,6 +841,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         current_sync_committee_branch: current_branch.clone(),
         initial_next_committee: Some(next_comm.clone()),
         initial_next_committee_branch: None, // Missing!
+        trusted_head_slot: None,
     });
     assert!(matches!(
         res_no_branch,
@@ -845,6 +857,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         current_sync_committee_branch: current_branch.clone(),
         initial_next_committee: Some(next_comm),
         initial_next_committee_branch: Some(corrupted_next_branch),
+        trusted_head_slot: None,
     });
     assert!(matches!(
         res_bad_branch,
@@ -859,6 +872,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         current_sync_committee_branch: current_branch,
         initial_next_committee: None,
         initial_next_committee_branch: None,
+        trusted_head_slot: None,
     });
     assert!(matches!(res_clean, Ok(InstructionOutput::Initialized(_))));
 }
@@ -873,9 +887,18 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
     let current_slot = 15_433_728u64;
     let historical_beacon_root = [0x77; 32];
 
-    let gindex: u64 = (37u64 << 13) | (historical_slot % 8192);
-    // Generalized index (37 << 13) has depth 18 (5 + 13)
-    let branch = vec![[0x88; 32]; 18];
+    let gindex = mosoo_core::crypto::historical_block_roots_gindex(
+        ETH_MAINNET_CHAIN_ID,
+        current_slot,
+        historical_slot,
+    );
+    // Fork-aware generalized index: prefix 69 in Electra/Fulu has depth 19 (6 + 13)
+    let depth = (63 - gindex.leading_zeros()) as usize;
+    assert_eq!(
+        depth, 19,
+        "Fulu/Electra block_roots branch depth must be 19"
+    );
+    let branch = vec![[0x88; 32]; depth];
     let expected_state_root = compute_branch_root(historical_beacon_root, &branch, gindex);
 
     let instance = InstanceAccount {
@@ -954,7 +977,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         "Tampered historical root must be rejected with UnauthenticatedHeaderRecord"
     );
 
-    // Malformed branch depth (17 instead of 18) MUST be rejected with InvalidProofBranchDepth
+    // Malformed branch depth (17 instead of expected depth 19 for Fulu) MUST be rejected with InvalidProofBranchDepth
     let malformed_branch = vec![[0x88; 32]; 17];
     let malformed_res = handle_attest_state(AttestStateArgs {
         instance,
@@ -968,7 +991,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
             malformed_res,
             Err(MosooError::InvalidProofBranchDepth {
                 actual: 17,
-                expected: 18
+                expected: 19
             })
         ),
         "Malformed branch depth must be rejected with InvalidProofBranchDepth"

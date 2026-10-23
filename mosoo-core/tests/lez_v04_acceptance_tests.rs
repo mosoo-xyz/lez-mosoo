@@ -12,11 +12,13 @@
 
 use erc20_receiver::{claim_erc20_transfer, Erc20TransferClaim, NullifierSet};
 use ether_receiver::{claim_native_eth_deposit, EtherNullifierSet, NativeEthDepositClaim};
-use mosoo_core::predicate::{derive_erc20_transfer_subject_key, derive_eth_deposit_subject_key};
+use mosoo_core::inclusion::{test_helpers, ProofTarget, StateProof};
 use mosoo_core::types::{
-    StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ERC20_TRANSFER, PROOF_TYPE_ETH_DEPOSIT,
+    AttestStateArgs, HeaderRecord, InstanceAccount, InstructionOutput, Predicate, StatementBinding,
+    SyncCommittee, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_TRANSFER,
+    PROOF_TYPE_ETH_DEPOSIT,
 };
+use mosoo_core::verifier::handle_attest_state;
 use sha2::{Digest, Sha256};
 
 /// Maximum allowable gas per single transaction on Logos Execution Zone v0.4.
@@ -119,24 +121,84 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     let sender = [0x33; 20];
     let recipient = [0x44; 32];
 
-    // 1. Deliver ERC-20 transfer claim
-    let mut erc20_val = [0u8; 32];
-    erc20_val[24..32].copy_from_slice(&250_000u64.to_be_bytes());
-    let erc20_subject_key = derive_erc20_transfer_subject_key(&token_contract, &sender, &recipient);
-    let erc20_stmt = VerifiedStatement {
+    let instance = InstanceAccount {
         chain_id: ETH_MAINNET_CHAIN_ID,
-        attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0xa1; 32],
-        predicate_holds: true,
-        verified_value: erc20_val,
-        subject_key: erc20_subject_key,
-        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
-        binding: StatementBinding::Erc20Transfer {
+        current_header_hash: [0xaa; 32],
+        current_state_root: [0xdd; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: SyncCommittee {
+            pubkeys: vec![vec![0x80; 48]; 512],
+            aggregate_pubkey: vec![0x80; 48],
+        },
+        next_sync_committee: None,
+        bootstrap_slot: 10_000_000,
+        initialized: true,
+    };
+
+    // 1. Deliver ERC-20 transfer claim derived directly from verified receipt trie proof
+    let tok_addr = alloy_primitives::Address::from_slice(&token_contract);
+    let snd_addr = alloy_primitives::Address::from_slice(&sender);
+    let rec_addr = alloy_primitives::Address::from_slice(&recipient[12..32]);
+    let erc20_amount = 250_000u64;
+
+    let erc20_receipt_bytes = test_helpers::build_test_eip1559_transfer_receipt(
+        tok_addr,
+        snd_addr,
+        rec_addr,
+        alloy_primitives::U256::from(erc20_amount),
+    );
+    let key_bytes = alloy_rlp::encode(0u64);
+    let (erc20_receipts_root, erc20_proof_nodes) =
+        test_helpers::build_leaf_mpt_proof(&key_bytes, &erc20_receipt_bytes);
+
+    let erc20_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0xaa; 32],
+        execution_block_hash: [0xbb; 32],
+        execution_state_root: [0xcc; 32],
+        receipts_root: erc20_receipts_root.0,
+    };
+
+    let erc20_proof = StateProof {
+        target: ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract: tok_addr,
+            sender: snd_addr,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(erc20_proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(erc20_receipt_bytes),
+    };
+
+    let erc20_out = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: erc20_header,
+        header_history_branch: None,
+        proof: erc20_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    })
+    .expect("Attest ERC-20 transfer state must succeed");
+
+    let erc20_stmt = match erc20_out {
+        InstructionOutput::StatementIssued(stmt) => stmt,
+        _ => panic!("Expected StatementIssued"),
+    };
+
+    assert_eq!(erc20_stmt.proof_type_tag, PROOF_TYPE_ERC20_TRANSFER);
+    assert_eq!(
+        erc20_stmt.binding,
+        StatementBinding::Erc20Transfer {
             token_contract,
             sender,
             recipient,
-        },
-    };
+        }
+    );
 
     let erc20_claim = Erc20TransferClaim {
         statement: erc20_stmt,
@@ -147,26 +209,69 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     };
     let minted = claim_erc20_transfer(&erc20_claim, &mut erc20_nullifiers)
         .expect("LEZ v0.4 ERC-20 settlement must succeed");
-    assert_eq!(minted, 250_000);
+    assert_eq!(minted, erc20_amount);
 
-    // 2. Deliver Native ETH deposit claim
-    let mut eth_val = [0u8; 32];
-    eth_val[24..32].copy_from_slice(&5_000_000_000_000_000_000u64.to_be_bytes());
-    let eth_subject_key = derive_eth_deposit_subject_key(&deposit_contract, &sender, &recipient);
-    let eth_stmt = VerifiedStatement {
+    // 2. Deliver Native ETH deposit claim derived directly from verified receipt trie proof
+    let dep_addr = alloy_primitives::Address::from_slice(&deposit_contract);
+    let eth_amount = 5_000_000_000_000_000_000u64;
+
+    let eth_receipt_bytes = test_helpers::build_test_eip1559_deposit_receipt(
+        dep_addr,
+        snd_addr,
+        recipient,
+        alloy_primitives::U256::from(eth_amount),
+    );
+    let (eth_receipts_root, eth_proof_nodes) =
+        test_helpers::build_leaf_mpt_proof(&key_bytes, &eth_receipt_bytes);
+
+    let eth_header = HeaderRecord {
         chain_id: ETH_MAINNET_CHAIN_ID,
-        attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0xb2; 32],
-        predicate_holds: true,
-        verified_value: eth_val,
-        subject_key: eth_subject_key,
-        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
-        binding: StatementBinding::NativeEthDeposit {
+        slot: 10_000_000,
+        beacon_block_root: [0xaa; 32],
+        execution_block_hash: [0xbb; 32],
+        execution_state_root: [0xcc; 32],
+        receipts_root: eth_receipts_root.0,
+    };
+
+    let eth_proof = StateProof {
+        target: ProofTarget::NativeEthDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: dep_addr,
+            sender: snd_addr,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(eth_proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(eth_receipt_bytes),
+    };
+
+    let eth_out = handle_attest_state(AttestStateArgs {
+        instance,
+        header: eth_header,
+        header_history_branch: None,
+        proof: eth_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    })
+    .expect("Attest Native ETH deposit state must succeed");
+
+    let eth_stmt = match eth_out {
+        InstructionOutput::StatementIssued(stmt) => stmt,
+        _ => panic!("Expected StatementIssued"),
+    };
+
+    assert_eq!(eth_stmt.proof_type_tag, PROOF_TYPE_ETH_DEPOSIT);
+    assert_eq!(
+        eth_stmt.binding,
+        StatementBinding::NativeEthDeposit {
             deposit_contract,
             sender,
             recipient,
-        },
-    };
+        }
+    );
 
     let eth_claim = NativeEthDepositClaim {
         statement: eth_stmt,
@@ -177,5 +282,5 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     };
     let credited = claim_native_eth_deposit(&eth_claim, &mut ether_nullifiers)
         .expect("LEZ v0.4 Native ETH deposit settlement must succeed");
-    assert_eq!(credited, 5_000_000_000_000_000_000);
+    assert_eq!(credited, eth_amount);
 }

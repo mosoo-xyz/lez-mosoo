@@ -143,6 +143,13 @@ pub struct InstanceAccount {
     pub initialized: bool,
 }
 
+impl InstanceAccount {
+    /// Returns true if the instance has stalled past Ethereum's weak-subjectivity window (1,728,000 slots / ~14 days).
+    pub fn is_stale(&self, network_slot: u64) -> bool {
+        network_slot > self.current_slot + 1_728_000
+    }
+}
+
 /// **Job Account** — tracks a pending 3-transaction BLS verification job.
 ///
 /// BLS verification is split across 3 transactions to stay under the LEZ
@@ -218,7 +225,7 @@ pub struct HeaderRecord {
 /// Arguments to bootstrap / initialize a Mosoo instance account.
 ///
 /// Cryptographically binds the initial 512-validator sync committee
-/// to the trusted beacon block header via an SSZ Merkle branch at generalized index 54.
+/// to the trusted beacon block header via an SSZ Merkle branch at the fork's generalized index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeArgs {
     pub chain_id: u64,
@@ -226,13 +233,29 @@ pub struct InitializeArgs {
     pub bootstrap_header: BeaconBlockHeader,
     /// Sync committee active at the bootstrap slot (512 BLS pubkeys).
     pub current_sync_committee: SyncCommittee,
-    /// SSZ Merkle branch proving `current_sync_committee` at generalized index 54 of `bootstrap_header.state_root`.
+    /// SSZ Merkle branch proving `current_sync_committee` at generalized index (54 for Altair/Deneb, 86 for Electra/Fulu, 2945 for Gloas).
     pub current_sync_committee_branch: Vec<[u8; 32]>,
     /// Optional next-period committee if already known at bootstrap.
     pub initial_next_committee: Option<SyncCommittee>,
-    /// SSZ Merkle branch proving `initial_next_committee` at generalized index 55 of `bootstrap_header.state_root`.
+    /// SSZ Merkle branch proving `initial_next_committee` at generalized index (55 for Altair/Deneb, 87 for Electra/Fulu, 2946 for Gloas).
     /// Required if `initial_next_committee` is provided.
     pub initial_next_committee_branch: Option<Vec<[u8; 32]>>,
+    /// Optional operator-attested trusted network head slot for enforcing weak subjectivity freshness.
+    #[serde(default)]
+    pub trusted_head_slot: Option<u64>,
+}
+
+/// Arguments to re-anchor a light client instance that has stalled beyond the weak-subjectivity window (>1,728,000 slots).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoverInstanceArgs {
+    pub instance: InstanceAccount,
+    pub new_bootstrap_header: BeaconBlockHeader,
+    pub new_sync_committee: SyncCommittee,
+    pub new_sync_committee_branch: Vec<[u8; 32]>,
+    pub initial_next_committee: Option<SyncCommittee>,
+    pub initial_next_committee_branch: Option<Vec<[u8; 32]>>,
+    /// Network head slot proving the existing instance has stalled past weak subjectivity (>1,728,000 slots).
+    pub current_network_slot: u64,
 }
 
 /// A condition a consumer program wants to evaluate over verified Ethereum state.
@@ -333,3 +356,5 @@ impl VerifiedStatement {
         u64::from_be_bytes(buf)
     }
 }
+
+pub use crate::verifier::{AttestStateArgs, InstructionOutput};

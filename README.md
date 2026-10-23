@@ -4,54 +4,68 @@
 [![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.78%2B-orange.svg)](https://www.rust-lang.org)
 
-Mosoo is a trustless Ethereum consensus and state attestation module running inside the RISC Zero zkVM on the Logos Execution Zone (LEZ), developed for [Logos RFP-021](https://github.com/logos-co/rfp).
+Mosoo is an Ethereum consensus light client and state attestation module for the Logos Execution Zone (LEZ), developed for [Logos RFP-021](https://github.com/logos-co/rfp).
 
-In two sentences: A LEZ module that verifies 512-validator Ethereum sync-committee aggregate signatures across a 3-transaction split, then proves Ethereum account balances, storage slots, and receipt logs inside the zkVM for consuming smart contracts. No signers, multi-sigs, or trusted relayers.
+It verifies 512-validator Ethereum sync-committee BLS aggregate signatures across a 3-transaction split to fit within LEZ's 10M gas cap, then proves Ethereum account balances, storage slots, and receipt logs inside the zkVM for consuming smart contracts without trusted signers or multisigs.
 
 ---
 
-## Quickstart (Verifiable from a Clean Clone)
+## Quickstart
 
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 120 automated unit and integration tests (0 failing, 0 warnings)
+# 1. Run all 125 unit and integration tests (0 failing, 0 warnings)
 cargo test --workspace
 
-# 2. Run the 12 adversarial mutation attack tests (rejection of fabricated headers, bad quorums, forged branches)
+# 2. Run the 12 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
-# 3. Run the simulated LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
+# 3. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
 cargo test --test sequencer_e2e_tests
 
-# 4. Run the strict offline sequencer harness evidence verification runner
+# 4. Verify offline sequencer harness evidence
 python3 scripts/verify-evidence.py
 
-# 5. Run cryptographic verification against canonical Ethereum Period 1884 test vectors
+# 5. Run verification against canonical Ethereum Period 1884 test vectors
 cargo run -p mosoo-cli -- demo --mode fixture
 
-# 6. Run empirical CPU crypto benchmarks (50 iterations)
+# 6. Run CPU crypto benchmarks
 cargo run -p mosoo-cli -- benchmarks
-
-# 7. Run the complete 11-step verification suite (build, tests, clippy, fmt, manifest checker)
-./scripts/verify_all.sh                                           # Linux / macOS
-powershell -ExecutionPolicy Bypass -File .\scripts\verify_all.ps1  # Windows
 ```
 
 A complete console execution log of this verification suite is committed at [`evidence/verify_all_output.txt`](evidence/verify_all_output.txt).
 
 ---
 
-## What is Built, and What is Not
+## Current Status: What is Built vs Future Milestones
 
-### What is Built Today (Milestone M0 Foundation)
+### Built and Tested Today (Milestone M0 Foundation)
 
-- **The Verification Core (`mosoo-core/`)**: Altair sync committee verification, 2/3 participation threshold check (minimum 342/512 signers), domain separation across Bellatrix, Capella, Deneb (32-leaf SSZ payload header), Electra, Fulu, and Gloas (Sepolia slot 7,077,888). Merkle-Patricia Trie account balance and EIP-2718 receipt log inclusion proofs via `alloy-trie`.
+- **Fork-Aware Consensus Verifier (`mosoo-core/src/verifier.rs`, `crypto.rs`)**:
+  Dynamic SSZ generalized indices matching official Ethereum consensus specifications:
+
+  | Proof Field | Altair / Deneb | Electra / Fulu | Gloas (ePBS) |
+  | :--- | :---: | :---: | :---: |
+  | Current sync committee | 54 | 86 | 2945 |
+  | Next sync committee | 55 | 87 | 2946 |
+  | Finalized checkpoint root | 105 | 169 | 735 |
+  | Execution payload / block hash | 25 | 25 | 2856 |
+  | Historical block roots prefix | 37 | 69 | 69 |
+
+  Enforces 2/3 participation threshold (>= 342/512 signers), BLS domain separation across chains and forks, and strict branch depth checks.
+
+- **Direct Consumer Fact Derivation (`mosoo-core/src/inclusion.rs`, `verifier.rs`)**:
+  `handle_attest_state` extracts transfer and deposit event parameters directly from verified MPT receipt proofs. Emits `StatementBinding::Erc20Transfer` (token, sender, recipient, amount) and `StatementBinding::NativeEthDeposit` (vault, sender, recipient, amount) directly into `VerifiedStatement` nullifiers. Consuming contracts verify bound parameters and derive mints directly from verified values.
+
+- **Weak-Subjectivity Bounds & Recovery**:
+  Enforces 1,728,000 slot (~14 day) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Provides `handle_recover_instance` to re-anchor stalled instances after consensus network partitions without breaking consumer compatibility.
+
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **120 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **125 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 
@@ -66,7 +80,7 @@ To ensure absolute transparency regarding what is functioning today versus what 
 
 | Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
 | :--- | :---: | :--- | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Production-Ready (120/120 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (125/125 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
 | **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | M0 (Delivered) | 12 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |

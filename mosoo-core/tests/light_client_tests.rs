@@ -764,3 +764,398 @@ fn test_multi_network_fork_version_isolation() {
     assert!(!is_supported_chain(999_999));
     assert!(!is_supported_chain(0));
 }
+
+/// Test 17: Fork-aware SSZ generalized indices across Ethereum forks (Altair, Electra, Fulu, Gloas).
+#[test]
+fn test_fork_aware_generalized_indices_spec_constants() {
+    // 1. Deneb (Mainnet slot 8,626,176)
+    let deneb_slot = 8_626_176u64;
+    assert_eq!(
+        current_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, deneb_slot),
+        54
+    );
+    assert_eq!(
+        next_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, deneb_slot),
+        55
+    );
+    assert_eq!(finalized_root_gindex(ETH_MAINNET_CHAIN_ID, deneb_slot), 105);
+    assert_eq!(execution_proof_gindex(ETH_MAINNET_CHAIN_ID, deneb_slot), 25);
+    assert_eq!(
+        historical_block_roots_gindex(ETH_MAINNET_CHAIN_ID, deneb_slot, 100),
+        (37 << 13) | 100
+    );
+
+    // 2. Electra (Mainnet slot 11,649,024)
+    let electra_slot = 11_649_024u64;
+    assert_eq!(
+        current_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, electra_slot),
+        86
+    );
+    assert_eq!(
+        next_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, electra_slot),
+        87
+    );
+    assert_eq!(
+        finalized_root_gindex(ETH_MAINNET_CHAIN_ID, electra_slot),
+        169
+    );
+    assert_eq!(
+        execution_proof_gindex(ETH_MAINNET_CHAIN_ID, electra_slot),
+        25
+    );
+    assert_eq!(
+        historical_block_roots_gindex(ETH_MAINNET_CHAIN_ID, electra_slot, 100),
+        (69 << 13) | 100
+    );
+
+    // 3. Fulu / Period 1884 (Mainnet slot 15,433,728)
+    let fulu_slot = 15_433_728u64;
+    assert_eq!(
+        current_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, fulu_slot),
+        86
+    );
+    assert_eq!(
+        next_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, fulu_slot),
+        87
+    );
+    assert_eq!(finalized_root_gindex(ETH_MAINNET_CHAIN_ID, fulu_slot), 169);
+    assert_eq!(execution_proof_gindex(ETH_MAINNET_CHAIN_ID, fulu_slot), 25);
+    assert_eq!(
+        historical_block_roots_gindex(ETH_MAINNET_CHAIN_ID, fulu_slot, 100),
+        (69 << 13) | 100
+    );
+
+    // 4. Sepolia Gloas (Sepolia slot 7,077,888)
+    let gloas_slot = 7_077_888u64;
+    assert_eq!(
+        current_sync_committee_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot),
+        2945
+    );
+    assert_eq!(
+        next_sync_committee_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot),
+        2946
+    );
+    assert_eq!(finalized_root_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot), 735);
+    assert_eq!(
+        execution_proof_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot),
+        2856
+    );
+}
+
+/// Test 18: Authentic Electra & Fulu branch verification and Altair depth mismatch rejection.
+#[test]
+fn test_electra_and_fulu_authentic_branch_verification_and_altair_rejection() {
+    let electra_slot = 12_000_000u64; // Electra era on Mainnet
+    let committee = make_dummy_committee(512);
+    let committee_leaf = hash_tree_root_sync_committee(&committee).unwrap();
+
+    // Electra next_sync_committee has gindex 87 (depth 6)
+    let branch_electra = vec![[0x33; 32]; 6];
+    let electra_state_root = compute_branch_root(committee_leaf, &branch_electra, 87);
+
+    let attested_header = BeaconBlockHeader {
+        slot: electra_slot,
+        proposer_index: 42,
+        parent_root: [0x11; 32],
+        state_root: electra_state_root,
+        body_root: [0x22; 32],
+    };
+
+    // Verification with authentic Electra depth-6 branch succeeds
+    let res = mosoo_core::verifier::verify_sync_committee_branch(
+        ETH_MAINNET_CHAIN_ID,
+        &committee,
+        &attested_header,
+        &branch_electra,
+    );
+    assert!(
+        res.is_ok(),
+        "Electra depth-6 branch verification must succeed"
+    );
+
+    // Adversarial: submitting an obsolete Altair depth-5 branch MUST fail with InvalidProofBranchDepth
+    let obsolete_altair_branch = vec![[0x33; 32]; 5];
+    let res_err = mosoo_core::verifier::verify_sync_committee_branch(
+        ETH_MAINNET_CHAIN_ID,
+        &committee,
+        &attested_header,
+        &obsolete_altair_branch,
+    );
+    assert!(
+        matches!(
+            res_err,
+            Err(MosooError::InvalidProofBranchDepth {
+                actual: 5,
+                expected: 6
+            })
+        ),
+        "Altair depth-5 branch on Electra must be rejected with InvalidProofBranchDepth"
+    );
+}
+
+/// Test 19: Sepolia Gloas execution block hash branch verification (gindex 2856).
+#[test]
+fn test_sepolia_gloas_execution_block_hash_branch_verification() {
+    let gloas_slot = 7_077_888u64; // Sepolia Gloas activation slot
+    let block_hash = [0x55; 32];
+
+    let payload = ExecutionPayloadHeader {
+        parent_hash: [0; 32],
+        fee_recipient: [0; 20],
+        state_root: [0; 32],
+        receipts_root: [0; 32],
+        logs_bloom: vec![],
+        prev_randao: [0; 32],
+        block_number: 6_000_000,
+        gas_limit: 30_000_000,
+        gas_used: 10_000_000,
+        timestamp: 1_728_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0; 32],
+        block_hash,
+        transactions_root: [0; 32],
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+    };
+
+    // Gloas execution proof has gindex 2856 (depth 11)
+    let branch = vec![[0x44; 32]; 11];
+    let genuine_body_root = compute_branch_root(block_hash, &branch, 2856);
+
+    let finalized_header = BeaconBlockHeader {
+        slot: gloas_slot,
+        proposer_index: 99,
+        parent_root: [0; 32],
+        state_root: [0; 32],
+        body_root: genuine_body_root,
+    };
+
+    // Verification with authentic Gloas depth-11 branch succeeds
+    let res = mosoo_core::verifier::verify_execution_payload_branch(
+        ETH_SEPOLIA_CHAIN_ID,
+        &payload,
+        &finalized_header,
+        &branch,
+    );
+    assert!(
+        res.is_ok(),
+        "Sepolia Gloas execution block hash verification must succeed"
+    );
+
+    // Adversarial: submitting an Altair depth-4 branch on Gloas fails with depth mismatch
+    let bad_depth_branch = vec![[0x44; 32]; 4];
+    let res_bad = mosoo_core::verifier::verify_execution_payload_branch(
+        ETH_SEPOLIA_CHAIN_ID,
+        &payload,
+        &finalized_header,
+        &bad_depth_branch,
+    );
+    assert!(matches!(
+        res_bad,
+        Err(MosooError::InvalidProofBranchDepth {
+            actual: 4,
+            expected: 11
+        })
+    ));
+}
+
+/// Test 20: Weak-subjectivity freshness bounds and stale instance recovery.
+#[test]
+fn test_weak_subjectivity_and_stale_instance_recovery() {
+    let committee = make_dummy_committee(512);
+    let leaf = hash_tree_root_sync_committee(&committee).unwrap();
+    let branch = vec![[0x11; 32]; 5]; // Altair/Deneb slot 1,000,000
+    let state_root = compute_branch_root(leaf, &branch, 54);
+
+    let bootstrap_header = BeaconBlockHeader {
+        slot: 1_000_000,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root,
+        body_root: [0; 32],
+    };
+
+    // 1. Stale bootstrap rejected: trusted network head slot is 3,000,000 (> 1,728,000 slots older)
+    let init_stale = mosoo_core::verifier::handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: bootstrap_header.clone(),
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: Some(3_000_000),
+    });
+    assert!(
+        matches!(
+            init_stale,
+            Err(MosooError::WeakSubjectivityExpired {
+                update_slot: 1_000_000,
+                current_slot: 3_000_000
+            })
+        ),
+        "Stale bootstrap checkpoint beyond weak subjectivity must be rejected"
+    );
+
+    // 2. Fresh bootstrap succeeds
+    let init_ok = mosoo_core::verifier::handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: bootstrap_header.clone(),
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: Some(1_050_000),
+    })
+    .unwrap();
+
+    let instance = match init_ok {
+        InstructionOutput::Initialized(inst) => inst,
+        _ => panic!("Expected Initialized output"),
+    };
+
+    // Instance stale detection
+    assert!(!instance.is_stale(1_500_000));
+    assert!(instance.is_stale(3_000_000));
+
+    // 3. Stale instance recovery: re-anchor to a fresh checkpoint
+    let new_slot = 3_000_000u64;
+    let new_root = compute_branch_root(leaf, &branch, 54);
+    let new_bootstrap_header = BeaconBlockHeader {
+        slot: new_slot,
+        proposer_index: 2,
+        parent_root: [0; 32],
+        state_root: new_root,
+        body_root: [0; 32],
+    };
+
+    let recover_ok = mosoo_core::verifier::handle_recover_instance(RecoverInstanceArgs {
+        instance: instance.clone(),
+        new_bootstrap_header: new_bootstrap_header.clone(),
+        new_sync_committee: committee.clone(),
+        new_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        current_network_slot: 3_000_000,
+    })
+    .unwrap();
+
+    let recovered_instance = match recover_ok {
+        InstructionOutput::Initialized(inst) => inst,
+        _ => panic!("Expected Initialized output"),
+    };
+    assert_eq!(recovered_instance.current_slot, new_slot);
+    assert_eq!(recovered_instance.current_state_root, new_root);
+}
+
+/// Test 21: End-to-end proof derivation directly feeding reference consumer settlement.
+#[test]
+fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
+    let token_contract = alloy_primitives::Address::repeat_byte(0x55);
+    let sender = alloy_primitives::Address::repeat_byte(0x12);
+    let mut recipient = [0u8; 32];
+    recipient[12..32].copy_from_slice(alloy_primitives::Address::repeat_byte(0x34).as_slice());
+    let amount_u64 = 750_000u64;
+    let amount = alloy_primitives::U256::from(amount_u64);
+
+    let receipt_bytes = mosoo_core::inclusion::test_helpers::build_test_eip1559_transfer_receipt(
+        token_contract,
+        sender,
+        alloy_primitives::Address::from_slice(&recipient[12..32]),
+        amount,
+    );
+    let key_bytes = alloy_rlp::encode(0u64);
+    let (receipts_root, proof_nodes) =
+        mosoo_core::inclusion::test_helpers::build_leaf_mpt_proof(&key_bytes, &receipt_bytes);
+
+    let header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0xaa; 32],
+        execution_block_hash: [0xbb; 32],
+        execution_state_root: [0xcc; 32],
+        receipts_root: receipts_root.0,
+    };
+
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0xaa; 32],
+        current_state_root: [0xdd; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_dummy_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 10_000_000,
+        initialized: true,
+    };
+
+    // 1. Submit proof to Mosoo attestation verifier
+    let proof = mosoo_core::inclusion::StateProof {
+        target: mosoo_core::inclusion::ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract,
+            sender,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_bytes),
+    };
+
+    let out = mosoo_core::verifier::handle_attest_state(AttestStateArgs {
+        instance,
+        header,
+        header_history_branch: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    })
+    .expect("handle_attest_state must succeed");
+
+    let statement = match out {
+        InstructionOutput::StatementIssued(stmt) => stmt,
+        _ => panic!("Expected StatementIssued"),
+    };
+
+    // Verify statement properties derived from proof
+    assert_eq!(statement.chain_id, ETH_MAINNET_CHAIN_ID);
+    assert_eq!(statement.proof_type_tag, PROOF_TYPE_ERC20_TRANSFER);
+    assert_eq!(statement.value_as_u64(), amount_u64);
+
+    let mut exp_token = [0u8; 20];
+    exp_token.copy_from_slice(token_contract.as_slice());
+    let mut exp_sender = [0u8; 20];
+    exp_sender.copy_from_slice(sender.as_slice());
+
+    assert_eq!(
+        statement.binding,
+        StatementBinding::Erc20Transfer {
+            token_contract: exp_token,
+            sender: exp_sender,
+            recipient,
+        }
+    );
+
+    // 2. Deliver verified statement directly to the reference consumer
+    let mut nullifiers = erc20_receiver::NullifierSet::new();
+    let claim = erc20_receiver::Erc20TransferClaim {
+        statement,
+        token_contract: exp_token,
+        sender: exp_sender,
+        recipient,
+        min_amount: 500_000,
+    };
+
+    let minted = erc20_receiver::claim_erc20_transfer(&claim, &mut nullifiers)
+        .expect("Consumer settlement from authentic statement must succeed");
+    assert_eq!(minted, amount_u64);
+
+    // Replay rejection
+    let replay_err = erc20_receiver::claim_erc20_transfer(&claim, &mut nullifiers);
+    assert!(matches!(
+        replay_err,
+        Err(erc20_receiver::ReceiverError::AlreadyClaimed)
+    ));
+}

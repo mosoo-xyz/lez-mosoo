@@ -213,6 +213,137 @@ pub fn fork_version(chain_id: u64, slot: u64) -> [u8; 4] {
     }
 }
 
+/// Ethereum consensus fork identifiers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum EthereumFork {
+    Phase0,
+    Altair,
+    Bellatrix,
+    Capella,
+    Deneb,
+    Electra,
+    Fulu,
+    Gloas,
+}
+
+/// Generalized indices defined by Ethereum consensus specifications.
+pub const CURRENT_SYNC_COMMITTEE_GINDEX_ALTAIR: u64 = 54;
+pub const CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA: u64 = 86;
+pub const CURRENT_SYNC_COMMITTEE_GINDEX_GLOAS: u64 = 2945;
+
+pub const NEXT_SYNC_COMMITTEE_GINDEX_ALTAIR: u64 = 55;
+pub const NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA: u64 = 87;
+pub const NEXT_SYNC_COMMITTEE_GINDEX_GLOAS: u64 = 2946;
+
+pub const FINALIZED_ROOT_GINDEX_ALTAIR: u64 = 105;
+pub const FINALIZED_ROOT_GINDEX_ELECTRA: u64 = 169;
+pub const FINALIZED_ROOT_GINDEX_GLOAS: u64 = 735;
+
+pub const EXECUTION_PAYLOAD_GINDEX_ALTAIR: u64 = 25;
+pub const EXECUTION_BLOCK_HASH_GINDEX_GLOAS: u64 = 2856;
+
+pub const BLOCK_ROOTS_GINDEX_PREFIX_ALTAIR: u64 = 37;
+pub const BLOCK_ROOTS_GINDEX_PREFIX_ELECTRA: u64 = 69;
+
+/// Returns the active Ethereum consensus fork for a given network and slot.
+pub fn ethereum_fork(chain_id: u64, slot: u64) -> EthereumFork {
+    match chain_id {
+        1 => {
+            if slot >= 13_164_544 {
+                EthereumFork::Fulu
+            } else if slot >= 11_649_024 {
+                EthereumFork::Electra
+            } else if slot >= 8_626_176 {
+                EthereumFork::Deneb
+            } else if slot >= 6_209_536 {
+                EthereumFork::Capella
+            } else if slot >= 4_677_632 {
+                EthereumFork::Bellatrix
+            } else if slot >= 2_375_680 {
+                EthereumFork::Altair
+            } else {
+                EthereumFork::Phase0
+            }
+        }
+        11_155_111 => {
+            if slot >= 7_077_888 {
+                EthereumFork::Gloas
+            } else if slot >= 6_189_056 {
+                EthereumFork::Electra
+            } else if slot >= 4_243_456 {
+                EthereumFork::Deneb
+            } else if slot >= 112_640 {
+                EthereumFork::Capella
+            } else {
+                EthereumFork::Altair
+            }
+        }
+        560_048 => {
+            if slot >= 786_432 {
+                EthereumFork::Gloas
+            } else {
+                EthereumFork::Fulu
+            }
+        }
+        17_000 => {
+            if slot >= 2_000_000 {
+                EthereumFork::Fulu
+            } else if slot >= 1_000_000 {
+                EthereumFork::Electra
+            } else {
+                EthereumFork::Deneb
+            }
+        }
+        _ => EthereumFork::Altair,
+    }
+}
+
+/// Returns the SSZ generalized index for `current_sync_committee` in `BeaconState`.
+pub fn current_sync_committee_gindex(chain_id: u64, slot: u64) -> u64 {
+    match ethereum_fork(chain_id, slot) {
+        EthereumFork::Gloas => CURRENT_SYNC_COMMITTEE_GINDEX_GLOAS,
+        EthereumFork::Electra | EthereumFork::Fulu => CURRENT_SYNC_COMMITTEE_GINDEX_ELECTRA,
+        _ => CURRENT_SYNC_COMMITTEE_GINDEX_ALTAIR,
+    }
+}
+
+/// Returns the SSZ generalized index for `next_sync_committee` in `BeaconState`.
+pub fn next_sync_committee_gindex(chain_id: u64, slot: u64) -> u64 {
+    match ethereum_fork(chain_id, slot) {
+        EthereumFork::Gloas => NEXT_SYNC_COMMITTEE_GINDEX_GLOAS,
+        EthereumFork::Electra | EthereumFork::Fulu => NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA,
+        _ => NEXT_SYNC_COMMITTEE_GINDEX_ALTAIR,
+    }
+}
+
+/// Returns the SSZ generalized index for `finalized_checkpoint.root` in `BeaconState`.
+pub fn finalized_root_gindex(chain_id: u64, slot: u64) -> u64 {
+    match ethereum_fork(chain_id, slot) {
+        EthereumFork::Gloas => FINALIZED_ROOT_GINDEX_GLOAS,
+        EthereumFork::Electra | EthereumFork::Fulu => FINALIZED_ROOT_GINDEX_ELECTRA,
+        _ => FINALIZED_ROOT_GINDEX_ALTAIR,
+    }
+}
+
+/// Returns the SSZ generalized index for execution proof in `BeaconBlockBody`.
+pub fn execution_proof_gindex(chain_id: u64, slot: u64) -> u64 {
+    match ethereum_fork(chain_id, slot) {
+        EthereumFork::Gloas => EXECUTION_BLOCK_HASH_GINDEX_GLOAS,
+        _ => EXECUTION_PAYLOAD_GINDEX_ALTAIR,
+    }
+}
+
+/// Returns the SSZ generalized index for `block_roots[slot % 8192]` in `BeaconState`.
+pub fn historical_block_roots_gindex(chain_id: u64, state_slot: u64, target_slot: u64) -> u64 {
+    let prefix = match ethereum_fork(chain_id, state_slot) {
+        EthereumFork::Gloas | EthereumFork::Electra | EthereumFork::Fulu => {
+            BLOCK_ROOTS_GINDEX_PREFIX_ELECTRA
+        }
+        _ => BLOCK_ROOTS_GINDEX_PREFIX_ALTAIR,
+    };
+    (prefix << 13) | (target_slot % 8192)
+}
+
 /// Returns true if the chain ID is an officially supported Ethereum network.
 pub fn is_supported_chain(chain_id: u64) -> bool {
     matches!(chain_id, 1 | 11_155_111 | 560_048 | 17_000)

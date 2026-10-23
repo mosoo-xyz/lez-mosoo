@@ -71,6 +71,24 @@ pub enum ProofTarget {
         emitter: Address,
         topic0: B256,
     },
+    /// Prove an ERC-20 Transfer event: Transfer(address from, address to, uint256 amount)
+    /// emitted by `token_contract`.
+    Erc20Transfer {
+        tx_index: u64,
+        log_index: usize,
+        token_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+    },
+    /// Prove a Native ETH deposit to a bridge vault contract:
+    /// Deposit(address sender, bytes32 recipient, uint256 amount) or Deposit(address sender, address recipient, uint256 amount).
+    NativeEthDeposit {
+        tx_index: u64,
+        log_index: usize,
+        deposit_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+    },
 }
 
 /// Standalone proof payload for verifying an Ethereum transaction receipt and its emitted event logs.
@@ -168,6 +186,132 @@ pub fn verify_state_proof(
             } else {
                 Ok(VerifiedValue::StorageValue([0u8; 32]))
             }
+        }
+        ProofTarget::Erc20Transfer {
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            let erc20_transfer_topic0 = B256::from(alloy_primitives::keccak256(
+                b"Transfer(address,address,uint256)",
+            ));
+            let r_proof = ReceiptLogProof {
+                tx_index: *tx_index,
+                log_index: *log_index,
+                expected_emitter: Some(*token_contract),
+                expected_topic0: Some(erc20_transfer_topic0),
+                receipt_proof: proof.receipt_proof.clone().ok_or_else(|| {
+                    MosooError::Internal("receipt_proof required for Erc20Transfer proof".into())
+                })?,
+                receipt_rlp: proof.receipt_value.clone().ok_or_else(|| {
+                    MosooError::Internal("receipt_value required for Erc20Transfer proof".into())
+                })?,
+            };
+            let verified_log = verify_receipt_log_proof(&r_proof, header)?;
+            if verified_log.topics.len() < 3 {
+                return Err(MosooError::RlpDecodeFailed(
+                    "ERC-20 Transfer log must have at least 3 topics (sig, from, to)".into(),
+                ));
+            }
+            let from_topic = verified_log.topics[1];
+            if &from_topic.0[12..32] != sender.as_slice() {
+                return Err(MosooError::Internal(
+                    "sender address mismatch in Transfer log".into(),
+                ));
+            }
+            let to_topic = verified_log.topics[2];
+            let matches_recipient = if to_topic.0 == *recipient {
+                true
+            } else if recipient[0..12] == [0u8; 12] {
+                to_topic.0[12..32] == recipient[12..32]
+            } else if to_topic.0[0..12] == [0u8; 12] {
+                to_topic.0[12..32] == recipient[12..32] || to_topic.0[12..32] == recipient[0..20]
+            } else {
+                false
+            };
+            if !matches_recipient {
+                return Err(MosooError::Internal(
+                    "recipient mismatch in Transfer log".into(),
+                ));
+            }
+            if verified_log.data.is_empty() {
+                return Err(MosooError::Internal(
+                    "missing transfer amount in log data".into(),
+                ));
+            }
+            Ok(VerifiedValue::LogData(verified_log.data))
+        }
+        ProofTarget::NativeEthDeposit {
+            tx_index,
+            log_index,
+            deposit_contract,
+            sender,
+            recipient,
+        } => {
+            let deposit_topic0_bytes32 = B256::from(alloy_primitives::keccak256(
+                b"Deposit(address,bytes32,uint256)",
+            ));
+            let deposit_topic0_addr = B256::from(alloy_primitives::keccak256(
+                b"Deposit(address,address,uint256)",
+            ));
+            let r_proof = ReceiptLogProof {
+                tx_index: *tx_index,
+                log_index: *log_index,
+                expected_emitter: Some(*deposit_contract),
+                expected_topic0: None,
+                receipt_proof: proof.receipt_proof.clone().ok_or_else(|| {
+                    MosooError::Internal("receipt_proof required for NativeEthDeposit proof".into())
+                })?,
+                receipt_rlp: proof.receipt_value.clone().ok_or_else(|| {
+                    MosooError::Internal("receipt_value required for NativeEthDeposit proof".into())
+                })?,
+            };
+            let verified_log = verify_receipt_log_proof(&r_proof, header)?;
+            if verified_log.topics.is_empty() {
+                return Err(MosooError::Internal("deposit log missing topics".into()));
+            }
+            let sig = verified_log.topics[0];
+            if sig != deposit_topic0_bytes32 && sig != deposit_topic0_addr {
+                return Err(MosooError::EventTopicMismatch {
+                    index: 0,
+                    expected: format!("{deposit_topic0_bytes32:?}"),
+                    actual: format!("{sig:?}"),
+                });
+            }
+            if verified_log.topics.len() >= 2 {
+                let from_topic = verified_log.topics[1];
+                if &from_topic.0[12..32] != sender.as_slice() {
+                    return Err(MosooError::Internal(
+                        "sender address mismatch in Deposit log".into(),
+                    ));
+                }
+            }
+            if verified_log.topics.len() >= 3 {
+                let to_topic = verified_log.topics[2];
+                let matches_recipient = if to_topic.0 == *recipient {
+                    true
+                } else if recipient[0..12] == [0u8; 12] {
+                    to_topic.0[12..32] == recipient[12..32]
+                } else if to_topic.0[0..12] == [0u8; 12] {
+                    to_topic.0[12..32] == recipient[12..32]
+                        || to_topic.0[12..32] == recipient[0..20]
+                } else {
+                    false
+                };
+                if !matches_recipient {
+                    return Err(MosooError::Internal(
+                        "recipient mismatch in Deposit log".into(),
+                    ));
+                }
+            }
+            if verified_log.data.is_empty() {
+                return Err(MosooError::Internal(
+                    "missing deposit amount in log data".into(),
+                ));
+            }
+            Ok(VerifiedValue::LogData(verified_log.data))
         }
     }
 }
@@ -607,6 +751,82 @@ pub mod test_helpers {
         receipt_list.extend_from_slice(&receipt_payload);
 
         // EIP-2718 typed receipt: prefix with transaction type byte 0x02
+        let mut full_receipt = vec![0x02u8];
+        full_receipt.extend_from_slice(&receipt_list);
+        full_receipt
+    }
+
+    /// Construct a valid EIP-1559 receipt (type 0x02) containing a Native ETH bridge deposit log:
+    /// Deposit(address sender, bytes32 recipient, uint256 amount).
+    pub fn build_test_eip1559_deposit_receipt(
+        deposit_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+        amount: U256,
+    ) -> Vec<u8> {
+        let deposit_sig = keccak256("Deposit(address,bytes32,uint256)");
+        let topic1 = B256::left_padding_from(sender.as_slice());
+        let topic2 = B256::from(recipient);
+
+        // Topics RLP list
+        let mut topics_payload = Vec::new();
+        topics_payload.extend_from_slice(&alloy_rlp::encode(deposit_sig.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic1.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic2.0));
+        let mut topics_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: topics_payload.len(),
+        }
+        .encode(&mut topics_rlp);
+        topics_rlp.extend_from_slice(&topics_payload);
+
+        // Data: amount as 32-byte BE
+        let data_bytes = amount.to_be_bytes::<32>();
+        let data_rlp = alloy_rlp::encode(&data_bytes[..]);
+
+        // Log RLP: [address, topics, data]
+        let mut log_payload = Vec::new();
+        log_payload.extend_from_slice(&alloy_rlp::encode(deposit_contract.as_slice()));
+        log_payload.extend_from_slice(&topics_rlp);
+        log_payload.extend_from_slice(&data_rlp);
+        let mut log_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_payload.len(),
+        }
+        .encode(&mut log_rlp);
+        log_rlp.extend_from_slice(&log_payload);
+
+        // Logs list: [log_rlp]
+        let mut logs_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_rlp.len(),
+        }
+        .encode(&mut logs_list);
+        logs_list.extend_from_slice(&log_rlp);
+
+        // Receipt fields: [status=1, cumulative_gas=50000, bloom=256 zeros, logs]
+        let status_rlp = alloy_rlp::encode(1u8);
+        let gas_rlp = alloy_rlp::encode(50000u64);
+        let bloom_bytes = [0u8; 256];
+        let bloom_rlp = alloy_rlp::encode(&bloom_bytes[..]);
+
+        let mut receipt_payload = Vec::new();
+        receipt_payload.extend_from_slice(&status_rlp);
+        receipt_payload.extend_from_slice(&gas_rlp);
+        receipt_payload.extend_from_slice(&bloom_rlp);
+        receipt_payload.extend_from_slice(&logs_list);
+
+        let mut receipt_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: receipt_payload.len(),
+        }
+        .encode(&mut receipt_list);
+        receipt_list.extend_from_slice(&receipt_payload);
+
         let mut full_receipt = vec![0x02u8];
         full_receipt.extend_from_slice(&receipt_list);
         full_receipt
