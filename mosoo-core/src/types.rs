@@ -290,12 +290,20 @@ pub enum StatementBinding {
     ReceiptLog { emitter: [u8; 20], topic0: [u8; 32] },
     /// Native ETH deposit into a designated bridge vault contract
     NativeEthDeposit {
+        execution_block_hash: [u8; 32],
+        slot: u64,
+        tx_index: u64,
+        log_index: usize,
         deposit_contract: [u8; 20],
         sender: [u8; 20],
         recipient: [u8; 32],
     },
     /// ERC-20 transfer event / vault deposit
     Erc20Transfer {
+        execution_block_hash: [u8; 32],
+        slot: u64,
+        tx_index: u64,
+        log_index: usize,
         token_contract: [u8; 20],
         sender: [u8; 20],
         recipient: [u8; 32],
@@ -347,6 +355,19 @@ impl VerifiedStatement {
         let mut buf = [0u8; 16];
         buf.copy_from_slice(&self.verified_value[16..32]);
         u128::from_be_bytes(buf)
+    }
+
+    /// Decode the verified 32-byte EVM value as a u64 (big-endian), strictly asserting that the
+    /// top 24 bytes are zero to prevent silent arithmetic truncation for amounts > u64::MAX (e.g. >18.44 ETH in wei).
+    pub fn value_as_u64_checked(&self) -> Result<u64, crate::error::MosooError> {
+        if self.verified_value[..24] != [0u8; 24] {
+            return Err(crate::error::MosooError::Internal(
+                "verified statement value exceeds u64::MAX (silent truncation prevented)".into(),
+            ));
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&self.verified_value[24..32]);
+        Ok(u64::from_be_bytes(buf))
     }
 
     /// Decode the verified 32-byte EVM value as a u64 (big-endian).

@@ -34,6 +34,7 @@ pub struct AttestStateArgs {
     pub predicate: Predicate,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstructionOutput {
     Initialized(InstanceAccount),
@@ -42,6 +43,7 @@ pub enum InstructionOutput {
     UpdateFinished {
         updated_instance: InstanceAccount,
         header_record: HeaderRecord,
+        closed_job: JobAccount,
     },
     StatementIssued(VerifiedStatement),
 }
@@ -446,9 +448,13 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
         receipts_root,
     };
 
+    let mut closed_job = job;
+    closed_job.stage = JobStage::Done;
+
     Ok(InstructionOutput::UpdateFinished {
         updated_instance: instance,
         header_record,
+        closed_job,
     })
 }
 
@@ -476,8 +482,15 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
     } else {
         // Historical block root authentication:
         // In Ethereum consensus specs, BeaconState contains `block_roots: Vector[Root, 8192]`.
-        // Field index of block_roots is 5 (gindex prefix 37 in Altair..Deneb, 69 in Electra..Fulu).
-        // Each leaf within block_roots has index = slot % 8192.
+        // Guard: block_roots is a cyclic ring buffer of 8,192 slots. Proving blocks older than
+        // 8,192 slots requires historical_summaries / historical_roots.
+        const SLOTS_PER_HISTORICAL_ROOT: u64 = 8192;
+        if args.instance.current_slot.saturating_sub(args.header.slot) > SLOTS_PER_HISTORICAL_ROOT {
+            return Err(MosooError::Internal(
+                "historical block is older than 8,192 slots; outside BeaconState.block_roots ring buffer".into(),
+            ));
+        }
+
         let branch = args
             .header_history_branch
             .as_ref()
@@ -557,20 +570,33 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             )
         }
         inclusion::ProofTarget::Erc20Transfer {
+            tx_index,
+            log_index,
             token_contract,
             sender,
             recipient,
-            ..
         } => {
             let mut tc = [0u8; 20];
             tc.copy_from_slice(token_contract.as_slice());
             let mut snd = [0u8; 20];
             snd.copy_from_slice(sender.as_slice());
-            let key = predicate::derive_erc20_transfer_subject_key(&tc, &snd, recipient);
+            let key = predicate::derive_erc20_transfer_subject_key(
+                &args.header.execution_block_hash,
+                args.header.slot,
+                *tx_index,
+                *log_index,
+                &tc,
+                &snd,
+                recipient,
+            );
             (
                 key,
                 crate::types::PROOF_TYPE_ERC20_TRANSFER,
                 crate::types::StatementBinding::Erc20Transfer {
+                    execution_block_hash: args.header.execution_block_hash,
+                    slot: args.header.slot,
+                    tx_index: *tx_index,
+                    log_index: *log_index,
                     token_contract: tc,
                     sender: snd,
                     recipient: *recipient,
@@ -578,20 +604,33 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             )
         }
         inclusion::ProofTarget::NativeEthDeposit {
+            tx_index,
+            log_index,
             deposit_contract,
             sender,
             recipient,
-            ..
         } => {
             let mut dc = [0u8; 20];
             dc.copy_from_slice(deposit_contract.as_slice());
             let mut snd = [0u8; 20];
             snd.copy_from_slice(sender.as_slice());
-            let key = predicate::derive_eth_deposit_subject_key(&dc, &snd, recipient);
+            let key = predicate::derive_eth_deposit_subject_key(
+                &args.header.execution_block_hash,
+                args.header.slot,
+                *tx_index,
+                *log_index,
+                &dc,
+                &snd,
+                recipient,
+            );
             (
                 key,
                 crate::types::PROOF_TYPE_ETH_DEPOSIT,
                 crate::types::StatementBinding::NativeEthDeposit {
+                    execution_block_hash: args.header.execution_block_hash,
+                    slot: args.header.slot,
+                    tx_index: *tx_index,
+                    log_index: *log_index,
                     deposit_contract: dc,
                     sender: snd,
                     recipient: *recipient,

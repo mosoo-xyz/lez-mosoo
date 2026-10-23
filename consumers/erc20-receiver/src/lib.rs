@@ -144,8 +144,10 @@ pub fn claim(
         return Err(ReceiverError::PredicateFailed);
     }
 
-    // Derive credited amount strictly from the verified statement value
-    let verified_amount = statement.value_as_u64();
+    // Derive credited amount strictly from the verified statement value (with overflow check)
+    let verified_amount = statement
+        .value_as_u64_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_amount < min_amount {
         return Err(ReceiverError::AmountTooLow {
             min_amount,
@@ -209,8 +211,12 @@ pub fn claim_erc20_transfer(
     }
 
     // Match statement binding against caller's expected parameters
-    match &claim.statement.binding {
+    let (block_hash, slot, tx_index, log_index) = match &claim.statement.binding {
         StatementBinding::Erc20Transfer {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
             token_contract,
             sender,
             recipient,
@@ -233,23 +239,34 @@ pub fn claim_erc20_transfer(
                     actual: *recipient,
                 });
             }
+            (*execution_block_hash, *slot, *tx_index, *log_index)
         }
         _ => {
             return Err(ReceiverError::InvalidStatementType(
                 claim.statement.proof_type_tag,
             ));
         }
-    }
+    };
 
     // Verify canonical subject key cryptographic derivation
-    let expected_subject_key =
-        derive_erc20_transfer_subject_key(&claim.token_contract, &claim.sender, &claim.recipient);
+    let expected_subject_key = derive_erc20_transfer_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &claim.token_contract,
+        &claim.sender,
+        &claim.recipient,
+    );
     if claim.statement.subject_key != expected_subject_key {
         return Err(ReceiverError::SubjectKeyMismatch);
     }
 
-    // Derive credited amount strictly from verified statement value
-    let verified_amount = claim.statement.value_as_u64();
+    // Derive credited amount strictly from verified statement value (with overflow check)
+    let verified_amount = claim
+        .statement
+        .value_as_u64_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_amount < claim.min_amount {
         return Err(ReceiverError::AmountTooLow {
             min_amount: claim.min_amount,
@@ -351,6 +368,7 @@ pub fn claim_atomic(
             token_contract,
             sender,
             recipient,
+            ..
         } => {
             if *token_contract != args.expected_token_contract {
                 return Err(ReceiverError::TokenContractMismatch {
@@ -440,7 +458,19 @@ mod tests {
     ) -> VerifiedStatement {
         let mut verified_value = [0u8; 32];
         verified_value[24..32].copy_from_slice(&amount.to_be_bytes());
-        let subject_key = derive_erc20_transfer_subject_key(&token_contract, &sender, &recipient);
+        let block_hash = [0x11; 32];
+        let slot = 100u64;
+        let tx_index = 0u64;
+        let log_index = 0usize;
+        let subject_key = derive_erc20_transfer_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &token_contract,
+            &sender,
+            &recipient,
+        );
         VerifiedStatement {
             chain_id,
             attester_program_id: attester,
@@ -450,6 +480,10 @@ mod tests {
             subject_key,
             proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
             binding: StatementBinding::Erc20Transfer {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
                 token_contract,
                 sender,
                 recipient,

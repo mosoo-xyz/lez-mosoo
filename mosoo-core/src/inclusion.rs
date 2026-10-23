@@ -644,7 +644,7 @@ fn rlp_next_item(buf: &[u8]) -> Result<(&[u8], &[u8]), MosooError> {
     Ok((&buf[..total], &buf[total..]))
 }
 
-fn rlp_strip_prefix(item: &[u8]) -> &[u8] {
+pub fn rlp_strip_prefix(item: &[u8]) -> &[u8] {
     if item.is_empty() {
         return item;
     }
@@ -652,10 +652,31 @@ fn rlp_strip_prefix(item: &[u8]) -> &[u8] {
     if first < 0x80 {
         item
     } else if first < 0xb8 {
-        &item[1..]
-    } else {
+        if item.len() <= 1 {
+            &item[item.len()..]
+        } else {
+            &item[1..]
+        }
+    } else if first < 0xc0 {
         let ll = first - 0xb7;
-        &item[1 + ll..]
+        if item.len() < 1 + ll {
+            &item[item.len()..]
+        } else {
+            &item[1 + ll..]
+        }
+    } else if first < 0xf8 {
+        if item.len() <= 1 {
+            &item[item.len()..]
+        } else {
+            &item[1..]
+        }
+    } else {
+        let ll = first - 0xf7;
+        if item.len() < 1 + ll {
+            &item[item.len()..]
+        } else {
+            &item[1 + ll..]
+        }
     }
 }
 
@@ -894,6 +915,20 @@ mod tests {
     #[test]
     fn rlp_strip_short_string() {
         assert_eq!(rlp_strip_prefix(&[0x83, 0x61, 0x62, 0x63]), b"abc");
+    }
+
+    #[test]
+    fn test_rlp_strip_prefix_out_of_bounds_safety() {
+        // Truncated list prefix: byte claims 5-byte length payload, but item is only 2 bytes
+        assert_eq!(rlp_strip_prefix(&[0xc5, 0x01]), &[0x01]);
+        // Truncated long string prefix: claims 2 length bytes, but slice has only 1 byte
+        assert_eq!(rlp_strip_prefix(&[0xb9]), &[] as &[u8]);
+        // Truncated long list prefix: claims 3 length bytes, but slice has only 2 bytes
+        assert_eq!(rlp_strip_prefix(&[0xfa, 0x01]), &[] as &[u8]);
+        // Truncated short string: claims 3 bytes, only 1 present
+        assert_eq!(rlp_strip_prefix(&[0x83, 0x42]), &[0x42]);
+        // Empty slice safety
+        assert_eq!(rlp_strip_prefix(&[]), &[] as &[u8]);
     }
 
     #[test]

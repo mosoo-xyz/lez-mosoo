@@ -5,12 +5,15 @@
 //! cross-chain replays, and duplicate claim attacks.
 
 use blst::min_pk::SecretKey;
-use erc20_receiver::{claim, NullifierSet};
-use ether_receiver::{claim_ether, EtherNullifierSet};
+use erc20_receiver::{claim, claim_erc20_transfer, Erc20TransferClaim, NullifierSet};
+use ether_receiver::{
+    claim_ether, claim_native_eth_deposit, EtherNullifierSet, NativeEthDepositClaim,
+};
 use mosoo_core::{
     crypto::*,
     error::MosooError,
     inclusion::{ProofTarget, StateProof},
+    predicate::{derive_erc20_transfer_subject_key, derive_eth_deposit_subject_key},
     types::*,
     verifier::*,
 };
@@ -996,4 +999,379 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         ),
         "Malformed branch depth must be rejected with InvalidProofBranchDepth"
     );
+}
+
+/// Attack 13: Nullifier Collision & Replay Resistance on Repeat Transfers.
+///
+/// Under naive derivation without transaction coordinates (block hash, slot, tx_index, log_index),
+/// multiple legitimate transfers between the same sender and recipient result in identical
+/// nullifiers, locking subsequent funds.
+/// This test verifies:
+/// 1. Two distinct transfers between same parties generate strictly different subject keys & statement IDs.
+/// 2. Both legitimate transfers can be claimed independently.
+/// 3. Replaying either transfer is strictly rejected by the nullifier set.
+#[test]
+fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_rejection() {
+    let mut erc20_nullifiers = NullifierSet::new();
+    let token = [0xAA; 20];
+    let alice = [0x11; 20];
+    let bob = [0x22; 32];
+
+    let block_100 = [0x01; 32];
+    let block_105 = [0x02; 32];
+
+    // Deposit 1: Alice sends 500 USDC to Bob at Block 100, Tx 0, Log 0
+    let key_1 = derive_erc20_transfer_subject_key(&block_100, 100, 0, 0, &token, &alice, &bob);
+    let mut val_1 = [0u8; 32];
+    val_1[24..32].copy_from_slice(&500_000u64.to_be_bytes());
+    let stmt_1 = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x10; 32],
+        predicate_holds: true,
+        verified_value: val_1,
+        subject_key: key_1,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_100,
+            slot: 100,
+            tx_index: 0,
+            log_index: 0,
+            token_contract: token,
+            sender: alice,
+            recipient: bob,
+        },
+    };
+
+    // Deposit 2: Alice sends another 1,000 USDC to Bob at Block 105, Tx 2, Log 1
+    let key_2 = derive_erc20_transfer_subject_key(&block_105, 105, 2, 1, &token, &alice, &bob);
+    let mut val_2 = [0u8; 32];
+    val_2[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
+    let stmt_2 = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x20; 32],
+        predicate_holds: true,
+        verified_value: val_2,
+        subject_key: key_2,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_105,
+            slot: 105,
+            tx_index: 2,
+            log_index: 1,
+            token_contract: token,
+            sender: alice,
+            recipient: bob,
+        },
+    };
+
+    // Cryptographic isolation: subject keys MUST NOT collide
+    assert_ne!(
+        key_1, key_2,
+        "Distinct deposits between identical parties MUST produce distinct subject keys"
+    );
+
+    // Claim 1 succeeds
+    let claim_1 = Erc20TransferClaim {
+        statement: stmt_1.clone(),
+        token_contract: token,
+        sender: alice,
+        recipient: bob,
+        min_amount: 100_000,
+    };
+    let minted_1 =
+        claim_erc20_transfer(&claim_1, &mut erc20_nullifiers).expect("Claim 1 must succeed");
+    assert_eq!(minted_1, 500_000);
+
+    // Claim 2 succeeds (no collision griefing)
+    let claim_2 = Erc20TransferClaim {
+        statement: stmt_2.clone(),
+        token_contract: token,
+        sender: alice,
+        recipient: bob,
+        min_amount: 100_000,
+    };
+    let minted_2 =
+        claim_erc20_transfer(&claim_2, &mut erc20_nullifiers).expect("Claim 2 must succeed");
+    assert_eq!(minted_2, 1_000_000);
+
+    // Replay of Claim 1 MUST fail
+    let replay_err =
+        claim_erc20_transfer(&claim_1, &mut erc20_nullifiers).expect_err("Replay must fail");
+    assert!(matches!(
+        replay_err,
+        erc20_receiver::ReceiverError::AlreadyClaimed
+    ));
+
+    // Also verify Native ETH deposit repeat transfer isolation
+    let mut ether_nullifiers = EtherNullifierSet::new();
+    let deposit_contract = [0xDD; 20];
+    let eth_key_1 =
+        derive_eth_deposit_subject_key(&block_100, 100, 0, 0, &deposit_contract, &alice, &bob);
+    let eth_key_2 =
+        derive_eth_deposit_subject_key(&block_105, 105, 2, 1, &deposit_contract, &alice, &bob);
+    assert_ne!(
+        eth_key_1, eth_key_2,
+        "Native ETH deposit keys must not collide"
+    );
+
+    let eth_stmt_1 = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x50; 32],
+        predicate_holds: true,
+        verified_value: val_1,
+        subject_key: eth_key_1,
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: StatementBinding::NativeEthDeposit {
+            execution_block_hash: block_100,
+            slot: 100,
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            sender: alice,
+            recipient: bob,
+        },
+    };
+    let eth_claim_1 = NativeEthDepositClaim {
+        statement: eth_stmt_1.clone(),
+        expected_deposit_contract: deposit_contract,
+        sender: alice,
+        recipient: bob,
+        min_wei: 100_000,
+    };
+    let credited_1 = claim_native_eth_deposit(&eth_claim_1, &mut ether_nullifiers)
+        .expect("ETH claim 1 must succeed");
+    assert_eq!(credited_1, 500_000);
+
+    let eth_stmt_2 = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x60; 32],
+        predicate_holds: true,
+        verified_value: val_2,
+        subject_key: eth_key_2,
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: StatementBinding::NativeEthDeposit {
+            execution_block_hash: block_105,
+            slot: 105,
+            tx_index: 2,
+            log_index: 1,
+            deposit_contract,
+            sender: alice,
+            recipient: bob,
+        },
+    };
+    let eth_claim_2 = NativeEthDepositClaim {
+        statement: eth_stmt_2,
+        expected_deposit_contract: deposit_contract,
+        sender: alice,
+        recipient: bob,
+        min_wei: 100_000,
+    };
+    let credited_2 = claim_native_eth_deposit(&eth_claim_2, &mut ether_nullifiers)
+        .expect("ETH claim 2 must succeed");
+    assert_eq!(credited_2, 1_000_000);
+
+    // Replay of ETH claim 1 MUST fail
+    let eth_replay_err = claim_native_eth_deposit(&eth_claim_1, &mut ether_nullifiers)
+        .expect_err("ETH replay must fail");
+    assert!(matches!(
+        eth_replay_err,
+        ether_receiver::EtherReceiverError::AlreadyClaimed
+    ));
+}
+
+/// Attack 14: Silent Arithmetic Overflow / High-Bit Truncation Prevention.
+///
+/// An attacker submits a statement with amount > u64::MAX (e.g. >18.44 ETH in wei) where high bytes are non-zero.
+/// Without checked conversion, blind slicing bytes 24..32 would silently truncate the value.
+#[test]
+fn test_security_audit_attack_14_silent_u64_truncation_overflow_rejected() {
+    let mut bad_val = [0u8; 32];
+    bad_val[20] = 0x01; // Non-zero high byte (val >= 2^88)
+    bad_val[31] = 0x64; // Low byte 100
+
+    let stmt = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x33; 32],
+        predicate_holds: true,
+        verified_value: bad_val,
+        subject_key: [0x44; 32],
+        proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+        binding: StatementBinding::Account {
+            address: [0x11; 20],
+        },
+    };
+
+    // value_as_u64_checked MUST return error rather than truncating to 100
+    assert!(
+        stmt.value_as_u64_checked().is_err(),
+        "value_as_u64_checked must reject overflow values"
+    );
+
+    // Consumer claim_ether must fail gracefully with AttestationFailed
+    let mut nullifiers = EtherNullifierSet::new();
+    let err = claim_ether(&stmt, &mut nullifiers, 10).expect_err("Overflow must be rejected");
+    assert!(
+        matches!(err, ether_receiver::EtherReceiverError::AttestationFailed(msg) if msg.contains("overflow")),
+        "Must reject with value overflow error"
+    );
+
+    // Legitimate value <= u64::MAX succeeds
+    let mut ok_val = [0u8; 32];
+    ok_val[24..32].copy_from_slice(&1_000_000_000_000_000_000u64.to_be_bytes());
+    let mut ok_stmt = stmt;
+    ok_stmt.verified_value = ok_val;
+    assert_eq!(
+        ok_stmt.value_as_u64_checked().unwrap(),
+        1_000_000_000_000_000_000
+    );
+}
+
+/// Attack 15: Malformed RLP Headers Out-of-Bounds Panic Prevention.
+///
+/// Malformed RLP slices claiming length larger than available bytes must not trigger index panics.
+#[test]
+fn test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention() {
+    use mosoo_core::inclusion::{rlp_decode_list_items, rlp_strip_prefix};
+
+    // Malformed list: claims 10 length bytes when only 1 is present
+    let malformed_list = [0xf9, 0x01];
+    assert!(rlp_decode_list_items(&malformed_list).is_err());
+
+    // Truncated list: header says list has 50 bytes, but slice is only 3 bytes
+    let truncated_list = [0xc0 + 50, 0x01, 0x02];
+    assert!(rlp_decode_list_items(&truncated_list).is_err());
+
+    // Safe strip prefix on various malformed RLP strings
+    assert_eq!(rlp_strip_prefix(&[]), &[] as &[u8]);
+    assert_eq!(rlp_strip_prefix(&[0x85, 0x01, 0x02]), &[0x01, 0x02]);
+    assert_eq!(rlp_strip_prefix(&[0xb8, 0x10, 0x01]), &[0x01]);
+}
+
+/// Attack 16: Ring Buffer Slot Aliasing Rejection beyond 8,192 Slots.
+///
+/// Ethereum's BeaconState.block_roots is a cyclic vector of size 8,192.
+/// Historical proofs older than 8,192 slots without an accumulator proof must be strictly rejected
+/// to prevent slot % 8192 collision aliasing.
+#[test]
+fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 20_000,
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 1_000,
+        initialized: true,
+    };
+
+    // Attacker requests proof for slot 5,000 (delta = 15,000 slots > 8,192)
+    let stale_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 5_000,
+        beacon_block_root: [0x33; 32],
+        execution_block_hash: [0x44; 32],
+        execution_state_root: [0x55; 32],
+        receipts_root: [0x66; 32],
+    };
+
+    let dummy_proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x77),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    let res = handle_attest_state(AttestStateArgs {
+        instance,
+        header: stale_header,
+        header_history_branch: Some(vec![[0x88; 32]; 19]),
+        proof: dummy_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    });
+
+    assert!(
+        matches!(res, Err(MosooError::Internal(msg)) if msg.contains("8,192 slots")),
+        "Historical proof beyond 8,192 slots MUST be rejected by circular buffer guard"
+    );
+}
+
+/// Attack 17: Job Lifecycle Termination & Replay Rejection.
+///
+/// A finished verification job transitions to JobStage::Done.
+/// Re-submitting a Done job to Miller or Finish stages must be rejected with WrongJobStage.
+#[test]
+fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100,
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 100,
+        initialized: true,
+    };
+
+    let done_job = JobAccount {
+        instance_chain_id: ETH_MAINNET_CHAIN_ID,
+        instance_slot: 100,
+        stage: JobStage::Done,
+        update_digest: [0x99; 32],
+        update: LightClientUpdate {
+            attested_header: BeaconBlockHeader {
+                slot: 101,
+                proposer_index: 0,
+                parent_root: [0; 32],
+                state_root: [0; 32],
+                body_root: [0; 32],
+            },
+            next_sync_committee: None,
+            next_sync_committee_branch: None,
+            finalized_header: BeaconBlockHeader {
+                slot: 100,
+                proposer_index: 0,
+                parent_root: [0; 32],
+                state_root: [0; 32],
+                body_root: [0; 32],
+            },
+            finality_branch: vec![],
+            sync_aggregate: SyncAggregate {
+                sync_committee_bits: vec![0u8; 64],
+                sync_committee_signature: vec![0u8; 96],
+            },
+            signature_slot: 102,
+            execution_payload_header: None,
+            execution_branch: None,
+        },
+        miller_input: None,
+        miller_output: None,
+        nonce: 42,
+    };
+
+    // Submitting a Done job to MillerUpdate MUST be rejected
+    let miller_err = handle_miller_update(MillerUpdateArgs {
+        instance: instance.clone(),
+        job: done_job.clone(),
+    })
+    .expect_err("Done job must be rejected in Miller");
+    assert!(matches!(miller_err, MosooError::WrongJobStage { .. }));
+
+    // Submitting a Done job to FinishUpdate MUST be rejected
+    let finish_err = handle_finish_update(FinishUpdateArgs {
+        instance,
+        job: done_job,
+    })
+    .expect_err("Done job must be rejected in Finish");
+    assert!(matches!(finish_err, MosooError::WrongJobStage { .. }));
 }

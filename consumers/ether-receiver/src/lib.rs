@@ -123,8 +123,10 @@ pub fn claim_ether(
         return Err(EtherReceiverError::PredicateFailed);
     }
 
-    // Derive credited amount strictly from verified statement value
-    let verified_wei = statement.value_as_u64();
+    // Derive credited amount strictly from verified statement value (with overflow check)
+    let verified_wei = statement
+        .value_as_u64_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
             actual: verified_wei,
@@ -186,8 +188,12 @@ pub fn claim_native_eth_deposit(
     }
 
     // Match statement binding against caller's expected parameters
-    match &claim.statement.binding {
+    let (block_hash, slot, tx_index, log_index) = match &claim.statement.binding {
         StatementBinding::NativeEthDeposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
             deposit_contract,
             sender,
             recipient,
@@ -210,16 +216,21 @@ pub fn claim_native_eth_deposit(
                     actual: *recipient,
                 });
             }
+            (*execution_block_hash, *slot, *tx_index, *log_index)
         }
         _ => {
             return Err(EtherReceiverError::InvalidStatementType(
                 claim.statement.proof_type_tag,
             ));
         }
-    }
+    };
 
     // Verify canonical subject key cryptographic derivation
     let expected_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
         &claim.expected_deposit_contract,
         &claim.sender,
         &claim.recipient,
@@ -228,8 +239,11 @@ pub fn claim_native_eth_deposit(
         return Err(EtherReceiverError::SubjectKeyMismatch);
     }
 
-    // Derive credited amount strictly from verified statement value
-    let verified_wei = claim.statement.value_as_u64();
+    // Derive credited amount strictly from verified statement value (with overflow check)
+    let verified_wei = claim
+        .statement
+        .value_as_u64_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < claim.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
             actual: verified_wei,
@@ -335,7 +349,9 @@ pub fn claim_ether_atomic(
         }
     }
 
-    let verified_wei = statement.value_as_u64();
+    let verified_wei = statement
+        .value_as_u64_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < args.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
             actual: verified_wei,
@@ -395,7 +411,19 @@ mod tests {
     ) -> VerifiedStatement {
         let mut verified_value = [0u8; 32];
         verified_value[24..32].copy_from_slice(&wei.to_be_bytes());
-        let subject_key = derive_eth_deposit_subject_key(&deposit_contract, &sender, &recipient);
+        let block_hash = [0x22; 32];
+        let slot = 200u64;
+        let tx_index = 1u64;
+        let log_index = 0usize;
+        let subject_key = derive_eth_deposit_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &deposit_contract,
+            &sender,
+            &recipient,
+        );
         VerifiedStatement {
             chain_id,
             attester_program_id: attester,
@@ -405,6 +433,10 @@ mod tests {
             subject_key,
             proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
             binding: StatementBinding::NativeEthDeposit {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
                 deposit_contract,
                 sender,
                 recipient,

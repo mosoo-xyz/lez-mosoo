@@ -144,16 +144,24 @@ pub fn derive_receipt_log_subject_key(
 
 /// Derives the canonical subject key for an Ethereum native ETH deposit to a vault/contract.
 ///
-/// Binds the expected Ethereum deposit contract address, sender Ethereum address,
-/// and recipient LEZ address into a collision-resistant 32-byte identifier:
-/// `sha256("MOSOO_ETH_DEPOSIT" || deposit_contract_20 || sender_20 || recipient_32)`.
+/// Binds the execution block hash, slot, transaction index, log index, deposit contract,
+/// sender Ethereum address, and recipient LEZ address into a collision-resistant 32-byte identifier.
+/// This prevents nullifier collision across multiple deposits between the same parties.
 pub fn derive_eth_deposit_subject_key(
+    execution_block_hash: &[u8; 32],
+    slot: u64,
+    tx_index: u64,
+    log_index: usize,
     deposit_contract: &[u8; 20],
     sender: &[u8; 20],
     recipient: &[u8; 32],
 ) -> [u8; 32] {
     let mut h = Sha256::new();
-    h.update(b"MOSOO_ETH_DEPOSIT");
+    h.update(b"MOSOO_ETH_DEPOSIT_V2:");
+    h.update(execution_block_hash);
+    h.update(slot.to_be_bytes());
+    h.update(tx_index.to_be_bytes());
+    h.update((log_index as u64).to_be_bytes());
     h.update(deposit_contract);
     h.update(sender);
     h.update(recipient);
@@ -162,16 +170,24 @@ pub fn derive_eth_deposit_subject_key(
 
 /// Derives the canonical subject key for an Ethereum ERC-20 transfer.
 ///
-/// Binds the ERC-20 token contract address, sender Ethereum address,
-/// and recipient LEZ address into a collision-resistant 32-byte identifier:
-/// `sha256("MOSOO_ERC20_TRANSFER" || token_contract_20 || sender_20 || recipient_32)`.
+/// Binds the execution block hash, slot, transaction index, log index, token contract,
+/// sender Ethereum address, and recipient LEZ address into a collision-resistant 32-byte identifier.
+/// This guarantees distinct nullifiers for separate transfer events between the same parties.
 pub fn derive_erc20_transfer_subject_key(
+    execution_block_hash: &[u8; 32],
+    slot: u64,
+    tx_index: u64,
+    log_index: usize,
     token_contract: &[u8; 20],
     sender: &[u8; 20],
     recipient: &[u8; 32],
 ) -> [u8; 32] {
     let mut h = Sha256::new();
-    h.update(b"MOSOO_ERC20_TRANSFER");
+    h.update(b"MOSOO_ERC20_TRANSFER_V2:");
+    h.update(execution_block_hash);
+    h.update(slot.to_be_bytes());
+    h.update(tx_index.to_be_bytes());
+    h.update((log_index as u64).to_be_bytes());
     h.update(token_contract);
     h.update(sender);
     h.update(recipient);

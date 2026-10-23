@@ -1107,7 +1107,7 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
 
     let out = mosoo_core::verifier::handle_attest_state(AttestStateArgs {
         instance,
-        header,
+        header: header.clone(),
         header_history_branch: None,
         proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
@@ -1132,6 +1132,10 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
     assert_eq!(
         statement.binding,
         StatementBinding::Erc20Transfer {
+            execution_block_hash: header.execution_block_hash,
+            slot: header.slot,
+            tx_index: 0,
+            log_index: 0,
             token_contract: exp_token,
             sender: exp_sender,
             recipient,

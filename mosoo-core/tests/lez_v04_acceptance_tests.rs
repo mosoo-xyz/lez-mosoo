@@ -178,7 +178,7 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
 
     let erc20_out = handle_attest_state(AttestStateArgs {
         instance: instance.clone(),
-        header: erc20_header,
+        header: erc20_header.clone(),
         header_history_branch: None,
         proof: erc20_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
@@ -194,6 +194,10 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     assert_eq!(
         erc20_stmt.binding,
         StatementBinding::Erc20Transfer {
+            execution_block_hash: erc20_header.execution_block_hash,
+            slot: erc20_header.slot,
+            tx_index: 0,
+            log_index: 0,
             token_contract,
             sender,
             recipient,
@@ -251,7 +255,7 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
 
     let eth_out = handle_attest_state(AttestStateArgs {
         instance,
-        header: eth_header,
+        header: eth_header.clone(),
         header_history_branch: None,
         proof: eth_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
@@ -267,6 +271,10 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     assert_eq!(
         eth_stmt.binding,
         StatementBinding::NativeEthDeposit {
+            execution_block_hash: eth_header.execution_block_hash,
+            slot: eth_header.slot,
+            tx_index: 0,
+            log_index: 0,
             deposit_contract,
             sender,
             recipient,

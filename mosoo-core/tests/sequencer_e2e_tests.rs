@@ -258,7 +258,9 @@ fn test_sequencer_full_lifecycle_e2e() {
     );
 
     let pred = Predicate::AtLeast { min: [0; 32] };
-    let verified_val = mosoo_core::inclusion::VerifiedValue::StorageValue([0x10; 32]);
+    let mut val_bytes = [0u8; 32];
+    val_bytes[24..32].copy_from_slice(&10_000u64.to_be_bytes());
+    let verified_val = mosoo_core::inclusion::VerifiedValue::StorageValue(val_bytes);
     let statement = evaluate(
         &pred,
         &verified_val,
@@ -486,7 +488,9 @@ fn test_sequencer_sepolia_gloas_lifecycle_e2e() {
     );
 
     let pred = Predicate::AtLeast { min: [0; 32] };
-    let verified_val = mosoo_core::inclusion::VerifiedValue::StorageValue([0x20; 32]);
+    let mut val_bytes = [0u8; 32];
+    val_bytes[24..32].copy_from_slice(&10_000u64.to_be_bytes());
+    let verified_val = mosoo_core::inclusion::VerifiedValue::StorageValue(val_bytes);
     let statement = evaluate(
         &pred,
         &verified_val,
