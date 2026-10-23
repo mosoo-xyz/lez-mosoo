@@ -6,18 +6,23 @@ pragma solidity ^0.8.20;
  * @notice Canonical Ethereum Escrow and Settlement contract for the Mosoo Light Client Bridge
  *         connecting Ethereum (Mainnet / Sepolia / Holesky) and the Logos Execution Zone (LEZ).
  *
- * @dev Architecture & Security:
- * 1. Deposits on Ethereum lock native ETH or ERC-20 tokens in this contract, emitting verifiable
- *    receipt logs that are cryptographically verified by the Mosoo zkVM light client on LEZ.
- * 2. Successful verification allows minting synthetic `mETH` on LEZ with a 1:1 backing guarantee.
- * 3. When a user burns `mETH` on LEZ, an on-chain `BurnReceipt` is produced.
- * 4. The user (or relayer) presents this burn proof to `unlockETH`, releasing locked ETH.
- * 5. Replay attacks are strictly prevented on Ethereum using the `executedBurns` nullifier mapping.
+ * @dev Comprehensive Security Hardening & Audit Remediations:
+ * 1. Dual-Asset Settlement: Complete support for native ETH (`depositETH`, `unlockETH`) and
+ *    ERC-20 tokens (`depositERC20`, `unlockERC20`).
+ * 2. Signature Malleability Protection: Enforces strict EIP-2 upper-bound checks on `s` values
+ *    (preventing malleable signatures) and guarantees non-zero address recovery.
+ * 3. Fee-on-Transfer Protection: Uses before/after balance differentials on `depositERC20`
+ *    preventing insolvency from deflationary or fee-bearing tokens.
+ * 4. Reentrancy Protection: Custom non-reentrant mutex guarding all state-mutating deposit and unlock paths.
+ * 5. Replay Attack Prevention: Cryptographic `executedBurns[burnId]` nullifier registry preventing
+ *    cross-chain replay of burn receipts.
+ * 6. Two-Step Ownership: Enforces `transferOwnership` + `acceptOwnership` preventing accidental contract loss.
  */
 contract MosooLocker {
     // --- State Variables ---
 
     address public owner;
+    address public pendingOwner;
     address public attesterAuthority;
     bool public paused;
 
@@ -70,6 +75,7 @@ contract MosooLocker {
 
     event AttesterAuthorityUpdated(address indexed oldAuthority, address indexed newAuthority);
     event PausedStateChanged(bool isPaused);
+    event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     // --- Errors ---
@@ -82,6 +88,7 @@ contract MosooLocker {
     error BurnAlreadyExecuted();
     error InvalidBurnProof();
     error InsufficientLockedETH();
+    error InsufficientLockedERC20();
     error ETHTransferFailed();
     error ERC20TransferFailed();
 
@@ -141,6 +148,7 @@ contract MosooLocker {
 
     /**
      * @notice Deposit standard ERC-20 tokens into the bridge vault.
+     * @dev Hardened against fee-on-transfer tokens using balance differential checks.
      * @param token The ERC-20 contract address on Ethereum.
      * @param amount The token amount to deposit.
      * @param lezRecipient The 32-byte recipient identifier on LEZ.
@@ -155,18 +163,16 @@ contract MosooLocker {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || lezRecipient == bytes32(0)) revert ZeroAddress();
 
+        uint256 balanceBefore = _getTokenBalance(token, address(this));
+        _safeTransferFrom(token, msg.sender, address(this), amount);
+        uint256 actualAmount = _getTokenBalance(token, address(this)) - balanceBefore;
+        if (actualAmount == 0) revert ZeroAmount();
+
         depositNonce += 1;
         nonce = depositNonce;
-        totalLockedERC20[token] += amount;
+        totalLockedERC20[token] += actualAmount;
 
-        // Low-level safeTransferFrom to support diverse ERC-20 implementations
-        bytes memory data = abi.encodeWithSelector(0x23b87266, msg.sender, address(this), amount);
-        (bool success, bytes memory returnData) = token.call(data);
-        if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
-            revert ERC20TransferFailed();
-        }
-
-        emit DepositERC20(token, msg.sender, lezRecipient, amount, nonce);
+        emit DepositERC20(token, msg.sender, lezRecipient, actualAmount, nonce);
     }
 
     // --- Unlock Functions (LEZ -> ETH) ---
@@ -229,6 +235,65 @@ contract MosooLocker {
         emit UnlockedETH(burnId, recipient, amount, lezSlot);
     }
 
+    /**
+     * @notice Release locked ERC-20 tokens back to an Ethereum address upon verifiable burn on LEZ.
+     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
+     * @param token The ERC-20 token contract address.
+     * @param amount The token amount to unlock.
+     * @param recipient The Ethereum recipient address.
+     * @param lezOwner The LEZ account that performed the burn.
+     * @param burnNonce The sequential burn counter from the LEZ bridge.
+     * @param lezSlot The LEZ block/slot height at which the burn occurred.
+     * @param attestationSignature Cryptographic signature from the attester authority.
+     */
+    function unlockERC20(
+        bytes32 burnId,
+        address token,
+        uint256 amount,
+        address recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes calldata attestationSignature
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+
+        // 1. Verify burnId canonical derivation for ERC-20
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_erc20_v1",
+                block.chainid,
+                token,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        // 2. Verify attestation signature over burnId
+        bytes32 ethSignedMessageHash = keccak256(
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", burnId)
+        );
+        if (!_verifySignature(ethSignedMessageHash, attestationSignature, attesterAuthority)) {
+            revert InvalidBurnProof();
+        }
+
+        // 3. Mark burn nullifier and update accounting
+        executedBurns[burnId] = true;
+        totalLockedERC20[token] -= amount;
+
+        // 4. Transfer tokens to recipient
+        _safeTransfer(token, recipient, amount);
+
+        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+    }
+
     // --- Internal Helpers ---
 
     function _verifySignature(
@@ -236,6 +301,7 @@ contract MosooLocker {
         bytes memory signature,
         address expectedSigner
     ) internal pure returns (bool) {
+        if (expectedSigner == address(0)) return false;
         if (signature.length != 65) return false;
 
         bytes32 r;
@@ -248,10 +314,39 @@ contract MosooLocker {
             v := byte(0, mload(add(signature, 96)))
         }
 
+        // Strict EIP-2 check to prevent signature malleability
+        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+            return false;
+        }
+
         if (v < 27) v += 27;
         if (v != 27 && v != 28) return false;
 
-        return ecrecover(hash, v, r, s) == expectedSigner;
+        address recovered = ecrecover(hash, v, r, s);
+        return recovered != address(0) && recovered == expectedSigner;
+    }
+
+    function _safeTransfer(address token, address to, uint256 amount) internal {
+        bytes memory data = abi.encodeWithSelector(0xa9059cbb, to, amount);
+        (bool success, bytes memory returnData) = token.call(data);
+        if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
+            revert ERC20TransferFailed();
+        }
+    }
+
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        bytes memory data = abi.encodeWithSelector(0x23b87266, from, to, amount);
+        (bool success, bytes memory returnData) = token.call(data);
+        if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
+            revert ERC20TransferFailed();
+        }
+    }
+
+    function _getTokenBalance(address token, address account) internal view returns (uint256) {
+        bytes memory data = abi.encodeWithSelector(0x70a08231, account);
+        (bool success, bytes memory returnData) = token.staticcall(data);
+        if (!success || returnData.length < 32) return 0;
+        return abi.decode(returnData, (uint256));
     }
 
     // --- Admin Functions ---
@@ -267,10 +362,18 @@ contract MosooLocker {
         emit PausedStateChanged(_paused);
     }
 
+    // Two-step ownership transfer preventing accidental ownership loss
     function transferOwnership(address _newOwner) external onlyOwner {
         if (_newOwner == address(0)) revert ZeroAddress();
-        emit OwnershipTransferred(owner, _newOwner);
-        owner = _newOwner;
+        pendingOwner = _newOwner;
+        emit OwnershipTransferStarted(owner, _newOwner);
+    }
+
+    function acceptOwnership() external {
+        if (msg.sender != pendingOwner) revert Unauthorized();
+        emit OwnershipTransferred(owner, pendingOwner);
+        owner = pendingOwner;
+        pendingOwner = address(0);
     }
 
     // --- Receive Fallback ---
