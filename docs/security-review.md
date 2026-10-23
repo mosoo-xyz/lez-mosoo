@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Audit Boundary & Milestones:**
-> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, and 12 mutation attack tests passing in CI (`tests/adversarial_mutation_tests.rs`).
+> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 24 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
 > - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
 
 ---
@@ -122,7 +122,7 @@ Both `handle_miller_update` and `handle_finish_update` recompute and verify this
 
 ## 3. Automated Adversarial Test Harness
 
-All 12 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
+All 24 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
 
 | Test Name | Attack Scenario Tested | Expected Rejection |
 | :--- | :--- | :--- |
@@ -138,6 +138,29 @@ All 12 attack vectors are implemented as automated regression tests in `tests/ad
 | `test_mutation_attack_10`| Cross-stage job parameter tampering | `MosooError::JobDigestMismatch` |
 | `test_mutation_attack_11`| Bootstrap unauthenticated next sync committee | `MosooError::BootstrapNextCommitteeBranchInvalid` |
 | `test_mutation_attack_12`| Forged historical block accumulator root | `MosooError::UnauthenticatedHeaderRecord` |
+| `test_security_audit_attack_13` | Repeat transfers between identical parties | Distinct nullifiers asserted & replay rejected |
+| `test_security_audit_attack_14` | Silent arithmetic overflow / high-bit u64 truncation | Checked conversion error on values > u64::MAX |
+| `test_security_audit_attack_15` | Malformed / truncated RLP length bounds | Fail-closed RLP decode error (zero panics) |
+| `test_security_audit_attack_16` | Circular ring buffer slot aliasing beyond 8,192 slots | `MosooError::Internal` guard rejection |
+| `test_security_audit_attack_17` | Replay invocation on terminated `Done` job stage | `MosooError::WrongJobStage` rejection |
+| `test_security_audit_attack_18` | Statement ID tampering to bypass nullifier tracking | Catch by expected subject key validation |
+| `test_security_audit_attack_19` | Backward slot rollback or expired recovery checkpoint | `backward rollback` / `WeakSubjectivityExpired` |
+| `test_security_audit_attack_20` | Reverted / failed transaction receipt (status = 0) | Reverted status check rejection |
+| `test_security_audit_attack_21` | Out-of-order header slots (attested < finalized) | Temporal consistency rejection |
+| `test_security_audit_attack_22` | Deeply nested predicate tree stack overflow DOS | Recursion depth limit (16 max) rejection |
+| `test_security_audit_attack_23` | Mandatory weak-subjectivity freshness bounds | Fail-closed rejection on zero or expired slot |
+| `test_security_audit_attack_24` | Unsatisfied condition predicate fail-closed behavior | `MosooError::PredicateFailed` (no statement) |
+
+### 3.1 Two-Way Bridge Security & Escrow Defense Harness
+
+Tested in `tests/two_way_bridge_tests.rs`:
+- **Tampered Burn Receipt Defense (`test_two_way_bridge_adversarial_tampered_burn_id_rejected`):** Rejects forged burn identifiers or tampered recipients.
+- **Ethereum Escrow Contract Security (`contracts/MosooLocker.sol`):**
+  - Strict EIP-2 upper-bound on $s$-values ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$).
+  - Non-zero signer check (`recovered != address(0)`).
+  - Nullifier tracking (`claimedBurnIds[burnId]`).
+  - Fee-on-transfer balance differential verification on token deposits.
+  - Two-step ownership handover (`transferOwnership` + `acceptOwnership`).
 
 ---
 

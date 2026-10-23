@@ -52,14 +52,14 @@ This document details the threat model, security assumptions, and mitigation str
   - Emitting contract address and event signature topics (`keccak256("Transfer(address,address,uint256)")`) are asserted, rejecting mismatched emitters (`EventEmitterMismatch`) and forged event signatures (`EventTopicMismatch`).
   - Out-of-bounds log indices are rejected (`LogIndexOutOfBounds`).
 
-### 2.5 Cross-Chain Replay & Chain-ID Spoofing
+### 2.6 Cross-Chain Replay & Chain-ID Spoofing
 * **Attack**: An attacker takes a valid deposit made on Sepolia testnet and replays the proof to claim tokens on an Ethereum Mainnet LEZ instance.
 * **Mitigation**:
   - Domain separation: `compute_signing_root` incorporates `compute_sync_committee_domain(chain_id, slot)` using network-specific `fork_version` and `genesis_validators_root`.
   - A Sepolia BLS signature is cryptographically invalid when evaluated under Mainnet domain parameters.
   - `VerifiedStatement` includes `chain_id`, and consumers explicitly assert `statement.chain_id == ETH_MAINNET_CHAIN_ID`.
 
-### 2.6 Double-Spending / Cross-Slot Statement Replay
+### 2.7 Double-Spending / Cross-Slot Statement Replay
 * **Attack**: A user re-submits a valid `VerifiedStatement` multiple times or generates proofs at different block slots for the same static balance to mint tokens repeatedly.
 * **Mitigation**:
   - `statement_id` is derived deterministically:
@@ -70,13 +70,13 @@ This document details the threat model, security assumptions, and mitigation str
   - Any consuming program (such as `erc20-receiver` or `ether-receiver`) records `statement_id` into a dedicated Nullifier PDA.
   - Subsequent claims with the same `statement_id` immediately revert with `AlreadyClaimed`.
 
-### 2.7 Front-Running & Duplicate Submission (Gas Griefing)
+### 2.8 Front-Running & Duplicate Submission (Gas Griefing)
 * **Attack**: Multiple permissionless daemons observe a new finalized block and submit simultaneous `Begin` transactions, causing wasted gas for trailing operators.
 * **Mitigation**:
   - The `mosoo-daemon` incorporates randomized delay jitter (1.0x to 2.5x poll interval).
   - The LEZ contract validates that if an existing job is in progress or already finalized for that slot, redundant submissions are skipped idempotently.
 
-### 2.8 Weak-Subjectivity Bootstrap Poisoning & Stale Instances
+### 2.9 Weak-Subjectivity Bootstrap Poisoning & Stale Instances
 * **Attack**: An operator initializes a Mosoo instance from a checkpoint outside the Ethereum weak-subjectivity period, allowing a long-range reorganization to substitute an attacker-controlled committee.
 * **Mitigation**:
   - `handle_initialize` checks `trusted_head_slot - bootstrap_header.slot <= 1,728,000` (~240 days max bound, with ~14-30 day operational recommendation).
@@ -84,7 +84,7 @@ This document details the threat model, security assumptions, and mitigation str
   - Stale instances stalled past this window can be safely re-anchored using `handle_recover_instance`.
   - Public Ethereum checkpoint sync services (e.g., Lodestar Checkpoint Sync) provide verifiable checkpoint sources.
 
-### 2.9 Competing-Update Race Condition (Liveness Under Concurrent Operators)
+### 2.10 Competing-Update Race Condition (Liveness Under Concurrent Operators)
 * **Attack**: Two operators both observe a new finalized slot and submit `BeginUpdate` simultaneously. The trailing operator's submission creates a conflicting `JobAccount` or overwrites in-progress pairing state, corrupting the verification pipeline.
 * **Mitigation**:
   - The `JobAccount` PDA is keyed by `[instance_pubkey, nonce]`. Only the first `BeginUpdate` for a given slot successfully creates the PDA; subsequent attempts detect an existing open job and return `JobAlreadyOpen`.
@@ -92,12 +92,22 @@ This document details the threat model, security assumptions, and mitigation str
   - The 3-transaction pipeline (`Begin` → `Miller` → `Finish`) is strictly sequential per job nonce; interleaving is impossible by protocol.
   - A detailed description of the competing-update recovery flow is documented in [`docs/DAEMON.md`](DAEMON.md) (Section 8).
 
-### 2.10 zkVM Proof Soundness & Guest Binary Integrity
+### 2.11 zkVM Proof Soundness & Guest Binary Integrity
 * **Attack**: An operator substitutes a modified guest binary that skips BLS verification or relaxes quorum thresholds, producing fraudulent `HeaderRecord` PDAs accepted by consumers.
 * **Mitigation**:
   - The RISC0 zkVM produces a cryptographic STARK proof of correct execution of the pinned guest binary.
   - The LEZ attester program verifies the proof against the pinned **guest image ID** (derived from guest binary digest `01ab35fda434...`); any modification to the guest binary produces a different image ID and is rejected.
   - Reproducible guest builds are documented in [`docs/REPRODUCE.md`](REPRODUCE.md): anyone can rebuild the identical binary and verify the SHA-256 digest independently.
+
+### 2.12 Two-Way Bridge Escrow & Signature Security (`MosooLocker.sol` + Burn Ledgers)
+* **Attack**: An attacker attempts to forge unlock signatures on Ethereum, replay previously redeemed burn receipts, exploit fee-on-transfer discrepancies, or seize contract ownership.
+* **Mitigation**:
+  - **EIP-2 Malleability Defense**: The Ethereum contract `MosooLocker.sol` enforces that ECDSA signature $s$-values must reside in the lower half of the secp256k1 curve ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$), preventing transaction hash and signature malleability.
+  - **Zero-Address Signer Rejection**: `_verifySignature` strictly rejects recovered signer address `address(0)` to prevent null-signature exploitation.
+  - **Burn Nullifier Tracking**: The locker stores `claimedBurnIds[burnId] = true` before transferring funds; any attempt to unlock with an existing `burnId` reverts with `AlreadyClaimed`.
+  - **Cryptographic Hash Parity**: Burn IDs are derived using identical byte packing between Rust (`derive_burn_id`, `derive_burn_erc20_id`) and Solidity (`keccak256(abi.encodePacked(...))`) with domain-separated prefixes (`mosoo_burn_v1`, `mosoo_burn_erc20_v1`).
+  - **Fee-on-Transfer Protection**: ERC-20 deposits measure actual balance differentials (`balanceAfter - balanceBefore`) rather than raw caller arguments, guaranteeing the escrow holds 100% of the collateral for tokens minted on LEZ.
+  - **Two-Step Ownership Transfer**: Contract administration employs a two-step handover pattern (`transferOwnership` + `acceptOwnership`), eliminating accidental ownership transfers to invalid addresses.
 
 ---
 

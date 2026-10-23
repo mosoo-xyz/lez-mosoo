@@ -227,8 +227,13 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
 
     // 5. Alice transfers 4 mETH to Bob on LEZ
     let transfer_amount: u128 = 4_000_000_000_000_000_000; // 4 ETH
-    lez_ledger.transfer_meth(&alice_lez, &bob_lez, transfer_amount).unwrap();
-    assert_eq!(lez_ledger.get_balance(&alice_lez), 6_000_000_000_000_000_000);
+    lez_ledger
+        .transfer_meth(&alice_lez, &bob_lez, transfer_amount)
+        .unwrap();
+    assert_eq!(
+        lez_ledger.get_balance(&alice_lez),
+        6_000_000_000_000_000_000
+    );
     assert_eq!(lez_ledger.get_balance(&bob_lez), 4_000_000_000_000_000_000);
     assert_eq!(lez_ledger.total_supply_wei, deposit_amount); // Supply unchanged
 
@@ -382,7 +387,10 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
     // 3. Mint 1,000 mUSDC on LEZ
     let minted = lez_ledger.mint_tokens(&claim, &mut lez_nullifiers).unwrap();
     assert_eq!(minted, deposit_amount);
-    assert_eq!(lez_ledger.get_balance(&usdc_token, &alice_lez), deposit_amount);
+    assert_eq!(
+        lez_ledger.get_balance(&usdc_token, &alice_lez),
+        deposit_amount
+    );
     assert_eq!(lez_ledger.get_total_supply(&usdc_token), deposit_amount);
 
     // Cross-Chain Invariant 1: Locked USDC on Ethereum == Active mUSDC on LEZ

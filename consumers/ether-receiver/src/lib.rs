@@ -477,12 +477,15 @@ impl MethLedger {
         let verified_wei = claim_native_eth_deposit(claim, nullifiers)?;
         let amount = verified_wei as u128;
 
-        let entry = self.accounts.entry(claim.recipient).or_insert_with(|| MethAccount {
-            owner: claim.recipient,
-            balance_wei: 0,
-            deposit_count: 0,
-            burn_count: 0,
-        });
+        let entry = self
+            .accounts
+            .entry(claim.recipient)
+            .or_insert_with(|| MethAccount {
+                owner: claim.recipient,
+                balance_wei: 0,
+                deposit_count: 0,
+                burn_count: 0,
+            });
 
         entry.balance_wei = entry
             .balance_wei
@@ -508,12 +511,15 @@ impl MethLedger {
         let verified_wei = claim_ether_atomic(args, nullifiers)?;
         let amount = verified_wei as u128;
 
-        let entry = self.accounts.entry(recipient).or_insert_with(|| MethAccount {
-            owner: recipient,
-            balance_wei: 0,
-            deposit_count: 0,
-            burn_count: 0,
-        });
+        let entry = self
+            .accounts
+            .entry(recipient)
+            .or_insert_with(|| MethAccount {
+                owner: recipient,
+                balance_wei: 0,
+                deposit_count: 0,
+                burn_count: 0,
+            });
 
         entry.balance_wei = entry
             .balance_wei
@@ -604,8 +610,14 @@ impl MethLedger {
             .checked_add(amount_wei)
             .ok_or(EtherReceiverError::Overflow)?;
 
-        let burn_id =
-            derive_burn_id(chain_id, owner, eth_recipient, amount_wei, burn_nonce, lez_slot);
+        let burn_id = derive_burn_id(
+            chain_id,
+            owner,
+            eth_recipient,
+            amount_wei,
+            burn_nonce,
+            lez_slot,
+        );
 
         let receipt = BurnReceipt {
             burn_id,
@@ -1314,7 +1326,9 @@ mod tests {
         assert_eq!(ledger.get_balance(&alice), 5_000_000_000_000_000_000);
 
         // Alice transfers 2 ETH of mETH to Bob
-        ledger.transfer_meth(&alice, &bob, 2_000_000_000_000_000_000).unwrap();
+        ledger
+            .transfer_meth(&alice, &bob, 2_000_000_000_000_000_000)
+            .unwrap();
         assert_eq!(ledger.get_balance(&alice), 3_000_000_000_000_000_000);
         assert_eq!(ledger.get_balance(&bob), 2_000_000_000_000_000_000);
         assert_eq!(ledger.total_supply_wei, 5_000_000_000_000_000_000);
@@ -1364,7 +1378,13 @@ mod tests {
 
         // Alice burns 4 ETH of mETH to unlock on Ethereum
         let burn_receipt = ledger
-            .burn_meth(ETH_MAINNET_CHAIN_ID, &alice, 4_000_000_000_000_000_000, &eth_recipient, 62180)
+            .burn_meth(
+                ETH_MAINNET_CHAIN_ID,
+                &alice,
+                4_000_000_000_000_000_000,
+                &eth_recipient,
+                62180,
+            )
             .unwrap();
 
         assert_eq!(burn_receipt.amount_wei, 4_000_000_000_000_000_000);
@@ -1422,7 +1442,10 @@ mod tests {
             &eth_recipient,
             62180,
         );
-        assert!(matches!(res, Err(EtherReceiverError::InsufficientBalance { .. })));
+        assert!(matches!(
+            res,
+            Err(EtherReceiverError::InsufficientBalance { .. })
+        ));
     }
 
     #[test]

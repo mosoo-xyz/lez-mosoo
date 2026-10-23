@@ -515,7 +515,9 @@ impl Erc20Ledger {
     }
 
     pub fn get_balance(&self, token: &[u8; 20], owner: &[u8; 32]) -> u128 {
-        self.accounts.get(&(*token, *owner)).map_or(0, |a| a.balance)
+        self.accounts
+            .get(&(*token, *owner))
+            .map_or(0, |a| a.balance)
     }
 
     pub fn get_total_supply(&self, token: &[u8; 20]) -> u128 {
@@ -544,7 +546,10 @@ impl Erc20Ledger {
             burn_count: 0,
         });
 
-        entry.balance = entry.balance.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+        entry.balance = entry
+            .balance
+            .checked_add(amount)
+            .ok_or(ReceiverError::Overflow)?;
         entry.deposit_count += 1;
 
         let supply = self.total_supplies.entry(claim.token_contract).or_insert(0);
@@ -564,13 +569,13 @@ impl Erc20Ledger {
         if amount == 0 {
             return Ok(());
         }
-        let from_entry = self
-            .accounts
-            .get_mut(&(*token, *from))
-            .ok_or(ReceiverError::AccountNotFound {
-                token: *token,
-                owner: *from,
-            })?;
+        let from_entry =
+            self.accounts
+                .get_mut(&(*token, *from))
+                .ok_or(ReceiverError::AccountNotFound {
+                    token: *token,
+                    owner: *from,
+                })?;
 
         if from_entry.balance < amount {
             return Err(ReceiverError::InsufficientBalance {
@@ -580,14 +585,20 @@ impl Erc20Ledger {
         }
         from_entry.balance -= amount;
 
-        let to_entry = self.accounts.entry((*token, *to)).or_insert_with(|| Erc20Account {
-            token: *token,
-            owner: *to,
-            balance: 0,
-            deposit_count: 0,
-            burn_count: 0,
-        });
-        to_entry.balance = to_entry.balance.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+        let to_entry = self
+            .accounts
+            .entry((*token, *to))
+            .or_insert_with(|| Erc20Account {
+                token: *token,
+                owner: *to,
+                balance: 0,
+                deposit_count: 0,
+                burn_count: 0,
+            });
+        to_entry.balance = to_entry
+            .balance
+            .checked_add(amount)
+            .ok_or(ReceiverError::Overflow)?;
 
         Ok(())
     }
@@ -610,13 +621,13 @@ impl Erc20Ledger {
             });
         }
 
-        let user = self
-            .accounts
-            .get_mut(&(*token, *owner))
-            .ok_or(ReceiverError::AccountNotFound {
-                token: *token,
-                owner: *owner,
-            })?;
+        let user =
+            self.accounts
+                .get_mut(&(*token, *owner))
+                .ok_or(ReceiverError::AccountNotFound {
+                    token: *token,
+                    owner: *owner,
+                })?;
 
         if user.balance < amount {
             return Err(ReceiverError::InsufficientBalance {
@@ -1373,7 +1384,9 @@ mod tests {
         ledger.mint_tokens(&claim, &mut nullifiers).unwrap();
 
         // Alice transfers 400 tokens to Bob
-        ledger.transfer_tokens(&token, &alice, &bob, 400_000_000).unwrap();
+        ledger
+            .transfer_tokens(&token, &alice, &bob, 400_000_000)
+            .unwrap();
         assert_eq!(ledger.get_balance(&token, &alice), 600_000_000);
         assert_eq!(ledger.get_balance(&token, &bob), 400_000_000);
         assert_eq!(ledger.get_total_supply(&token), 1_000_000_000);

@@ -92,7 +92,7 @@ To ensure absolute transparency regarding what is functioning today versus what 
 
 | Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
 | :--- | :---: | :--- | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (138/138 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (154/154 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
 | **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | M0 (Delivered) | 24 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |

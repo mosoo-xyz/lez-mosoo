@@ -38,7 +38,7 @@ This document provides a technical mapping between the requirements in the [Logo
 
 ## 3. Adversarial Security & Edge Cases Remediated
 
-All 12 adversarial attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
+All 24 adversarial attack scenarios across 12 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
 
 1. **Fabricated Beacon Header**: Rejection of unsigned or forged beacon headers (`MosooError::InvalidSignature`).
 2. **Sub-Threshold Participation**: Rejection of updates with < 342/512 validator quorum (`MosooError::InsufficientParticipation`).
@@ -52,6 +52,9 @@ All 12 adversarial attack classes are covered by automated integration tests (`t
 10. **Cross-Block Nullifier Collisions**: Derivation of unique receipt log subject keys incorporating block hash, slot, tx index, and log index.
 11. **Cross-Stage Job Tampering**: Cryptographic `update_digest` binding between `begin`, `miller`, and `finish` stages (`MosooError::JobDigestMismatch`).
 12. **Historical Block Root Forgery**: Authentication of historical blocks against the `BeaconState.block_roots` accumulator vector at generalized index 37.
+13-24. **Extended Protocol & Security Invariants**: Repeat transfer nullifier isolation (13), high-bit u64 overflow prevention (14), malformed RLP panic bounds (15), circular buffer aliasing beyond 8,192 slots (16), terminal job state replay rejection (17), statement ID nullifier tampering defense (18), recovery checkpoint backward rollback rejection (19), reverted receipt rejection (20), out-of-order update slot rejection (21), recursion DOS prevention (22), mandatory weak-subjectivity freshness bounds (23), and false predicate fail-closed behavior (24).
+
+Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.rs` and `contracts/MosooLocker.sol`) hardens against tampered burn receipt IDs, EIP-2 signature malleability, zero-address signers, fee-on-transfer discrepancies, and unauthorized ownership takeovers.
 
 ---
 

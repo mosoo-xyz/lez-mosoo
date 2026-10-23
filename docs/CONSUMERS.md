@@ -169,3 +169,138 @@ On the live Logos Execution Zone runtime:
   ```
 - When a claim transaction executes, LEZ attempts to initialize the PDA account.
 - If the account already exists (indicating a prior claim), the LEZ transaction runtime aborts with an account collision error, preventing replay at the consensus layer before any token minting instruction executes.
+
+---
+
+## 5. Two-Way Token Bridge & Burn Ledgers (LEZ ↔ Ethereum)
+
+In addition to one-way state attestations, Mosoo implements a complete **Two-Way Cross-Chain Token Bridge** maintaining strict cross-chain supply invariance:
+
+$$\text{Locked on Ethereum Escrow} \equiv \text{Active Supply on LEZ}$$
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                          Two-Way Token Bridge Flow                          │
+│                                                                             │
+│  [Ethereum EVM]                                    [Logos LEZ]              │
+│  MosooLocker.sol                                   Consumers / Ledgers      │
+│                                                                             │
+│  depositETH(lezRecipient) ──(Light Client MPT)──► mint_meth() (1:1 mETH)    │
+│                                                          │                  │
+│                                                          ▼                  │
+│                                                  transfer_meth() (LEZ P2P)  │
+│                                                          │                  │
+│                                                          ▼                  │
+│  unlockETH(burnReceipt, sig) ◄──(BurnReceipt)────── burn_meth()             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5.1 Native ETH Wrapped Ledger (`MethLedger`)
+
+The `MethLedger` in `consumers/ether-receiver` maintains state accounts for wrapped ether (`mETH`):
+
+```rust
+use ether_receiver::{MethLedger, NativeEthDepositClaim, EtherNullifierSet};
+
+let mut ledger = MethLedger::new();
+let mut nullifiers = EtherNullifierSet::new();
+
+// 1. Mint mETH on LEZ upon verified Ethereum deposit
+let minted_wei = ledger.mint_from_deposit(&deposit_claim, &mut nullifiers)
+    .expect("Deposit mint succeeded");
+
+// 2. Transfer mETH between LEZ accounts
+ledger.transfer_meth(&alice_lez, &bob_lez, 2_000_000_000_000_000_000)
+    .expect("Transfer succeeded");
+
+// 3. Burn mETH on LEZ to unlock native ETH on Ethereum
+let burn_receipt = ledger.burn_meth(
+    ETH_MAINNET_CHAIN_ID,
+    &bob_lez,
+    2_000_000_000_000_000_000, // 2 ETH
+    &eth_recipient_address,
+    current_lez_slot,
+).expect("Burn succeeded");
+```
+
+### 5.2 ERC-20 Wrapped Ledger (`Erc20Ledger`)
+
+The `Erc20Ledger` in `consumers/erc20-receiver` supports arbitrary ERC-20 tokens (e.g., USDC, USDT, DAI):
+
+```rust
+use erc20_receiver::{Erc20Ledger, Erc20TransferClaim, NullifierSet};
+
+let mut ledger = Erc20Ledger::new();
+let mut nullifiers = NullifierSet::new();
+
+// 1. Mint wrapped ERC-20 on LEZ upon verified Ethereum transfer
+let minted_tokens = ledger.mint_tokens(&transfer_claim, &mut nullifiers)
+    .expect("Token mint succeeded");
+
+// 2. Peer-to-peer transfer on LEZ
+ledger.transfer_tokens(&token_contract, &alice_lez, &bob_lez, 500_000_000)
+    .expect("Transfer succeeded");
+
+// 3. Burn wrapped tokens on LEZ to unlock on Ethereum
+let burn_receipt = ledger.burn_tokens(
+    ETH_MAINNET_CHAIN_ID,
+    &token_contract,
+    &bob_lez,
+    500_000_000,
+    &eth_recipient_address,
+    current_lez_slot,
+).expect("Burn succeeded");
+```
+
+### 5.3 Cryptographic Burn ID & Ethereum Unlock (`MosooLocker.sol`)
+
+The `BurnReceipt` derives a collision-resistant 32-byte identifier using exact cryptographic byte-alignment with Solidity's `keccak256(abi.encodePacked(...))`:
+
+- **Native ETH (`derive_burn_id` / 145 bytes packed):**
+  ```text
+  keccak256(
+    "mosoo_burn_v1" || chain_id (uint256) || lez_owner (bytes32) ||
+    eth_recipient (address) || amount_wei (uint256) || burn_nonce (uint64) || lez_slot (uint64)
+  )
+  ```
+- **ERC-20 (`derive_burn_erc20_id` / 171 bytes packed):**
+  ```text
+  keccak256(
+    "mosoo_burn_erc20_v1" || chain_id (uint256) || token_contract (address) ||
+    lez_owner (bytes32) || eth_recipient (address) || amount (uint256) ||
+    burn_nonce (uint64) || lez_slot (uint64)
+  )
+  ```
+
+On the Ethereum EVM side, `MosooLocker.sol` verifies the attested burn and releases escrowed funds:
+
+```solidity
+// Native ETH Unlock
+function unlockETH(
+    bytes32 burnId,
+    bytes32 lezBurner,
+    address payable recipient,
+    uint256 amountWei,
+    uint64 burnNonce,
+    uint64 lezSlot,
+    bytes calldata signature
+) external nonReentrant;
+
+// ERC-20 Unlock
+function unlockERC20(
+    bytes32 burnId,
+    address token,
+    bytes32 lezBurner,
+    address recipient,
+    uint256 amount,
+    uint64 burnNonce,
+    uint64 lezSlot,
+    bytes calldata signature
+) external nonReentrant;
+```
+
+**Security Guarantees on Ethereum:**
+- **Replay Protection:** `claimedBurnIds[burnId]` records every processed burn; duplicates revert immediately.
+- **EIP-2 Malleability Defense:** Signatures enforce strict upper bound on $s$ ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$) and reject `address(0)` recovered signers.
+- **Fee-on-Transfer Protection:** Balance differential pattern on ERC-20 deposits ensures only actual tokens received are credited.
+- **Two-Step Ownership:** Contract ownership changes require `transferOwnership` followed by `acceptOwnership`.
