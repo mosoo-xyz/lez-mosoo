@@ -24,17 +24,24 @@ cargo test --test adversarial_mutation_tests
 # 3. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
 cargo test --test sequencer_e2e_tests
 
-# 4. Verify offline sequencer harness evidence
+# 4. Verify live testnet sequencer health, gas limits, and blocks
+python3 scripts/verify-onchain.py
+
+# 5. Check testnet wallet, balances, and Piñata faucet status
+python3 scripts/lez-wallet.py faucet-status
+python3 scripts/lez-wallet.py new
+
+# 6. Verify offline sequencer harness evidence (LEZ v0.4 simulation)
 python3 scripts/verify-evidence.py
 
-# 5. Run verification against canonical Ethereum Period 1884 test vectors
+# 7. Run verification against canonical Ethereum Period 1884 test vectors
 cargo run -p mosoo-cli -- demo --mode fixture
 
-# 6. Run CPU crypto benchmarks
+# 8. Run CPU crypto benchmarks
 cargo run -p mosoo-cli -- benchmarks
 ```
 
-A complete console execution log of this verification suite is committed at [`evidence/verify_all_output.txt`](evidence/verify_all_output.txt).
+Detailed testnet parameters, fee state, and verification steps are documented at [`docs/ONCHAIN.md`](docs/ONCHAIN.md). A complete console execution log of this verification suite is committed at [`evidence/verify_all_output.txt`](evidence/verify_all_output.txt).
 
 ---
 
