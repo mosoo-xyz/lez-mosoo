@@ -6,12 +6,12 @@ license     = "MIT OR Apache-2.0"
 description = "Reference consumer: verifies an Ethereum ERC-20 transfer using the Mosoo attestation module"
 
 [dependencies]
-mosoo-core = { path = "../../mosoo-core" }
-serde      = { workspace = true }
-serde_json = { workspace = true }
-sha2       = { workspace = true }
-thiserror  = { workspace = true }
+mosoo-core       = { path = "../../mosoo-core" }
+alloy-primitives = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+sha2             = { workspace = true }
+thiserror        = { workspace = true }
 
 [dev-dependencies]
-alloy-primitives = { workspace = true }
 alloy-rlp        = { workspace = true }

@@ -1,4 +1,4 @@
-//! ERC-20 receiver — reference consumer for the Mosoo attestation module.
+//! ERC-20 receiver â€” reference consumer for the Mosoo attestation module.
 //!
 //! This LEZ program shows how a dApp consumes a `VerifiedStatement` produced
 //! by the `mosoo` attestation module to trustlessly mint LEZ tokens in exchange
@@ -16,20 +16,22 @@
 //! ## Replay protection
 //!
 //! `VerifiedStatement.statement_id` is a deterministic hash of the Ethereum
-//! state that was verified.  The contract stores it as a nullifier — the same
+//! state that was verified.  The contract stores it as a nullifier â€” the same
 //! statement cannot be claimed twice.
 
+use alloy_primitives::{keccak256, U256};
 use mosoo_core::predicate::derive_erc20_transfer_subject_key;
 use mosoo_core::types::{
     StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
     PROOF_TYPE_ERC20_TRANSFER,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ReceiverError {
-    #[error("predicate did not hold — the Ethereum transfer was not verified")]
+    #[error("predicate did not hold â€” the Ethereum transfer was not verified")]
     PredicateFailed,
 
     #[error("unauthenticated attester: statement was not signed by authentic Mosoo program ID")]
@@ -70,6 +72,15 @@ pub enum ReceiverError {
 
     #[error("state attestation failed: {0}")]
     AttestationFailed(String),
+
+    #[error("insufficient token balance: available {available}, requested {requested}")]
+    InsufficientBalance { available: u128, requested: u128 },
+
+    #[error("account not found: {owner:?} for token {token:?}")]
+    AccountNotFound { token: [u8; 20], owner: [u8; 32] },
+
+    #[error("arithmetic overflow in token operation")]
+    Overflow,
 }
 
 /// In-memory nullifier store mapping verified statement IDs to spent state.
@@ -427,6 +438,232 @@ pub fn claim_atomic(
     }
 
     Ok(verified_amount)
+}
+
+/// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol:unlockERC20`:
+/// `keccak256(abi.encodePacked("mosoo_burn_erc20_v1", block.chainid, token, lezOwner, recipient, amount, burnNonce, lezSlot))`
+pub fn derive_burn_erc20_id(
+    chain_id: u64,
+    token: &[u8; 20],
+    lez_owner: &[u8; 32],
+    eth_recipient: &[u8; 20],
+    amount: u128,
+    burn_nonce: u64,
+    lez_slot: u64,
+) -> [u8; 32] {
+    let mut packed = Vec::with_capacity(171);
+    packed.extend_from_slice(b"mosoo_burn_erc20_v1"); // 19 bytes
+    packed.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>()); // 32 bytes
+    packed.extend_from_slice(token); // 20 bytes
+    packed.extend_from_slice(lez_owner); // 32 bytes
+    packed.extend_from_slice(eth_recipient); // 20 bytes
+    packed.extend_from_slice(&U256::from(amount).to_be_bytes::<32>()); // 32 bytes
+    packed.extend_from_slice(&burn_nonce.to_be_bytes()); // 8 bytes
+    packed.extend_from_slice(&lez_slot.to_be_bytes()); // 8 bytes
+    keccak256(&packed).0
+}
+
+/// An on-chain account holding synthetic ERC-20 token balances on Logos Execution Zone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Erc20Account {
+    /// Token contract address on Ethereum
+    pub token: [u8; 20],
+    /// Owner address on LEZ (32-byte account ID / PDA)
+    pub owner: [u8; 32],
+    /// Active token balance
+    pub balance: u128,
+    /// Number of successful deposits / mints credited
+    pub deposit_count: u64,
+    /// Number of burns executed
+    pub burn_count: u64,
+}
+
+/// An immutable, cryptographically verifiable Burn Receipt generated on LEZ for ERC-20 tokens.
+/// This receipt is presented to Ethereum `MosooLocker.sol:unlockERC20` to release locked tokens.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Erc20BurnReceipt {
+    /// Canonical burn identifier: keccak256("mosoo_burn_erc20_v1" || chain_id || token || lez_owner || eth_recipient || amount || burn_nonce || slot)
+    pub burn_id: [u8; 32],
+    /// Target Ethereum chain ID (1 for Mainnet, 11155111 for Sepolia)
+    pub chain_id: u64,
+    /// Ethereum token contract address
+    pub token: [u8; 20],
+    /// LEZ account that initiated the burn
+    pub lez_owner: [u8; 32],
+    /// Destination Ethereum recipient address
+    pub eth_recipient: [u8; 20],
+    /// Amount of tokens burned
+    pub amount: u128,
+    /// Sequential burn nonce of this user for this token
+    pub burn_nonce: u64,
+    /// LEZ block / slot height at which the burn was finalized
+    pub lez_slot: u64,
+}
+
+/// The multi-token state ledger for synthetic ERC-20 tokens on LEZ.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Erc20Ledger {
+    accounts: HashMap<([u8; 20], [u8; 32]), Erc20Account>,
+    total_supplies: HashMap<[u8; 20], u128>,
+    total_burned: HashMap<[u8; 20], u128>,
+    burn_receipts: HashMap<[u8; 32], Erc20BurnReceipt>,
+}
+
+impl Erc20Ledger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get_balance(&self, token: &[u8; 20], owner: &[u8; 32]) -> u128 {
+        self.accounts.get(&(*token, *owner)).map_or(0, |a| a.balance)
+    }
+
+    pub fn get_total_supply(&self, token: &[u8; 20]) -> u128 {
+        self.total_supplies.get(token).copied().unwrap_or(0)
+    }
+
+    pub fn get_total_burned(&self, token: &[u8; 20]) -> u128 {
+        self.total_burned.get(token).copied().unwrap_or(0)
+    }
+
+    /// Mint synthetic tokens upon verification of an ERC-20 deposit to `MosooLocker.sol`.
+    pub fn mint_tokens(
+        &mut self,
+        claim: &Erc20TransferClaim,
+        nullifiers: &mut NullifierSet,
+    ) -> Result<u128, ReceiverError> {
+        let verified_amount = claim_erc20_transfer(claim, nullifiers)?;
+        let amount = verified_amount as u128;
+
+        let key = (claim.token_contract, claim.recipient);
+        let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
+            token: claim.token_contract,
+            owner: claim.recipient,
+            balance: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance = entry.balance.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        let supply = self.total_supplies.entry(claim.token_contract).or_insert(0);
+        *supply = supply.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+
+        Ok(entry.balance)
+    }
+
+    /// Transfer synthetic tokens between LEZ accounts.
+    pub fn transfer_tokens(
+        &mut self,
+        token: &[u8; 20],
+        from: &[u8; 32],
+        to: &[u8; 32],
+        amount: u128,
+    ) -> Result<(), ReceiverError> {
+        if amount == 0 {
+            return Ok(());
+        }
+        let from_entry = self
+            .accounts
+            .get_mut(&(*token, *from))
+            .ok_or(ReceiverError::AccountNotFound {
+                token: *token,
+                owner: *from,
+            })?;
+
+        if from_entry.balance < amount {
+            return Err(ReceiverError::InsufficientBalance {
+                available: from_entry.balance,
+                requested: amount,
+            });
+        }
+        from_entry.balance -= amount;
+
+        let to_entry = self.accounts.entry((*token, *to)).or_insert_with(|| Erc20Account {
+            token: *token,
+            owner: *to,
+            balance: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+        to_entry.balance = to_entry.balance.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+
+        Ok(())
+    }
+
+    /// Burn synthetic tokens on LEZ to unlock real ERC-20 tokens on Ethereum.
+    /// Emits a canonical `Erc20BurnReceipt` cryptographically bound to the Ethereum recipient.
+    pub fn burn_tokens(
+        &mut self,
+        chain_id: u64,
+        token: &[u8; 20],
+        owner: &[u8; 32],
+        amount: u128,
+        eth_recipient: &[u8; 20],
+        lez_slot: u64,
+    ) -> Result<Erc20BurnReceipt, ReceiverError> {
+        if amount == 0 {
+            return Err(ReceiverError::AmountTooLow {
+                min_amount: 1,
+                actual: 0,
+            });
+        }
+
+        let user = self
+            .accounts
+            .get_mut(&(*token, *owner))
+            .ok_or(ReceiverError::AccountNotFound {
+                token: *token,
+                owner: *owner,
+            })?;
+
+        if user.balance < amount {
+            return Err(ReceiverError::InsufficientBalance {
+                available: user.balance,
+                requested: amount,
+            });
+        }
+
+        user.balance -= amount;
+        user.burn_count += 1;
+        let burn_nonce = user.burn_count;
+
+        let supply = self.total_supplies.entry(*token).or_insert(0);
+        *supply -= amount;
+
+        let burned = self.total_burned.entry(*token).or_insert(0);
+        *burned = burned.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+
+        let burn_id = derive_burn_erc20_id(
+            chain_id,
+            token,
+            owner,
+            eth_recipient,
+            amount,
+            burn_nonce,
+            lez_slot,
+        );
+
+        let receipt = Erc20BurnReceipt {
+            burn_id,
+            chain_id,
+            token: *token,
+            lez_owner: *owner,
+            eth_recipient: *eth_recipient,
+            amount,
+            burn_nonce,
+            lez_slot,
+        };
+
+        self.burn_receipts.insert(burn_id, receipt.clone());
+        Ok(receipt)
+    }
+
+    /// Retrieve an emitted burn receipt by its canonical 32-byte burn ID.
+    pub fn get_burn_receipt(&self, burn_id: &[u8; 32]) -> Option<&Erc20BurnReceipt> {
+        self.burn_receipts.get(burn_id)
+    }
 }
 
 #[cfg(test)]
@@ -1067,6 +1304,195 @@ mod tests {
             res,
             Err(ReceiverError::TokenContractMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn test_erc20_ledger_mint_and_balance() {
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let token = [0x55; 20];
+        let recipient = [0xAA; 32];
+        let sender = [0x11; 20];
+        let amount = 500_000_000u64; // 500 USDC
+
+        let stmt = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x10,
+            amount,
+            MOSOO_PROGRAM_ID,
+            token,
+            sender,
+            recipient,
+        );
+
+        let claim = Erc20TransferClaim {
+            statement: stmt,
+            token_contract: token,
+            sender,
+            recipient,
+            min_amount: 100_000_000,
+        };
+
+        let new_bal = ledger.mint_tokens(&claim, &mut nullifiers).unwrap();
+        assert_eq!(new_bal, 500_000_000);
+        assert_eq!(ledger.get_balance(&token, &recipient), 500_000_000);
+        assert_eq!(ledger.get_total_supply(&token), 500_000_000);
+    }
+
+    #[test]
+    fn test_erc20_ledger_transfer_between_accounts() {
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let token = [0x55; 20];
+        let alice = [0xAA; 32];
+        let bob = [0xBB; 32];
+        let sender = [0x11; 20];
+
+        let stmt = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x20,
+            1_000_000_000,
+            MOSOO_PROGRAM_ID,
+            token,
+            sender,
+            alice,
+        );
+
+        let claim = Erc20TransferClaim {
+            statement: stmt,
+            token_contract: token,
+            sender,
+            recipient: alice,
+            min_amount: 1_000_000,
+        };
+
+        ledger.mint_tokens(&claim, &mut nullifiers).unwrap();
+
+        // Alice transfers 400 tokens to Bob
+        ledger.transfer_tokens(&token, &alice, &bob, 400_000_000).unwrap();
+        assert_eq!(ledger.get_balance(&token, &alice), 600_000_000);
+        assert_eq!(ledger.get_balance(&token, &bob), 400_000_000);
+        assert_eq!(ledger.get_total_supply(&token), 1_000_000_000);
+    }
+
+    #[test]
+    fn test_erc20_ledger_transfer_insufficient_balance_rejected() {
+        let mut ledger = Erc20Ledger::new();
+        let token = [0x55; 20];
+        let alice = [0xAA; 32];
+        let bob = [0xBB; 32];
+
+        let res = ledger.transfer_tokens(&token, &alice, &bob, 100);
+        assert!(matches!(res, Err(ReceiverError::AccountNotFound { .. })));
+    }
+
+    #[test]
+    fn test_erc20_ledger_burn_generates_burn_receipt() {
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let token = [0x55; 20];
+        let alice = [0xAA; 32];
+        let eth_recipient = [0x99; 20];
+        let sender = [0x11; 20];
+
+        let stmt = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x30,
+            800_000_000,
+            MOSOO_PROGRAM_ID,
+            token,
+            sender,
+            alice,
+        );
+
+        let claim = Erc20TransferClaim {
+            statement: stmt,
+            token_contract: token,
+            sender,
+            recipient: alice,
+            min_amount: 1_000_000,
+        };
+
+        ledger.mint_tokens(&claim, &mut nullifiers).unwrap();
+
+        // Alice burns 300 tokens
+        let receipt = ledger
+            .burn_tokens(
+                ETH_MAINNET_CHAIN_ID,
+                &token,
+                &alice,
+                300_000_000,
+                &eth_recipient,
+                62_200,
+            )
+            .unwrap();
+
+        assert_eq!(receipt.amount, 300_000_000);
+        assert_eq!(receipt.token, token);
+        assert_eq!(receipt.eth_recipient, eth_recipient);
+        assert_eq!(receipt.lez_owner, alice);
+        assert_eq!(receipt.burn_nonce, 1);
+        assert_eq!(receipt.lez_slot, 62_200);
+
+        assert_eq!(ledger.get_balance(&token, &alice), 500_000_000);
+        assert_eq!(ledger.get_total_supply(&token), 500_000_000);
+        assert_eq!(ledger.get_total_burned(&token), 300_000_000);
+
+        let retrieved = ledger.get_burn_receipt(&receipt.burn_id).unwrap();
+        assert_eq!(retrieved.burn_id, receipt.burn_id);
+    }
+
+    #[test]
+    fn test_erc20_ledger_double_deposit_mint_rejected_by_nullifier() {
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let token = [0x55; 20];
+        let alice = [0xAA; 32];
+        let sender = [0x11; 20];
+
+        let stmt = make_erc20_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x40,
+            200_000_000,
+            MOSOO_PROGRAM_ID,
+            token,
+            sender,
+            alice,
+        );
+
+        let claim = Erc20TransferClaim {
+            statement: stmt,
+            token_contract: token,
+            sender,
+            recipient: alice,
+            min_amount: 1_000_000,
+        };
+
+        // First mint succeeds
+        ledger.mint_tokens(&claim, &mut nullifiers).unwrap();
+
+        // Second mint fails
+        let res = ledger.mint_tokens(&claim, &mut nullifiers);
+        assert_eq!(res.unwrap_err(), ReceiverError::AlreadyClaimed);
+        assert_eq!(ledger.get_balance(&token, &alice), 200_000_000);
+    }
+
+    #[test]
+    fn test_derive_burn_erc20_id_deterministic() {
+        let id1 = derive_burn_erc20_id(1, &[0x11; 20], &[0x22; 32], &[0x33; 20], 1_000, 1, 100);
+        let id2 = derive_burn_erc20_id(1, &[0x11; 20], &[0x22; 32], &[0x33; 20], 1_000, 1, 100);
+        assert_eq!(id1, id2);
+
+        let id3 = derive_burn_erc20_id(1, &[0x11; 20], &[0x22; 32], &[0x33; 20], 1_001, 1, 100);
+        assert_ne!(id1, id3);
     }
 
     // Chain IDs used in tests above

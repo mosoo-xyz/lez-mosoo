@@ -15,7 +15,7 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 147 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 154 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the full Two-Way Bridge integration test suite
@@ -77,7 +77,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **147 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **154 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 

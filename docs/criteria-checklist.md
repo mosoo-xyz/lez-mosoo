@@ -57,17 +57,17 @@ All 12 adversarial attack classes are covered by automated integration tests (`t
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **147 automated tests** (144 unit/integration + 3 doc tests) passing with 0 warnings:
+The repository test suite consists of **154 automated tests** (151 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
 | **Core Verification & Crypto** | `mosoo-core/src/` | 33 (32 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding |
 | **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 24 | 24 explicit attack scenarios tested against guest handlers |
 | **Light Client Suite** | `tests/light_client_tests.rs` | 21 | Canonical Period 1884 vector, bootstrap, multi-network domains |
-| **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 2 | End-to-end Ethereum MosooLocker deposit, mETH mint, transfer, burn, and unlock |
+| **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 3 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, and unlock |
 | **LEZ v0.4 Acceptance Suite** | `tests/lez_v04_acceptance_tests.rs` | 4 | Single-tx gas envelopes (<=10M), PDA seeds, CPI dispatch, Core proxy routing |
 | **Privacy & Zero-Correlation** | `tests/privacy_and_correlation_tests.rs` | 5 | Address shielding, unlinkability, byte-level state-diff inspection |
-| **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 20 (19 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, replay rejection, parameter checks |
+| **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 26 (25 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, burn & unlock |
 | **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 27 (26 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, BurnReceipt generation |
 | **Sequencer E2E Suite** | `tests/sequencer_e2e_tests.rs` | 2 | Full 3-Tx lifecycle on mock sequencer across Mainnet and Sepolia |
 | **Consumer Lifecycle E2E** | `tests/e2e_consumer_tests.rs` | 2 | Cross-slot nullifier persistence and end-to-end claim execution |
@@ -81,7 +81,7 @@ The repository test suite consists of **147 automated tests** (144 unit/integrat
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` token and burn ledger, dual reference consumers with atomic same-transaction verification, 147 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 154 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.
