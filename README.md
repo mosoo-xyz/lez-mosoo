@@ -15,19 +15,23 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 138 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 147 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
-# 2. Run the 24 adversarial mutation attack tests
+# 2. Run the full Two-Way Bridge integration test suite
+cargo test --test two_way_bridge_tests
+
+# 3. Run the 24 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
-# 3. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
+# 4. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
 cargo test --test sequencer_e2e_tests
 
-# 4. Verify live testnet sequencer health, gas limits, and blocks
-python3 scripts/verify-onchain.py
+# 5. Run the live Two-Way Bridge testnet pipeline (A to Z)
+python3 scripts/testnet-two-way-bridge.py
 
-# 5. Check testnet wallet, balances, and Piñata faucet status
+# 6. Verify live testnet sequencer health, gas limits, and blocks
+python3 scripts/verify-onchain.py
 python3 scripts/lez-wallet.py faucet-status
 python3 scripts/lez-wallet.py new
 
@@ -69,10 +73,11 @@ Detailed testnet parameters, fee state, and verification steps are documented at
   Enforces 1,728,000 slot (~240 days bound, 14–30 days operational) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Provides `handle_recover_instance` to re-anchor stalled instances after consensus network partitions without breaking consumer compatibility.
 
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
-- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
+- **Complete Two-Way Bridge & Ethereum Locker (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
+- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **138 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **147 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 

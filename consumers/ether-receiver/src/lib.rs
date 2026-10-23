@@ -1,8 +1,10 @@
+use alloy_primitives::{keccak256, U256};
 use mosoo_core::predicate::derive_eth_deposit_subject_key;
 use mosoo_core::types::{
     StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
     PROOF_TYPE_ETH_DEPOSIT,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -49,6 +51,15 @@ pub enum EtherReceiverError {
 
     #[error("state attestation failed: {0}")]
     AttestationFailed(String),
+
+    #[error("insufficient mETH balance: available {available} wei, requested {requested} wei")]
+    InsufficientBalance { available: u128, requested: u128 },
+
+    #[error("account not found: {0:?}")]
+    AccountNotFound([u8; 32]),
+
+    #[error("arithmetic overflow in token operation")]
+    Overflow,
 }
 
 /// In-memory nullifier store mapping verified statement IDs to spent state.
@@ -378,6 +389,242 @@ pub fn claim_ether_atomic(
     }
 
     Ok(verified_wei)
+}
+
+/// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol`:
+/// `keccak256(abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot))`
+pub fn derive_burn_id(
+    chain_id: u64,
+    lez_owner: &[u8; 32],
+    eth_recipient: &[u8; 20],
+    amount_wei: u128,
+    burn_nonce: u64,
+    lez_slot: u64,
+) -> [u8; 32] {
+    let mut packed = Vec::with_capacity(145);
+    packed.extend_from_slice(b"mosoo_burn_v1");
+    packed.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    packed.extend_from_slice(lez_owner);
+    packed.extend_from_slice(eth_recipient);
+    packed.extend_from_slice(&U256::from(amount_wei).to_be_bytes::<32>());
+    packed.extend_from_slice(&burn_nonce.to_be_bytes());
+    packed.extend_from_slice(&lez_slot.to_be_bytes());
+    keccak256(&packed).0
+}
+
+/// An on-chain account holding synthetic `mETH` on Logos Execution Zone.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MethAccount {
+    /// Owner address on LEZ (32-byte account ID / PDA)
+    pub owner: [u8; 32],
+    /// Active mETH token balance in wei
+    pub balance_wei: u128,
+    /// Number of successful deposits / mints credited
+    pub deposit_count: u64,
+    /// Number of burns executed
+    pub burn_count: u64,
+}
+
+/// An immutable, cryptographically verifiable Burn Receipt generated on LEZ.
+/// This receipt is presented to the Ethereum `MosooLocker.sol` contract to release real locked ETH.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BurnReceipt {
+    /// Canonical burn identifier: keccak256("mosoo_burn_v1" || chain_id || lez_owner || eth_recipient || amount_wei || burn_nonce || slot)
+    pub burn_id: [u8; 32],
+    /// Target Ethereum chain ID (e.g., 1 for Mainnet, 11155111 for Sepolia)
+    pub chain_id: u64,
+    /// LEZ account that initiated the burn
+    pub lez_owner: [u8; 32],
+    /// Destination Ethereum recipient address
+    pub eth_recipient: [u8; 20],
+    /// Amount of mETH burned (in wei)
+    pub amount_wei: u128,
+    /// Sequential burn nonce of this user
+    pub burn_nonce: u64,
+    /// LEZ block / slot height at which the burn was finalized
+    pub lez_slot: u64,
+}
+
+/// The state ledger for `mETH` synthetic ether on LEZ, tracking user balances,
+/// total supply, and emitted burn receipts.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MethLedger {
+    accounts: HashMap<[u8; 32], MethAccount>,
+    pub total_supply_wei: u128,
+    pub total_burned_wei: u128,
+    burn_receipts: HashMap<[u8; 32], BurnReceipt>,
+}
+
+impl MethLedger {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get_balance(&self, owner: &[u8; 32]) -> u128 {
+        self.accounts.get(owner).map_or(0, |a| a.balance_wei)
+    }
+
+    pub fn get_account(&self, owner: &[u8; 32]) -> Option<&MethAccount> {
+        self.accounts.get(owner)
+    }
+
+    /// Mint synthetic `mETH` upon verification of a native ETH deposit to `MosooLocker.sol`.
+    pub fn mint_meth(
+        &mut self,
+        claim: &NativeEthDepositClaim,
+        nullifiers: &mut EtherNullifierSet,
+    ) -> Result<u128, EtherReceiverError> {
+        let verified_wei = claim_native_eth_deposit(claim, nullifiers)?;
+        let amount = verified_wei as u128;
+
+        let entry = self.accounts.entry(claim.recipient).or_insert_with(|| MethAccount {
+            owner: claim.recipient,
+            balance_wei: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance_wei = entry
+            .balance_wei
+            .checked_add(amount)
+            .ok_or(EtherReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        self.total_supply_wei = self
+            .total_supply_wei
+            .checked_add(amount)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        Ok(entry.balance_wei)
+    }
+
+    /// Mint synthetic `mETH` via atomic same-transaction verification.
+    pub fn mint_meth_atomic(
+        &mut self,
+        args: AtomicEtherClaimArgs,
+        nullifiers: &mut EtherNullifierSet,
+    ) -> Result<u128, EtherReceiverError> {
+        let recipient = args.recipient;
+        let verified_wei = claim_ether_atomic(args, nullifiers)?;
+        let amount = verified_wei as u128;
+
+        let entry = self.accounts.entry(recipient).or_insert_with(|| MethAccount {
+            owner: recipient,
+            balance_wei: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance_wei = entry
+            .balance_wei
+            .checked_add(amount)
+            .ok_or(EtherReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        self.total_supply_wei = self
+            .total_supply_wei
+            .checked_add(amount)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        Ok(entry.balance_wei)
+    }
+
+    /// Transfer synthetic `mETH` between LEZ accounts.
+    pub fn transfer_meth(
+        &mut self,
+        from: &[u8; 32],
+        to: &[u8; 32],
+        amount_wei: u128,
+    ) -> Result<(), EtherReceiverError> {
+        if amount_wei == 0 {
+            return Ok(());
+        }
+        let from_account = self
+            .accounts
+            .get_mut(from)
+            .ok_or(EtherReceiverError::AccountNotFound(*from))?;
+
+        if from_account.balance_wei < amount_wei {
+            return Err(EtherReceiverError::InsufficientBalance {
+                available: from_account.balance_wei,
+                requested: amount_wei,
+            });
+        }
+        from_account.balance_wei -= amount_wei;
+
+        let to_account = self.accounts.entry(*to).or_insert_with(|| MethAccount {
+            owner: *to,
+            balance_wei: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+        to_account.balance_wei = to_account
+            .balance_wei
+            .checked_add(amount_wei)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        Ok(())
+    }
+
+    /// Burn synthetic `mETH` on LEZ to unlock real ETH on Ethereum.
+    /// Emits a canonical `BurnReceipt` cryptographically bound to the Ethereum recipient.
+    pub fn burn_meth(
+        &mut self,
+        chain_id: u64,
+        owner: &[u8; 32],
+        amount_wei: u128,
+        eth_recipient: &[u8; 20],
+        lez_slot: u64,
+    ) -> Result<BurnReceipt, EtherReceiverError> {
+        if amount_wei == 0 {
+            return Err(EtherReceiverError::BalanceTooLow {
+                actual: 0,
+                required: 1,
+            });
+        }
+        let user = self
+            .accounts
+            .get_mut(owner)
+            .ok_or(EtherReceiverError::AccountNotFound(*owner))?;
+
+        if user.balance_wei < amount_wei {
+            return Err(EtherReceiverError::InsufficientBalance {
+                available: user.balance_wei,
+                requested: amount_wei,
+            });
+        }
+
+        user.balance_wei -= amount_wei;
+        user.burn_count += 1;
+        let burn_nonce = user.burn_count;
+
+        self.total_supply_wei -= amount_wei;
+        self.total_burned_wei = self
+            .total_burned_wei
+            .checked_add(amount_wei)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        let burn_id =
+            derive_burn_id(chain_id, owner, eth_recipient, amount_wei, burn_nonce, lez_slot);
+
+        let receipt = BurnReceipt {
+            burn_id,
+            chain_id,
+            lez_owner: *owner,
+            eth_recipient: *eth_recipient,
+            amount_wei,
+            burn_nonce,
+            lez_slot,
+        };
+
+        self.burn_receipts.insert(burn_id, receipt.clone());
+        Ok(receipt)
+    }
+
+    /// Retrieve an emitted burn receipt by its canonical 32-byte burn ID.
+    pub fn get_burn_receipt(&self, burn_id: &[u8; 32]) -> Option<&BurnReceipt> {
+        self.burn_receipts.get(burn_id)
+    }
 }
 
 #[cfg(test)]
@@ -993,5 +1240,235 @@ mod tests {
             res,
             Err(EtherReceiverError::ContractMismatch { .. })
         ));
+    }
+
+    #[test]
+    fn test_meth_ledger_deposit_mint_and_balance() {
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let recipient = [0x55; 32];
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+        let wei = 2_000_000_000_000_000_000u64; // 2 ETH
+
+        let stmt = make_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x10,
+            wei,
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            sender,
+            recipient,
+        );
+
+        let claim = NativeEthDepositClaim {
+            statement: stmt,
+            expected_deposit_contract: deposit_contract,
+            sender,
+            recipient,
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        let new_balance = ledger.mint_meth(&claim, &mut nullifiers).unwrap();
+        assert_eq!(new_balance, 2_000_000_000_000_000_000);
+        assert_eq!(ledger.get_balance(&recipient), 2_000_000_000_000_000_000);
+        assert_eq!(ledger.total_supply_wei, 2_000_000_000_000_000_000);
+
+        let account = ledger.get_account(&recipient).unwrap();
+        assert_eq!(account.deposit_count, 1);
+        assert_eq!(account.burn_count, 0);
+    }
+
+    #[test]
+    fn test_meth_ledger_transfer_between_lez_accounts() {
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let alice = [0xAA; 32];
+        let bob = [0xBB; 32];
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+
+        let stmt = make_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x20,
+            5_000_000_000_000_000_000,
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            sender,
+            alice,
+        );
+
+        let claim = NativeEthDepositClaim {
+            statement: stmt,
+            expected_deposit_contract: deposit_contract,
+            sender,
+            recipient: alice,
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        ledger.mint_meth(&claim, &mut nullifiers).unwrap();
+        assert_eq!(ledger.get_balance(&alice), 5_000_000_000_000_000_000);
+
+        // Alice transfers 2 ETH of mETH to Bob
+        ledger.transfer_meth(&alice, &bob, 2_000_000_000_000_000_000).unwrap();
+        assert_eq!(ledger.get_balance(&alice), 3_000_000_000_000_000_000);
+        assert_eq!(ledger.get_balance(&bob), 2_000_000_000_000_000_000);
+        assert_eq!(ledger.total_supply_wei, 5_000_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_meth_ledger_transfer_insufficient_balance_rejected() {
+        let mut ledger = MethLedger::new();
+        let alice = [0xAA; 32];
+        let bob = [0xBB; 32];
+
+        // Transfer with zero/non-existent account
+        let res = ledger.transfer_meth(&alice, &bob, 1_000_000_000);
+        assert!(matches!(res, Err(EtherReceiverError::AccountNotFound(_))));
+    }
+
+    #[test]
+    fn test_meth_ledger_burn_produces_valid_burn_receipt() {
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let alice = [0xAA; 32];
+        let eth_recipient = [0x77; 20];
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+
+        let stmt = make_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x30,
+            10_000_000_000_000_000_000, // 10 ETH
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            sender,
+            alice,
+        );
+
+        let claim = NativeEthDepositClaim {
+            statement: stmt,
+            expected_deposit_contract: deposit_contract,
+            sender,
+            recipient: alice,
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        ledger.mint_meth(&claim, &mut nullifiers).unwrap();
+
+        // Alice burns 4 ETH of mETH to unlock on Ethereum
+        let burn_receipt = ledger
+            .burn_meth(ETH_MAINNET_CHAIN_ID, &alice, 4_000_000_000_000_000_000, &eth_recipient, 62180)
+            .unwrap();
+
+        assert_eq!(burn_receipt.amount_wei, 4_000_000_000_000_000_000);
+        assert_eq!(burn_receipt.eth_recipient, eth_recipient);
+        assert_eq!(burn_receipt.lez_owner, alice);
+        assert_eq!(burn_receipt.burn_nonce, 1);
+        assert_eq!(burn_receipt.lez_slot, 62180);
+
+        // Check balances and invariants
+        assert_eq!(ledger.get_balance(&alice), 6_000_000_000_000_000_000);
+        assert_eq!(ledger.total_supply_wei, 6_000_000_000_000_000_000);
+        assert_eq!(ledger.total_burned_wei, 4_000_000_000_000_000_000);
+
+        // Verify receipt retrievability
+        let retrieved = ledger.get_burn_receipt(&burn_receipt.burn_id).unwrap();
+        assert_eq!(retrieved.burn_id, burn_receipt.burn_id);
+    }
+
+    #[test]
+    fn test_meth_ledger_burn_insufficient_balance_rejected() {
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let alice = [0xAA; 32];
+        let eth_recipient = [0x77; 20];
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+
+        let stmt = make_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x40,
+            1_000_000_000_000_000_000, // 1 ETH
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            sender,
+            alice,
+        );
+
+        let claim = NativeEthDepositClaim {
+            statement: stmt,
+            expected_deposit_contract: deposit_contract,
+            sender,
+            recipient: alice,
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        ledger.mint_meth(&claim, &mut nullifiers).unwrap();
+
+        // Alice tries to burn 2 ETH when she only has 1 ETH
+        let res = ledger.burn_meth(
+            ETH_MAINNET_CHAIN_ID,
+            &alice,
+            2_000_000_000_000_000_000,
+            &eth_recipient,
+            62180,
+        );
+        assert!(matches!(res, Err(EtherReceiverError::InsufficientBalance { .. })));
+    }
+
+    #[test]
+    fn test_meth_ledger_double_deposit_mint_rejected_by_nullifier() {
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let alice = [0xAA; 32];
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+
+        let stmt = make_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            0x50,
+            3_000_000_000_000_000_000,
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            sender,
+            alice,
+        );
+
+        let claim = NativeEthDepositClaim {
+            statement: stmt.clone(),
+            expected_deposit_contract: deposit_contract,
+            sender,
+            recipient: alice,
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        // First mint succeeds
+        ledger.mint_meth(&claim, &mut nullifiers).unwrap();
+
+        // Second mint attempt with the same claim fails due to nullifier
+        let err = ledger.mint_meth(&claim, &mut nullifiers).unwrap_err();
+        assert_eq!(err, EtherReceiverError::AlreadyClaimed);
+        assert_eq!(ledger.get_balance(&alice), 3_000_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_derive_burn_id_deterministic() {
+        let id1 = derive_burn_id(1, &[0x11; 32], &[0x22; 20], 1_000_000, 1, 100);
+        let id2 = derive_burn_id(1, &[0x11; 32], &[0x22; 20], 1_000_000, 1, 100);
+        assert_eq!(id1, id2);
+
+        let id3 = derive_burn_id(1, &[0x11; 32], &[0x22; 20], 1_000_001, 1, 100);
+        assert_ne!(id1, id3);
     }
 }
