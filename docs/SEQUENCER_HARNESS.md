@@ -75,7 +75,7 @@ These execution traces are validated via the Standalone Sequencer Test Harness (
 
 ### Manifest 1: Instance Initialization (`handle_initialize`) [Harness Simulation]
 
-Bootstraps the attestation instance from the canonical Period 1884 checkpoint (15,433,728). Cryptographically proves the 512-validator sync committee against the beacon state root via generalized index 54.
+Bootstraps the attestation instance from the canonical Period 1884 checkpoint (15,433,728). Cryptographically proves the 512-validator sync committee against the beacon state root via generalized index 86 (Electra/Fulu).
 
 - **Transaction Hash:** `0xfb524c5c5c61a32c74a125f85f6b93f15b2f3b443be345ab37e6ad2d4785fc6c`
 - **Block Number:** `500,000`
@@ -83,7 +83,7 @@ Bootstraps the attestation instance from the canonical Period 1884 checkpoint (1
 - **Input Parameters:**
   - `chain_id`: `1` (Ethereum Mainnet)
   - `trusted_slot`: `15,433,728`
-  - `current_sync_committee_branch`: 5 sibling roots of depth 5 (SSZ gindex 54)
+  - `current_sync_committee_branch`: 6 sibling roots of depth 6 (SSZ gindex 86)
 - **State Changes:**
   - Initialized `InstanceAccount` PDA with `latest_finalized_slot = 15,433,728`
   - Committed active 512-validator public key aggregate
@@ -124,7 +124,7 @@ Crucially, the guest strictly validates:
 1. `header.chain_id == instance.chain_id`
 2. `header.slot <= instance.current_slot`
 3. If current header: `header.beacon_block_root == instance.current_header_hash`
-4. If historical header: verified against `BeaconState.block_roots` accumulator at gindex `(37 << 13) | (slot % 8192)` anchored to `instance.current_state_root`
+4. If historical header: verified against `BeaconState.block_roots` accumulator at fork-aware generalized index (`(37 << 13) | (slot % 8192)` for Altair..Deneb, `(69 << 13) | (slot % 8192)` for Electra..Fulu) anchored to `instance.current_state_root`
 5. Emits `VerifiedStatement` binding `attester_program_id`, deterministic nullifier, and `verified_value`
 
 - **Transaction Hash:** `0x1626ff854cdbb1b3255d45fbff15c07b1ab35df672816992fa3beed40dc3aa11`

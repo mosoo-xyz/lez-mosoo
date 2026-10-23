@@ -111,7 +111,7 @@ Detailed cycle breakdowns, hardware profiles, and library comparisons (`blst` vs
 
 ---
 
-## Replay Protection & Privacy Model
+## Replay Protection & Settlement Privacy
 
 When a state attestation succeeds, Mosoo emits a `VerifiedStatement` identified by a deterministic 32-byte nullifier:
 
@@ -125,9 +125,13 @@ For event logs, `subject_key` binds:
 subject_key = block_hash || slot || tx_index || log_index || emitter || topic0
 ```
 
-- **Replay Resistance**: Consuming contracts record the `statement_id` in a dedicated nullifier set. Attempting to claim the same deposit or balance proof twice immediately fails with `AlreadyClaimed`.
-- **Identity Shielding**: Claimant Ethereum addresses, private keys, and raw balances are not written into consumer contract state diffs on LEZ. Only the 32-byte nullifier is stored.
-- **Caveat**: As with any public blockchain, external network observers can attempt traffic analysis on public deposit timing or amounts.
+- **Replay Resistance**: Consuming contracts record the `statement_id` in a dedicated nullifier set. Attempting to claim the same deposit or balance proof twice fails with `AlreadyClaimed`.
+- **On-Chain State Footprint**: Consuming contracts store only the 32-byte nullifier in their account storage diff. Originating Ethereum addresses and raw account balances are not stored in consumer state.
+- **Privacy Boundary & Caveats**:
+  - Mosoo provides pseudonymous nullifier tracking, **not** a zero-knowledge mixer or shielded pool.
+  - The underlying Ethereum transaction is public on the source chain.
+  - External network observers can perform off-chain correlation if deposit amounts and claim timestamps closely match. True unlinkability in production requires relayer batching or third-party relayer aggregation.
+  - These invariants are verified in [`tests/privacy_and_correlation_tests.rs`](tests/privacy_and_correlation_tests.rs) and the sequencer harness. Live public testnet validation will occur in Milestone M1.
 
 ---
 

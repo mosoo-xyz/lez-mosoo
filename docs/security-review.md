@@ -16,7 +16,8 @@ Mosoo operates as an on-chain Ethereum consensus verification engine and state p
 ### Consensus Layer Assumptions & Cryptographic Thresholds
 - **Safety Threshold (>= 342 / 512 Signers):** The light client enforces Ethereum's 2/3 aggregate participation threshold (>= 342 of 512 sync committee validators). Under the standard Ethereum consensus security model, an adversary cannot forge a valid BLS aggregate signature over an invalid or fabricated block header unless Byzantine actors control at least 342 validators (a >= 2/3 Byzantine supermajority).
 - **Liveness Threshold (<= 170 / 512 Byzantine / Offline Validators):** If more than 170 validators (> 1/3 of the 512 sync committee) fail to participate or are Byzantine, the remaining honest validators (< 342) cannot reach the 2/3 quorum. In this scenario, header updates temporarily stall until validator participation recovers or the committee rotates at the next period boundary (~8,192 slots / ~27.3 hours). This is a liveness halt, not a safety violation (no invalid headers can be accepted).
-- **Weak-Subjectivity Window:** Bootstrap checkpoints must fall within the Ethereum weak-subjectivity window (~8,192 slots / ~27.3 hours). Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks.
+- **Sync Committee Rotation Period (8,192 Slots / 256 Epochs):** The 512-validator sync committee rotates every 256 epochs (8,192 slots, ~27.3 hours). The next sync committee is authenticated via Merkle branch against the attested state root at fork-aware generalized indices (55 for Altair/Deneb, 87 for Electra/Fulu, 2946 for Gloas).
+- **Weak-Subjectivity Freshness Window (1,728,000 Slots / 54,000 Epochs):** In Ethereum PoS, weak subjectivity defines the period within which an offline light client must sync or obtain a trusted checkpoint to remain safe against long-range consensus forks. Mosoo enforces a hard safety ceiling of 1,728,000 slots (~240 days) on update leaps and bootstrap checkpoints (`WeakSubjectivityExpired`), with recommended operational checkpoints within 14–30 days. Instances stalled past this window can be re-anchored via `handle_recover_instance`. Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks (`StaleUpdate`).
 
 ### Untrusted Prover & Environment Assumptions
 - **Byzantine Operator / Host VM:** The zkVM guest code makes zero assumptions about the honesty of the transaction submitter or the LEZ host VM. All Merkle branches, signatures, and RLP encodings are validated in-guest.
@@ -82,7 +83,7 @@ let extra_data_root: [u8; 32] = h.finalize().into();
 
 ### Invariant 4: Historical Block Root Accumulator Anchoring
 **Vulnerability:** Proving past Ethereum blocks against `instance.current_header_hash` fails because the beacon block header hash is not the beacon state root.  
-**Enforcement:** Historical block proofs compute generalized index `(37 << 13) | (slot % 8192)` (depth 18) and verify the branch directly against the `BeaconState.block_roots` accumulator anchored in `instance.current_state_root`.  
+**Enforcement:** Historical block proofs compute fork-aware generalized indices: `(37 << 13) | (slot % 8192)` (depth 18) for Altair..Deneb, or `(69 << 13) | (slot % 8192)` (depth 19) for Electra..Fulu, and verify the branch directly against the `BeaconState.block_roots` accumulator anchored in `instance.current_state_root`.  
 *Validated in:* `test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection`.
 
 ---
