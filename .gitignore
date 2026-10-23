@@ -24,5 +24,9 @@ keypair.json
 .DS_Store
 Thumbs.db
 
+# Python
+__pycache__/
+*.pyc
+
 # Benchmark output (keep the docs, not raw dumps)
 benchmarks/*.json.raw

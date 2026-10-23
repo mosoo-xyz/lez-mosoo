@@ -134,10 +134,15 @@ pub fn claim_ether(
         });
     }
 
-    if nullifiers.is_used(&statement.statement_id) {
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
         return Err(EtherReceiverError::AlreadyClaimed);
     }
     nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
 
     Ok(verified_wei)
 }
@@ -251,9 +256,12 @@ pub fn claim_native_eth_deposit(
         });
     }
 
-    if nullifiers.is_used(&claim.statement.statement_id) {
+    if nullifiers.is_used(&expected_subject_key)
+        || nullifiers.is_used(&claim.statement.statement_id)
+    {
         return Err(EtherReceiverError::AlreadyClaimed);
     }
+    nullifiers.mark_used(expected_subject_key);
     nullifiers.mark_used(claim.statement.statement_id);
 
     // Verified wei credited to recipient on LEZ
@@ -359,10 +367,15 @@ pub fn claim_ether_atomic(
         });
     }
 
-    if nullifiers.is_used(&statement.statement_id) {
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
         return Err(EtherReceiverError::AlreadyClaimed);
     }
     nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
 
     Ok(verified_wei)
 }

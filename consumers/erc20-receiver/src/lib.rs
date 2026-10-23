@@ -155,10 +155,15 @@ pub fn claim(
         });
     }
 
-    if nullifiers.is_used(&statement.statement_id) {
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
         return Err(ReceiverError::AlreadyClaimed);
     }
     nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
 
     // Tokens credited 1:1 on LEZ matching the verified on-chain Ethereum value
     let minted_amount = verified_amount;
@@ -274,9 +279,12 @@ pub fn claim_erc20_transfer(
         });
     }
 
-    if nullifiers.is_used(&claim.statement.statement_id) {
+    if nullifiers.is_used(&expected_subject_key)
+        || nullifiers.is_used(&claim.statement.statement_id)
+    {
         return Err(ReceiverError::AlreadyClaimed);
     }
+    nullifiers.mark_used(expected_subject_key);
     nullifiers.mark_used(claim.statement.statement_id);
 
     Ok(verified_amount)
@@ -398,7 +406,9 @@ pub fn claim_atomic(
         }
     }
 
-    let verified_amount = statement.value_as_u64();
+    let verified_amount = statement
+        .value_as_u64_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_amount < args.min_amount {
         return Err(ReceiverError::AmountTooLow {
             min_amount: args.min_amount,
@@ -406,10 +416,15 @@ pub fn claim_atomic(
         });
     }
 
-    if nullifiers.is_used(&statement.statement_id) {
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
         return Err(ReceiverError::AlreadyClaimed);
     }
     nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
 
     Ok(verified_amount)
 }

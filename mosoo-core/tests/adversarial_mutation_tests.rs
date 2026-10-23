@@ -1375,3 +1375,241 @@ fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
     .expect_err("Done job must be rejected in Finish");
     assert!(matches!(finish_err, MosooError::WrongJobStage { .. }));
 }
+
+/// Attack 18: Statement ID Nullifier Malleability Replay Attack.
+///
+/// An attacker claims a legitimate transfer, and then attempts to claim it again by mutating
+/// `statement_id` to random 32-byte values while keeping identical proof and subject key.
+/// Both ERC-20 and Native ETH consumers MUST catch this via `expected_subject_key` tracking
+/// and reject the replayed claim.
+#[test]
+fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevented() {
+    let mut erc20_nullifiers = NullifierSet::new();
+    let token = [0x55; 20];
+    let alice = [0x11; 20];
+    let bob = [0x22; 32];
+    let block_hash = [0x77; 32];
+
+    let key = derive_erc20_transfer_subject_key(&block_hash, 100, 0, 0, &token, &alice, &bob);
+    let mut val = [0u8; 32];
+    val[24..32].copy_from_slice(&250_000u64.to_be_bytes());
+
+    let mut stmt = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x11; 32],
+        predicate_holds: true,
+        verified_value: val,
+        subject_key: key,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash,
+            slot: 100,
+            tx_index: 0,
+            log_index: 0,
+            token_contract: token,
+            sender: alice,
+            recipient: bob,
+        },
+    };
+
+    // First claim succeeds
+    let claim_1 = Erc20TransferClaim {
+        statement: stmt.clone(),
+        token_contract: token,
+        sender: alice,
+        recipient: bob,
+        min_amount: 100_000,
+    };
+    assert!(claim_erc20_transfer(&claim_1, &mut erc20_nullifiers).is_ok());
+
+    // Attacker mutates statement_id to bypass nullifier
+    stmt.statement_id = [0x99; 32];
+    let claim_tampered = Erc20TransferClaim {
+        statement: stmt,
+        token_contract: token,
+        sender: alice,
+        recipient: bob,
+        min_amount: 100_000,
+    };
+    let err = claim_erc20_transfer(&claim_tampered, &mut erc20_nullifiers)
+        .expect_err("Mutated statement_id MUST be caught by expected_subject_key nullifier check");
+    assert!(matches!(err, erc20_receiver::ReceiverError::AlreadyClaimed));
+}
+
+/// Attack 19: Light Client Recovery Checkpoint Rollback Rejection.
+///
+/// An attacker attempts to recover a stale light client instance using an older historical checkpoint
+/// (backward slot rollback) or an already-expired checkpoint past the weak-subjectivity window.
+#[test]
+fn test_security_audit_attack_19_instance_recovery_backward_rollback_rejected() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 2_000_000,
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 1_000_000,
+        initialized: true,
+    };
+
+    // Network is at slot 4,000,000 (instance stalled by 2,000,000 slots > 1,728,000)
+    let current_network_slot = 4_000_000;
+
+    // Attack 19A: Attacker attempts to rollback instance to slot 500,000
+    let rollback_header = BeaconBlockHeader {
+        slot: 500_000,
+        proposer_index: 0,
+        parent_root: [0; 32],
+        state_root: [0x33; 32],
+        body_root: [0; 32],
+    };
+    let err = handle_recover_instance(RecoverInstanceArgs {
+        instance: instance.clone(),
+        new_bootstrap_header: rollback_header,
+        new_sync_committee: make_test_committee(512),
+        new_sync_committee_branch: vec![[0x44; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        current_network_slot,
+    })
+    .expect_err("Backward recovery checkpoint MUST be rejected");
+    assert!(matches!(err, MosooError::Internal(msg) if msg.contains("backward rollback")));
+
+    // Attack 19B: Attacker attempts recovery with an expired checkpoint (e.g. slot 2,100,000 when network is 4,000,000)
+    let expired_header = BeaconBlockHeader {
+        slot: 2_100_000,
+        proposer_index: 0,
+        parent_root: [0; 32],
+        state_root: [0x33; 32],
+        body_root: [0; 32],
+    };
+    let err_expired = handle_recover_instance(RecoverInstanceArgs {
+        instance,
+        new_bootstrap_header: expired_header,
+        new_sync_committee: make_test_committee(512),
+        new_sync_committee_branch: vec![[0x44; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        current_network_slot,
+    })
+    .expect_err("Expired recovery checkpoint MUST be rejected");
+    assert!(matches!(
+        err_expired,
+        MosooError::WeakSubjectivityExpired { .. }
+    ));
+}
+
+/// Attack 20: Reverted / Failed Transaction Receipt Attestation Rejection.
+///
+/// An attacker attempts to attest an event log extracted from a reverted transaction receipt (status = 0).
+#[test]
+fn test_security_audit_attack_20_reverted_transaction_receipt_rejected() {
+    use mosoo_core::inclusion::decode_and_validate_receipt;
+
+    // Construct a receipt payload with status = 0 (reverted transaction)
+    let status_revert_rlp = alloy_rlp::encode(0u8);
+    let gas_rlp = alloy_rlp::encode(21000u64);
+    let bloom_bytes = [0u8; 256];
+    let bloom_rlp = alloy_rlp::encode(&bloom_bytes[..]);
+    let logs_empty_rlp = alloy_rlp::encode(&[][..]);
+
+    let mut payload = Vec::new();
+    payload.extend_from_slice(&status_revert_rlp);
+    payload.extend_from_slice(&gas_rlp);
+    payload.extend_from_slice(&bloom_rlp);
+    payload.extend_from_slice(&logs_empty_rlp);
+
+    let mut receipt = Vec::new();
+    alloy_rlp::Header {
+        list: true,
+        payload_length: payload.len(),
+    }
+    .encode(&mut receipt);
+    receipt.extend_from_slice(&payload);
+
+    let res = decode_and_validate_receipt(&receipt, 0, 0, None, None);
+    assert!(
+        matches!(res, Err(MosooError::Internal(msg)) if msg.contains("reverted")),
+        "Reverted transaction receipts MUST be rejected"
+    );
+}
+
+/// Attack 21: Out-of-Order Header Slots in Light Client Updates.
+///
+/// An update where attested_header is older than finalized_header or signature_slot
+/// precedes attested_header must be rejected as temporally invalid.
+#[test]
+fn test_security_audit_attack_21_out_of_order_update_slots_rejected() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100,
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 100,
+        initialized: true,
+    };
+
+    // Attested header at slot 105, finalized header at slot 110 (attested < finalized)
+    let ooo_update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: 105,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 110,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![],
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0u8; 96],
+        },
+        signature_slot: 115,
+        execution_payload_header: None,
+        execution_branch: None,
+    };
+
+    let err = handle_begin_update(BeginUpdateArgs {
+        instance,
+        update: ooo_update,
+        nonce: 1,
+    })
+    .expect_err("Out-of-order slots must be rejected");
+    assert!(
+        matches!(err, MosooError::Internal(msg) if msg.contains("attested header slot must be >="))
+    );
+}
+
+/// Attack 22: Deeply Nested Predicate Recursion Limit (zkVM Guest Stack Overflow DOS Prevention).
+///
+/// Attacker constructs a deeply nested predicate tree (> 16 levels) to trigger a stack overflow.
+/// The predicate engine MUST reject it before unbounded recursion occurs.
+#[test]
+fn test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_prevented() {
+    let mut deep_predicate = Predicate::Equal {
+        expected: [0u8; 32],
+    };
+    for _ in 0..20 {
+        deep_predicate = Predicate::All(vec![deep_predicate]);
+    }
+
+    let val = mosoo_core::inclusion::VerifiedValue::EthBalance(alloy_primitives::U256::ZERO);
+    let res =
+        mosoo_core::predicate::evaluate(&deep_predicate, &val, ETH_MAINNET_CHAIN_ID, [0x11; 32], 0);
+    assert!(
+        matches!(res, Err(MosooError::Internal(msg)) if msg.contains("recursion depth exceeded")),
+        "Deeply nested predicate must be rejected by recursion limiter"
+    );
+}

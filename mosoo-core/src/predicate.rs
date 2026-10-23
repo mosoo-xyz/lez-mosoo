@@ -74,7 +74,22 @@ pub fn evaluate_with_binding(
     })
 }
 
+const MAX_PREDICATE_DEPTH: usize = 16;
+
 fn check(predicate: &Predicate, value: &VerifiedValue) -> Result<bool, MosooError> {
+    check_inner(predicate, value, 0)
+}
+
+fn check_inner(
+    predicate: &Predicate,
+    value: &VerifiedValue,
+    depth: usize,
+) -> Result<bool, MosooError> {
+    if depth > MAX_PREDICATE_DEPTH {
+        return Err(MosooError::Internal(
+            "predicate recursion depth exceeded maximum limit (16)".into(),
+        ));
+    }
     let v = value.as_bytes32();
     match predicate {
         Predicate::Equal { expected } => Ok(v == *expected),
@@ -82,7 +97,7 @@ fn check(predicate: &Predicate, value: &VerifiedValue) -> Result<bool, MosooErro
         Predicate::LessThan { max } => Ok(v < *max),
         Predicate::All(subs) => {
             for sub in subs {
-                if !check(sub, value)? {
+                if !check_inner(sub, value, depth + 1)? {
                     return Ok(false);
                 }
             }
@@ -90,7 +105,7 @@ fn check(predicate: &Predicate, value: &VerifiedValue) -> Result<bool, MosooErro
         }
         Predicate::Any(subs) => {
             for sub in subs {
-                if check(sub, value)? {
+                if check_inner(sub, value, depth + 1)? {
                     return Ok(true);
                 }
             }

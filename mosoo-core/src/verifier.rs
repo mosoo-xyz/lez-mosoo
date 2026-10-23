@@ -146,6 +146,19 @@ pub fn handle_recover_instance(
             "instance is not stale; normal incremental updates must be used".into(),
         ));
     }
+    // Anti-rollback guard: recovery checkpoint must strictly advance the instance slot
+    if args.new_bootstrap_header.slot <= instance.current_slot {
+        return Err(MosooError::Internal(
+            "recovery checkpoint slot must strictly exceed current instance slot (no backward rollback)".into(),
+        ));
+    }
+    // Freshness guard: recovery checkpoint itself must not be expired relative to current network slot
+    if args.current_network_slot > args.new_bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: args.new_bootstrap_header.slot,
+            current_slot: args.current_network_slot,
+        });
+    }
     // Verify the new bootstrap checkpoint
     let committee_leaf = crypto::hash_tree_root_sync_committee(&args.new_sync_committee)?;
     let gindex =
@@ -210,6 +223,19 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
             update_slot: update.finalized_header.slot,
             current_slot: instance.current_slot,
         });
+    }
+
+    // Temporal consistency: attested header cannot precede finalized header,
+    // and signature slot must be at or after attested header slot.
+    if update.attested_header.slot < update.finalized_header.slot {
+        return Err(MosooError::Internal(
+            "attested header slot must be >= finalized header slot".into(),
+        ));
+    }
+    if update.signature_slot < update.attested_header.slot {
+        return Err(MosooError::Internal(
+            "signature slot must be >= attested header slot".into(),
+        ));
     }
 
     // Strict length validation: 512 bits = exactly 64 bytes; signature = exactly 96 bytes.

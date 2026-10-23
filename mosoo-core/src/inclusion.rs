@@ -377,6 +377,16 @@ pub fn decode_and_validate_receipt(
         )));
     }
 
+    // Validate transaction execution status (EIP-658). Reverted transactions (status = 0)
+    // MUST NOT be attested.
+    let status_raw = rlp_strip_prefix(fields[0]);
+    if status_raw.is_empty() || status_raw == [0u8] {
+        return Err(MosooError::Internal(
+            "transaction reverted (status = 0); events from failed transactions cannot be attested"
+                .into(),
+        ));
+    }
+
     // Parse logs list: [log_0, log_1, ...]
     let raw_logs = rlp_decode_list_items(fields[3])?;
     if target_log_index >= raw_logs.len() {
