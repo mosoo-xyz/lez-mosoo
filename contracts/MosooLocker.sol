@@ -50,7 +50,7 @@ contract MosooLocker {
         address indexed sender,
         bytes32 indexed lezRecipient,
         uint256 amount,
-        uint64 indexed nonce
+        uint64 nonce
     );
 
     event UnlockedETH(
