@@ -59,7 +59,7 @@ A complete console execution log of this verification suite is committed at [`ev
   `handle_attest_state` extracts transfer and deposit event parameters directly from verified MPT receipt proofs. Emits `StatementBinding::Erc20Transfer` (token, sender, recipient, amount) and `StatementBinding::NativeEthDeposit` (vault, sender, recipient, amount) directly into `VerifiedStatement` nullifiers. Consuming contracts verify bound parameters and derive mints directly from verified values.
 
 - **Weak-Subjectivity Bounds & Recovery**:
-  Enforces 1,728,000 slot (~14 day) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Provides `handle_recover_instance` to re-anchor stalled instances after consensus network partitions without breaking consumer compatibility.
+  Enforces 1,728,000 slot (~240 days bound, 14–30 days operational) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Provides `handle_recover_instance` to re-anchor stalled instances after consensus network partitions without breaking consumer compatibility.
 
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.

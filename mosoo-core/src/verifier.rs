@@ -67,7 +67,7 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
     }
 
     // Weak subjectivity freshness guard: if trusted_head_slot is provided,
-    // bootstrap checkpoint must be within the 1,728,000 slot weak-subjectivity threshold (~14 days).
+    // bootstrap checkpoint must be within the 1,728,000 slot weak-subjectivity threshold (54,000 epochs / ~240 days).
     const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
     if let Some(head_slot) = args.trusted_head_slot {
         if head_slot > args.bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
@@ -200,7 +200,7 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
     // Guard: weak-subjectivity window check (max 54,000 epochs = 1,728,000 slots).
     // Trust assumptions:
     // 1. Initial bootstrap checkpoint is verified out-of-band to be fresh within the weak
-    //    subjectivity period (~14 days / 100,800 slots) of real-time Ethereum network head.
+    //    subjectivity operational window (14–30 days) up to the consensus safety bound (1,728,000 slots / ~240 days).
     // 2. Incremental updates cannot jump beyond 1,728,000 slots to prevent long-range consensus forks.
     const WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 1_728_000;
     if update.finalized_header.slot > instance.current_slot + WEAK_SUBJECTIVITY_WINDOW_SLOTS {

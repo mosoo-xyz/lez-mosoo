@@ -144,7 +144,7 @@ pub struct InstanceAccount {
 }
 
 impl InstanceAccount {
-    /// Returns true if the instance has stalled past Ethereum's weak-subjectivity window (1,728,000 slots / ~14 days).
+    /// Returns true if the instance has stalled past Ethereum's weak-subjectivity window (1,728,000 slots / 54,000 epochs / ~240 days).
     pub fn is_stale(&self, network_slot: u64) -> bool {
         network_slot > self.current_slot + 1_728_000
     }
