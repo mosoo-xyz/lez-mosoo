@@ -142,6 +142,23 @@ fn check_inner(
 /// It is strictly invariant to predicate variations, guaranteeing that an attacker cannot
 /// construct alternative predicates (e.g. AtLeast(50) vs AtLeast(60)) for the same event
 /// to derive distinct statement IDs and bypass single-use nullifier checks.
+/// Derives the canonical 32-byte statement identifier directly from raw Ethereum state facts:
+/// `sha256("mosoo_statement_v1" || chain_id_le8 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+pub fn derive_statement_id_from_raw(
+    chain_id: u64,
+    subject_key: &[u8; 32],
+    proof_type_tag: u8,
+    verified_value: &[u8; 32],
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"mosoo_statement_v1");
+    h.update(chain_id.to_le_bytes());
+    h.update(subject_key);
+    h.update([proof_type_tag]);
+    h.update(verified_value);
+    h.finalize().into()
+}
+
 pub fn derive_statement_id(
     chain_id: u64,
     subject_key: &[u8; 32],
@@ -149,13 +166,7 @@ pub fn derive_statement_id(
     value: &VerifiedValue,
     _predicate: &Predicate,
 ) -> [u8; 32] {
-    let mut h = Sha256::new();
-    h.update(b"mosoo_statement_v1");
-    h.update(chain_id.to_le_bytes());
-    h.update(subject_key);
-    h.update([proof_type_tag]);
-    h.update(value.as_bytes32());
-    h.finalize().into()
+    derive_statement_id_from_raw(chain_id, subject_key, proof_type_tag, &value.as_bytes32())
 }
 
 /// Derives a globally unique, collision-resistant event subject key for transaction receipt logs.

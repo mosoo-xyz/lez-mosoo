@@ -447,6 +447,17 @@ pub struct VerifiedStatement {
 }
 
 impl VerifiedStatement {
+    /// Recomputes the canonical 32-byte statement identifier from the underlying verified state facts:
+    /// `sha256("mosoo_statement_v1" || chain_id_le8 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+    pub fn derive_canonical_id(&self) -> [u8; 32] {
+        crate::predicate::derive_statement_id_from_raw(
+            self.chain_id,
+            &self.subject_key,
+            self.proof_type_tag,
+            &self.verified_value,
+        )
+    }
+
     /// Decode the verified 32-byte EVM value as a u128 (big-endian).
     pub fn value_as_u128(&self) -> u128 {
         let mut buf = [0u8; 16];

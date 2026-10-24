@@ -21,7 +21,7 @@ cargo test --workspace
 # 2. Run the full Two-Way Bridge integration test suite
 cargo test --test two_way_bridge_tests
 
-# 3. Run the 34 adversarial mutation attack tests
+# 3. Run the 37 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
 # 4. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)

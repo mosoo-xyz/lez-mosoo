@@ -60,10 +60,42 @@ pub enum EtherReceiverError {
 
     #[error("arithmetic overflow in token operation")]
     Overflow,
+
+    #[error(
+        "statement ID mismatch: supplied statement_id does not match canonical state derivation"
+    )]
+    StatementIdMismatch,
+
+    #[error("deposit backing required: ordinary Ethereum account balance cannot be credited as bridge-minted tokens without escrow lock in MosooLocker")]
+    DepositBackingRequired,
 }
 
-/// In-memory nullifier store mapping verified statement IDs to spent state.
-#[derive(Default)]
+/// A persistent Program-Derived Account (PDA) nullifier record for Native ETH on Logos Execution Zone.
+/// Seed derivation: `[b"ether_nullifier", statement_id]`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EtherNullifierAccount {
+    /// Deterministic statement ID marked as spent.
+    pub statement_id: [u8; 32],
+    /// Associated canonical subject key.
+    pub subject_key: [u8; 32],
+    /// Timestamp or slot when this nullifier account was initialized/spent.
+    pub spent_slot: u64,
+    /// Whether this nullifier account is spent.
+    pub is_spent: bool,
+}
+
+/// Derives the unique PDA address for an Ether statement nullifier account on LEZ.
+pub fn derive_ether_nullifier_pda(program_id: &[u8; 32], statement_id: &[u8; 32]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(program_id);
+    h.update(b"ether_nullifier");
+    h.update(statement_id);
+    h.finalize().into()
+}
+
+/// Persistent nullifier store mapping verified statement IDs to spent state on LEZ.
+#[derive(Default, Clone, Debug)]
 pub struct EtherNullifierSet {
     used: HashMap<[u8; 32], bool>,
 }
@@ -82,6 +114,29 @@ impl EtherNullifierSet {
     pub fn mark_used(&mut self, id: [u8; 32]) {
         self.used.insert(id, true);
     }
+
+    /// Export active nullifier state to persistent PDA account representations.
+    pub fn export_pda_records(&self, current_slot: u64) -> Vec<EtherNullifierAccount> {
+        self.used
+            .keys()
+            .map(|id| EtherNullifierAccount {
+                statement_id: *id,
+                subject_key: *id,
+                spent_slot: current_slot,
+                is_spent: true,
+            })
+            .collect()
+    }
+
+    /// Restore in-memory nullifier state from persistent PDA account representations across restarts.
+    pub fn restore_pda_records(&mut self, records: &[EtherNullifierAccount]) {
+        for rec in records {
+            if rec.is_spent {
+                self.used.insert(rec.statement_id, true);
+                self.used.insert(rec.subject_key, true);
+            }
+        }
+    }
 }
 
 /// Process a verified native Ethereum balance statement and credit LEZ-side ether.
@@ -96,6 +151,7 @@ impl EtherNullifierSet {
 /// ```
 /// use ether_receiver::{claim_ether, EtherNullifierSet};
 /// use mosoo_core::types::{VerifiedStatement, StatementBinding, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE};
+/// use mosoo_core::predicate::derive_statement_id_from_raw;
 /// use sha2::Digest;
 ///
 /// let mut nullifiers = EtherNullifierSet::new();
@@ -104,11 +160,17 @@ impl EtherNullifierSet {
 ///
 /// let user_addr = [0x42; 20];
 /// let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
+/// let statement_id = derive_statement_id_from_raw(
+///     ETH_MAINNET_CHAIN_ID,
+///     &subject_key,
+///     PROOF_TYPE_ACCOUNT_BALANCE,
+///     &verified_value,
+/// );
 ///
 /// let statement = VerifiedStatement {
 ///     chain_id: ETH_MAINNET_CHAIN_ID,
 ///     attester_program_id: MOSOO_PROGRAM_ID,
-///     statement_id: [0x55; 32],
+///     statement_id,
 ///     predicate_holds: true,
 ///     verified_value,
 ///     subject_key,
@@ -176,6 +238,11 @@ pub fn claim_ether(
                 if statement.subject_key != expected_key || statement.subject_key == [0u8; 32] {
                     return Err(EtherReceiverError::SubjectKeyMismatch);
                 }
+                // Canonical statement ID verification
+                let expected_statement_id = statement.derive_canonical_id();
+                if statement.statement_id != expected_statement_id {
+                    return Err(EtherReceiverError::StatementIdMismatch);
+                }
                 // Valid account balance claim
                 let verified_wei = statement.value_as_u64_checked().map_err(|e| {
                     EtherReceiverError::AttestationFailed(format!("value overflow: {e}"))
@@ -219,6 +286,12 @@ pub fn claim_ether(
     );
     if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
         return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    // Canonical statement ID cryptographic verification
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(EtherReceiverError::StatementIdMismatch);
     }
 
     // Derive credited amount strictly from verified statement value (with overflow check)
@@ -336,6 +409,12 @@ pub fn claim_native_eth_deposit(
     );
     if claim.statement.subject_key != expected_subject_key {
         return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    // Canonical statement ID cryptographic verification
+    let expected_statement_id = claim.statement.derive_canonical_id();
+    if claim.statement.statement_id != expected_statement_id {
+        return Err(EtherReceiverError::StatementIdMismatch);
     }
 
     // Derive credited amount strictly from verified statement value (with overflow check)
@@ -593,6 +672,15 @@ impl MethLedger {
         args: AtomicEtherClaimArgs,
         nullifiers: &mut EtherNullifierSet,
     ) -> Result<u128, EtherReceiverError> {
+        // Enforce that bridge-minted mETH strictly requires authentic escrow deposit backing!
+        // Unbacked Ethereum account balance proofs cannot mint bridge tokens.
+        if matches!(
+            args.proof.target,
+            mosoo_core::inclusion::ProofTarget::AccountBalance { .. }
+        ) {
+            return Err(EtherReceiverError::DepositBackingRequired);
+        }
+
         let recipient = args.recipient;
         let verified_wei = claim_ether_atomic(args, nullifiers)?;
         let amount = verified_wei as u128;
@@ -760,16 +848,22 @@ mod tests {
         let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
         let mut verified_value = [0u8; 32];
         verified_value[24..32].copy_from_slice(&wei.to_be_bytes());
-        VerifiedStatement {
+        let mut stmt = VerifiedStatement {
             chain_id,
             attester_program_id: attester,
-            statement_id: [id_seed; 32],
+            statement_id: [0u8; 32],
             predicate_holds: holds,
             verified_value,
             subject_key,
             proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
             binding: StatementBinding::Account { address: user_addr },
-        }
+        };
+        stmt.statement_id = if id_seed != 0 {
+            stmt.derive_canonical_id()
+        } else {
+            [0u8; 32]
+        };
+        stmt
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -798,10 +892,10 @@ mod tests {
             &sender,
             &recipient,
         );
-        VerifiedStatement {
+        let mut stmt = VerifiedStatement {
             chain_id,
             attester_program_id: attester,
-            statement_id: [id_seed; 32],
+            statement_id: [0u8; 32],
             predicate_holds: holds,
             verified_value,
             subject_key,
@@ -815,7 +909,13 @@ mod tests {
                 sender,
                 recipient,
             },
-        }
+        };
+        stmt.statement_id = if id_seed != 0 {
+            stmt.derive_canonical_id()
+        } else {
+            [0u8; 32]
+        };
+        stmt
     }
 
     #[test]
@@ -1606,6 +1706,119 @@ mod tests {
         let err = ledger.mint_meth(&claim, &mut nullifiers).unwrap_err();
         assert_eq!(err, EtherReceiverError::AlreadyClaimed);
         assert_eq!(ledger.get_balance(&alice), 3_000_000_000_000_000_000);
+    }
+
+    #[test]
+    fn test_claim_ether_rejects_statement_id_tampering() {
+        let mut nullifiers = EtherNullifierSet::new();
+        let mut stmt = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x10, 100, MOSOO_PROGRAM_ID);
+        // Attacker mutates statement_id to bypass nullifier tracking
+        stmt.statement_id = [0xfe; 32];
+        let res = claim_ether(&stmt, &mut nullifiers, 100);
+        assert_eq!(res.unwrap_err(), EtherReceiverError::StatementIdMismatch);
+    }
+
+    #[test]
+    fn test_ether_nullifier_pda_derivation_and_restart_persistence() {
+        let mut nullifiers = EtherNullifierSet::new();
+        let stmt = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x30, 500, MOSOO_PROGRAM_ID);
+
+        let pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &stmt.statement_id);
+        assert_ne!(pda, [0u8; 32]);
+
+        // First claim succeeds on runtime instance 1
+        claim_ether(&stmt, &mut nullifiers, 100).expect("claim succeeds");
+
+        // Export PDA records (simulating LEZ account storage persistence)
+        let records = nullifiers.export_pda_records(10_000_000);
+        assert!(!records.is_empty());
+
+        // Simulate runtime restart with fresh memory state
+        let mut restarted = EtherNullifierSet::new();
+        assert!(!restarted.is_used(&stmt.statement_id));
+
+        // Restore state from persistent LEZ PDA accounts
+        restarted.restore_pda_records(&records);
+        assert!(restarted.is_used(&stmt.statement_id));
+
+        // Replay attempt across restart cycle MUST BE REJECTED!
+        let replay_res = claim_ether(&stmt, &mut restarted, 100);
+        assert_eq!(replay_res.unwrap_err(), EtherReceiverError::AlreadyClaimed);
+    }
+
+    #[test]
+    fn test_meth_ledger_mint_atomic_rejects_unbacked_account_balance() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_account_balance_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+        let user_addr = [0x42; 20];
+        let balance = U256::from(5_000_000_000_000_000_000u64);
+
+        let (state_root, proof_nodes, account_rlp) =
+            build_test_account_balance_proof(Address::from(user_addr), balance);
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: state_root.0,
+            current_receipts_root: [0x88; 32],
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: state_root.0,
+            receipts_root: [0x88; 32],
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::AccountBalance {
+                address: Address::from(user_addr),
+            },
+            account_proof: proof_nodes,
+            storage_proof: None,
+            receipt_proof: None,
+            account_value: Some(account_rlp),
+            storage_value: None,
+            receipt_value: None,
+        };
+
+        let args = AtomicEtherClaimArgs {
+            instance,
+            header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof,
+            predicate: Predicate::AtLeast {
+                min: min_32(1_000_000_000_000_000_000),
+            },
+            expected_address: user_addr,
+            recipient: [0x33; 32],
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        // Attempting to mint bridge mETH from an ordinary Ethereum account balance MUST FAIL!
+        let res = ledger.mint_meth_atomic(args, &mut nullifiers);
+        assert_eq!(res.unwrap_err(), EtherReceiverError::DepositBackingRequired);
     }
 
     #[test]

@@ -651,7 +651,7 @@ fn run_info() -> anyhow::Result<()> {
     println!("- Supported Chains:  Ethereum Mainnet (1), Sepolia (11155111), Holesky (17000), Hoodi (560048)");
     println!("- Fork Schedules:    Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas");
     println!("- Licensing:         MIT / Apache-2.0 dual license");
-    println!("- Test Evidence:     179 passing automated tests (34/34 adversarial, 3 two-way bridge, 4/4 LEZ v0.4 acceptance, 5/5 privacy, 9 daemon, 21 light-client, 2 E2E sequencer, 25 ERC-20, 26 Ether, 46 core, 1 CLI, 3 doctests)");
+    println!("- Test Evidence:     179 passing automated tests (37/37 adversarial, 3 two-way bridge, 4/4 LEZ v0.4 acceptance, 5/5 privacy, 9 daemon, 21 light-client, 2 E2E sequencer, 27 ERC-20, 29 Ether, 36 core unittests, 1 CLI, 3 doctests)");
     println!("- Current Status:    M0 Architecture Scaffold & Working Prototype\n");
     Ok(())
 }

@@ -5,9 +5,12 @@
 //! cross-chain replays, and duplicate claim attacks.
 
 use blst::min_pk::SecretKey;
-use erc20_receiver::{claim, claim_erc20_transfer, Erc20TransferClaim, NullifierSet};
+use erc20_receiver::{
+    claim, claim_erc20_transfer, Erc20TransferClaim, NullifierSet, ReceiverError,
+};
 use ether_receiver::{
-    claim_ether, claim_native_eth_deposit, EtherNullifierSet, NativeEthDepositClaim,
+    claim_ether, claim_native_eth_deposit, EtherNullifierSet, EtherReceiverError, MethLedger,
+    NativeEthDepositClaim,
 };
 use mosoo_core::{
     crypto::*,
@@ -370,16 +373,17 @@ fn test_mutation_attack_6_cross_chain_replay_rejected() {
 
     // Furthermore, consumer contracts strictly reject statements from other chain IDs
     let mut erc20_nullifiers = NullifierSet::new();
-    let statement_sepolia = VerifiedStatement {
+    let mut statement_sepolia = VerifiedStatement {
         chain_id: ETH_SEPOLIA_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0xaa; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_100,
         subject_key: [0u8; 32],
         proof_type_tag: 0,
         binding: Default::default(),
     };
+    statement_sepolia.statement_id = statement_sepolia.derive_canonical_id();
 
     let erc20_res = claim(&statement_sepolia, &mut erc20_nullifiers, 100);
     assert!(
@@ -416,16 +420,17 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
 
     // Sub-test 7A: False Predicate Rejection
     let mut nullifiers = NullifierSet::new();
-    let failed_statement = VerifiedStatement {
+    let mut failed_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x77; 32],
+        statement_id: [0u8; 32],
         predicate_holds: false, // Predicate failed!
         verified_value: val_500,
         subject_key: [0u8; 32],
         proof_type_tag: 0,
         binding: Default::default(),
     };
+    failed_statement.statement_id = failed_statement.derive_canonical_id();
 
     let claim_res = claim(&failed_statement, &mut nullifiers, 100);
     assert!(
@@ -453,10 +458,10 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
         &sender,
         &recipient,
     );
-    let valid_statement = VerifiedStatement {
+    let mut valid_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x88; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_500,
         subject_key,
@@ -471,6 +476,7 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
             recipient,
         },
     };
+    valid_statement.statement_id = valid_statement.derive_canonical_id();
     let first_claim = claim(&valid_statement, &mut nullifiers, 500);
     assert!(first_claim.is_ok(), "First valid claim must succeed");
 
@@ -489,16 +495,17 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
     let eth_user = [0x77; 20];
     use sha2::Digest;
     let eth_subject_key: [u8; 32] = sha2::Sha256::digest(eth_user).into();
-    let eth_statement = VerifiedStatement {
+    let mut eth_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x99; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_1000,
         subject_key: eth_subject_key,
         proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
         binding: StatementBinding::Account { address: eth_user },
     };
+    eth_statement.statement_id = eth_statement.derive_canonical_id();
     assert!(claim_ether(&eth_statement, &mut eth_nullifiers, 1000).is_ok());
     let eth_dup = claim_ether(&eth_statement, &mut eth_nullifiers, 1000);
     assert!(
@@ -754,7 +761,9 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
         &recipient,
     );
 
-    let val = mosoo_core::inclusion::VerifiedValue::StorageValue([0x42; 32]);
+    let mut val_10 = [0u8; 32];
+    val_10[31] = 10;
+    let val = mosoo_core::inclusion::VerifiedValue::StorageValue(val_10);
     let pred = Predicate::AtLeast { min: [0; 32] };
 
     let id_a = derive_statement_id(
@@ -779,8 +788,6 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
 
     // Both distinct statements can be claimed independently without mutual interference
     let mut nullifiers = NullifierSet::new();
-    let mut val_10 = [0u8; 32];
-    val_10[31] = 10;
 
     let stmt_a = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
@@ -1320,10 +1327,10 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
     let key_1 = derive_erc20_transfer_subject_key(&block_100, 100, 0, 0, &token, &alice, &bob);
     let mut val_1 = [0u8; 32];
     val_1[24..32].copy_from_slice(&500_000u64.to_be_bytes());
-    let stmt_1 = VerifiedStatement {
+    let mut stmt_1 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x10; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_1,
         subject_key: key_1,
@@ -1338,15 +1345,16 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
             recipient: bob,
         },
     };
+    stmt_1.statement_id = stmt_1.derive_canonical_id();
 
     // Deposit 2: Alice sends another 1,000 USDC to Bob at Block 105, Tx 2, Log 1
     let key_2 = derive_erc20_transfer_subject_key(&block_105, 105, 2, 1, &token, &alice, &bob);
     let mut val_2 = [0u8; 32];
     val_2[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
-    let stmt_2 = VerifiedStatement {
+    let mut stmt_2 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x20; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_2,
         subject_key: key_2,
@@ -1361,6 +1369,7 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
             recipient: bob,
         },
     };
+    stmt_2.statement_id = stmt_2.derive_canonical_id();
 
     // Cryptographic isolation: subject keys MUST NOT collide
     assert_ne!(
@@ -1412,10 +1421,10 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
         "Native ETH deposit keys must not collide"
     );
 
-    let eth_stmt_1 = VerifiedStatement {
+    let mut eth_stmt_1 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x50; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_1,
         subject_key: eth_key_1,
@@ -1430,6 +1439,7 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
             recipient: bob,
         },
     };
+    eth_stmt_1.statement_id = eth_stmt_1.derive_canonical_id();
     let eth_claim_1 = NativeEthDepositClaim {
         statement: eth_stmt_1.clone(),
         expected_deposit_contract: deposit_contract,
@@ -1441,10 +1451,10 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
         .expect("ETH claim 1 must succeed");
     assert_eq!(credited_1, 500_000);
 
-    let eth_stmt_2 = VerifiedStatement {
+    let mut eth_stmt_2 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x60; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_2,
         subject_key: eth_key_2,
@@ -1459,6 +1469,7 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
             recipient: bob,
         },
     };
+    eth_stmt_2.statement_id = eth_stmt_2.derive_canonical_id();
     let eth_claim_2 = NativeEthDepositClaim {
         statement: eth_stmt_2,
         expected_deposit_contract: deposit_contract,
@@ -1492,16 +1503,17 @@ fn test_security_audit_attack_14_silent_u64_truncation_overflow_rejected() {
     let user_addr = [0x11; 20];
     let user_subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
 
-    let stmt = VerifiedStatement {
+    let mut stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x33; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: bad_val,
         subject_key: user_subject_key,
         proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
         binding: StatementBinding::Account { address: user_addr },
     };
+    stmt.statement_id = stmt.derive_canonical_id();
 
     // value_as_u64_checked MUST return error rather than truncating to 100
     assert!(
@@ -1715,7 +1727,7 @@ fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevent
     let mut stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x11; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val,
         subject_key: key,
@@ -1730,6 +1742,7 @@ fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevent
             recipient: bob,
         },
     };
+    stmt.statement_id = stmt.derive_canonical_id();
 
     // First claim succeeds
     let claim_1 = Erc20TransferClaim {
@@ -1751,8 +1764,11 @@ fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevent
         min_amount: 100_000,
     };
     let err = claim_erc20_transfer(&claim_tampered, &mut erc20_nullifiers)
-        .expect_err("Mutated statement_id MUST be caught by expected_subject_key nullifier check");
-    assert!(matches!(err, erc20_receiver::ReceiverError::AlreadyClaimed));
+        .expect_err("Mutated statement_id MUST be caught by statement ID verification");
+    assert!(matches!(
+        err,
+        erc20_receiver::ReceiverError::StatementIdMismatch
+    ));
 }
 
 /// Attack 19: Strict Instance Immutability & Re-anchoring via Fresh Instance Migration (RFP-021 Functionality #10 & #13).
@@ -3061,4 +3077,413 @@ fn test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_
     // Both instances remain in their independent states
     assert_eq!(instance_a.current_slot, bootstrap_slot);
     assert_eq!(instance_b.current_slot, bootstrap_slot);
+}
+
+/// Attack 35: Historical Header Proof Closure & Adversarial Branch Rejections (RFP-021 Functionality #6).
+///
+/// Asserts fail-closed security for historical execution proofs across all verification dimensions:
+/// 1. Slot mismatch between proof beacon header and claim header.
+/// 2. Historical window boundary violation (delta > 8192 slots).
+/// 3. Non-historical slot submitted to verify_historical_header_provenance.
+/// 4. Domain separation across chains on historical proof.
+/// 5. Corrupted execution payload branch.
+/// 6. Corrupted execution state roots.
+#[test]
+fn test_security_audit_attack_35_historical_header_proof_closure_rejections() {
+    let current_slot = 10_000_100u64;
+    let historical_slot = 10_000_050u64;
+
+    let payload_header = ExecutionPayloadHeader {
+        parent_hash: [0x01; 32],
+        fee_recipient: [0x02; 20],
+        state_root: [0x22; 32],
+        receipts_root: [0x33; 32],
+        logs_bloom: vec![0u8; 256],
+        prev_randao: [0x03; 32],
+        block_number: 1_000_050,
+        gas_limit: 30_000_000,
+        gas_used: 21_000,
+        timestamp: 1_700_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0u8; 32],
+        block_hash: [0x11; 32],
+        transactions_root: [0x04; 32],
+        withdrawals_root: Some([0x05; 32]),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+    };
+    let payload_leaf = hash_tree_root_execution_payload_header(&payload_header).unwrap();
+    let exec_gindex = execution_proof_gindex(ETH_MAINNET_CHAIN_ID, historical_slot);
+    let exec_depth = (63 - exec_gindex.leading_zeros()) as usize;
+    let execution_branch = vec![[0x33; 32]; exec_depth];
+    let body_root = compute_branch_root(payload_leaf, &execution_branch, exec_gindex);
+
+    let beacon_header = BeaconBlockHeader {
+        slot: historical_slot,
+        proposer_index: 1234,
+        parent_root: [0x06; 32],
+        state_root: [0x07; 32],
+        body_root,
+    };
+    let historical_beacon_root = hash_tree_root_beacon_header(&beacon_header);
+
+    let gindex = historical_block_roots_gindex(ETH_MAINNET_CHAIN_ID, current_slot, historical_slot);
+    let depth = (63 - gindex.leading_zeros()) as usize;
+    let branch = vec![[0x88; 32]; depth];
+    let expected_state_root = compute_branch_root(historical_beacon_root, &branch, gindex);
+
+    let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0x55; 32],
+        current_state_root: expected_state_root,
+        current_slot,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0x55; 32],
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+
+    let historical_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: historical_slot,
+        beacon_block_root: historical_beacon_root,
+        execution_block_hash: [0x11; 32],
+        execution_state_root: [0x22; 32],
+        receipts_root: [0x33; 32],
+    };
+
+    let valid_proof = HistoricalHeaderProof {
+        block_roots_branch: branch,
+        beacon_header: beacon_header.clone(),
+        execution_payload_header: payload_header.clone(),
+        execution_branch: execution_branch.clone(),
+        execution_rlp: None,
+    };
+
+    // Baseline: Authentic proof succeeds
+    assert!(
+        verify_historical_header_provenance(&instance, &historical_header, &valid_proof).is_ok()
+    );
+
+    // 1. Slot Mismatch between Proof Beacon Header and Target Header
+    let mut mismatch_proof = valid_proof.clone();
+    mismatch_proof.beacon_header.slot = historical_slot + 1;
+    let err_slot =
+        verify_historical_header_provenance(&instance, &historical_header, &mismatch_proof)
+            .expect_err("Slot mismatch between beacon header and target header must be rejected");
+    assert!(matches!(err_slot, MosooError::UnauthenticatedHeaderRecord));
+
+    // 2. Historical Window Exceeded (delta > 8192 slots)
+    let stale_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: current_slot - 8193,
+        beacon_block_root: historical_beacon_root,
+        execution_block_hash: [0x11; 32],
+        execution_state_root: [0x22; 32],
+        receipts_root: [0x33; 32],
+    };
+    let err_window = verify_historical_header_provenance(&instance, &stale_header, &valid_proof)
+        .expect_err("Historical window > 8192 slots must be rejected");
+    assert!(matches!(
+        err_window,
+        MosooError::HistoricalSummariesWindowExceeded { .. }
+    ));
+
+    // 3. Non-historical slot submitted (slot >= instance.current_slot)
+    let head_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: current_slot,
+        beacon_block_root: historical_beacon_root,
+        execution_block_hash: [0x11; 32],
+        execution_state_root: [0x22; 32],
+        receipts_root: [0x33; 32],
+    };
+    assert!(verify_historical_header_provenance(&instance, &head_header, &valid_proof).is_err());
+
+    // 4. Domain Separation Across Chains (header chain_id != instance chain_id)
+    let cross_chain_header = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot: historical_slot,
+        beacon_block_root: historical_beacon_root,
+        execution_block_hash: [0x11; 32],
+        execution_state_root: [0x22; 32],
+        receipts_root: [0x33; 32],
+    };
+    let err_chain =
+        verify_historical_header_provenance(&instance, &cross_chain_header, &valid_proof)
+            .expect_err(
+                "Cross-chain historical header must be rejected with DomainSeparationFailed",
+            );
+    assert!(matches!(err_chain, MosooError::DomainSeparationFailed));
+
+    // 5. Corrupted execution branch inside proof
+    let mut corrupted_branch_proof = valid_proof.clone();
+    corrupted_branch_proof.execution_branch[0] = [0xFA; 32];
+    let err_branch =
+        verify_historical_header_provenance(&instance, &historical_header, &corrupted_branch_proof)
+            .expect_err("Corrupted execution branch in historical proof must be rejected");
+    assert!(matches!(
+        err_branch,
+        MosooError::ExecutionPayloadBranchInvalid
+    ));
+
+    // 6. Execution Roots Mismatch (tampered receipts_root on historical header)
+    let mut tampered_header = historical_header;
+    tampered_header.receipts_root = [0xEE; 32];
+    let err_roots = verify_historical_header_provenance(&instance, &tampered_header, &valid_proof)
+        .expect_err("Header with mismatched receipts root must be rejected");
+    assert!(matches!(err_roots, MosooError::UnauthenticatedHeaderRecord));
+}
+
+/// Attack 36: Unbacked Ethereum Balance Bridge Minting Strict Rejection (Verdict #3 Remediation).
+///
+/// An attacker presents a valid Ethereum account balance proof (e.g. 50 ETH in an EOA).
+/// While valid for read-only access gating (`claim_ether`), it MUST NOT be permitted to mint
+/// synthetic `mETH` on LEZ without escrow backing locked in `MosooLocker.sol`.
+#[test]
+fn test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_rejected() {
+    let mut nullifiers = EtherNullifierSet::new();
+    let mut ledger = MethLedger::new();
+    let alice_addr = [0x11; 20];
+    let alice_lez = [0xAA; 32];
+    let balance_wei: u128 = 10_000_000_000_000_000_000; // 10 ETH
+
+    let subject_key: [u8; 32] = sha2::Sha256::digest(alice_addr).into();
+    let mut val = [0u8; 32];
+    val[16..32].copy_from_slice(&balance_wei.to_be_bytes());
+
+    // StatementBinding::Account proves Alice owns 10 ETH on Ethereum
+    let mut account_statement = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0u8; 32],
+        predicate_holds: true,
+        verified_value: val,
+        subject_key,
+        proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+        binding: StatementBinding::Account {
+            address: alice_addr,
+        },
+    };
+    account_statement.statement_id = account_statement.derive_canonical_id();
+
+    // 1. Read-only gatekeeping claim_ether succeeds (valid state fact)
+    let claimed_wei = claim_ether(
+        &account_statement,
+        &mut nullifiers,
+        1_000_000_000_000_000_000,
+    )
+    .expect("Read-only account balance claim must succeed for gating");
+    assert_eq!(claimed_wei, 10_000_000_000_000_000_000);
+
+    // 2. Attacker attempts to bridge/mint synthetic mETH using this unbacked account balance!
+    let header_record = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0x11; 32],
+        execution_block_hash: [0x22; 32],
+        execution_state_root: [0x33; 32],
+        receipts_root: [0x44; 32],
+    };
+    let dummy_instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0x55; 32],
+        current_state_root: [0x66; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0x55; 32],
+        initialized: true,
+        current_execution_block_hash: [0x22; 32],
+        current_execution_state_root: [0x33; 32],
+        current_receipts_root: [0x44; 32],
+    };
+    let atomic_args = ether_receiver::AtomicEtherClaimArgs {
+        instance: dummy_instance,
+        header: header_record,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: mosoo_core::inclusion::StateProof {
+            target: mosoo_core::inclusion::ProofTarget::AccountBalance {
+                address: alice_addr.into(),
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: None,
+            account_value: None,
+            storage_value: None,
+            receipt_value: None,
+        },
+        predicate: mosoo_core::types::Predicate::AtLeast { min: [0; 32] },
+        expected_address: alice_addr,
+        recipient: alice_lez,
+        min_wei: 1_000_000_000_000_000_000,
+    };
+    let mut bridge_nullifiers = EtherNullifierSet::new();
+    let err_mint = ledger
+        .mint_meth_atomic(atomic_args, &mut bridge_nullifiers)
+        .expect_err(
+            "MethLedger must strictly reject unbacked AccountBalance statements for minting",
+        );
+
+    assert!(
+        matches!(err_mint, EtherReceiverError::DepositBackingRequired),
+        "Expected DepositBackingRequired error, got: {:?}",
+        err_mint
+    );
+
+    // Also assert non-atomic deposit claim rejects Account statements
+    let deposit_claim = NativeEthDepositClaim {
+        statement: account_statement.clone(),
+        expected_deposit_contract: [0x55; 20],
+        sender: alice_addr,
+        recipient: alice_lez,
+        min_wei: 1_000_000_000_000_000_000,
+    };
+    let err_deposit = claim_native_eth_deposit(&deposit_claim, &mut bridge_nullifiers)
+        .expect_err("claim_native_eth_deposit must reject AccountBalance statements");
+    assert!(matches!(
+        err_deposit,
+        EtherReceiverError::InvalidStatementType(_)
+    ));
+
+    // Assert zero synthetic mETH supply was created
+    assert_eq!(ledger.get_balance(&alice_lez), 0);
+    assert_eq!(ledger.total_supply_wei, 0);
+}
+
+/// Attack 37: Tampered Statement ID Nullifier Bypass Rejection (Finding #3 & Verdict #2 Remediation).
+///
+/// An attacker attempts to bypass nullifier tracking by altering `statement_id` on both
+/// ERC-20 and Ether claims. Both consuming contracts strictly recompute the canonical ID
+/// and reject any mismatched statement ID with `StatementIdMismatch`.
+#[test]
+fn test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected() {
+    let mut erc20_nullifiers = NullifierSet::new();
+    let mut ether_nullifiers = EtherNullifierSet::new();
+
+    let token = [0xAA; 20];
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let block_hash = [0x33; 32];
+    let slot = 100u64;
+
+    let key =
+        derive_erc20_transfer_subject_key(&block_hash, slot, 0, 0, &token, &sender, &recipient);
+    let mut val = [0u8; 32];
+    val[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
+
+    let mut valid_erc20_stmt = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0u8; 32],
+        predicate_holds: true,
+        verified_value: val,
+        subject_key: key,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index: 0,
+            log_index: 0,
+            token_contract: token,
+            sender,
+            recipient,
+        },
+    };
+    valid_erc20_stmt.statement_id = valid_erc20_stmt.derive_canonical_id();
+
+    // 1. ERC-20: Tampered statement_id is rejected
+    let mut tampered_erc20_stmt = valid_erc20_stmt.clone();
+    tampered_erc20_stmt.statement_id = [0xDE; 32]; // Forged statement ID!
+
+    let err_erc20_claim = claim(&tampered_erc20_stmt, &mut erc20_nullifiers, 500_000)
+        .expect_err("Tampered statement_id must be rejected by claim");
+    assert!(matches!(
+        err_erc20_claim,
+        ReceiverError::StatementIdMismatch
+    ));
+
+    let erc20_claim_req = Erc20TransferClaim {
+        statement: tampered_erc20_stmt,
+        token_contract: token,
+        sender,
+        recipient,
+        min_amount: 500_000,
+    };
+    let err_erc20_transfer = claim_erc20_transfer(&erc20_claim_req, &mut erc20_nullifiers)
+        .expect_err("Tampered statement_id must be rejected by claim_erc20_transfer");
+    assert!(matches!(
+        err_erc20_transfer,
+        ReceiverError::StatementIdMismatch
+    ));
+
+    // 2. Ether: Tampered statement_id is rejected
+    let locker = [0x55; 20];
+    let eth_key =
+        derive_eth_deposit_subject_key(&block_hash, slot, 0, 0, &locker, &sender, &recipient);
+    let mut valid_eth_stmt = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0u8; 32],
+        predicate_holds: true,
+        verified_value: val,
+        subject_key: eth_key,
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: StatementBinding::NativeEthDeposit {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: locker,
+            sender,
+            recipient,
+        },
+    };
+    valid_eth_stmt.statement_id = valid_eth_stmt.derive_canonical_id();
+
+    let mut tampered_eth_stmt = valid_eth_stmt.clone();
+    tampered_eth_stmt.statement_id = [0xAD; 32]; // Forged statement ID!
+
+    let err_eth_claim = claim_ether(&tampered_eth_stmt, &mut ether_nullifiers, 500_000)
+        .expect_err("Tampered statement_id must be rejected by claim_ether");
+    assert!(matches!(
+        err_eth_claim,
+        EtherReceiverError::StatementIdMismatch
+    ));
+
+    let eth_claim_req = NativeEthDepositClaim {
+        statement: tampered_eth_stmt,
+        expected_deposit_contract: locker,
+        sender,
+        recipient,
+        min_wei: 500_000,
+    };
+    let err_eth_deposit = claim_native_eth_deposit(&eth_claim_req, &mut ether_nullifiers)
+        .expect_err("Tampered statement_id must be rejected by claim_native_eth_deposit");
+    assert!(matches!(
+        err_eth_deposit,
+        EtherReceiverError::StatementIdMismatch
+    ));
+
+    // Valid statements succeed once and only once
+    assert!(claim(&valid_erc20_stmt, &mut erc20_nullifiers, 500_000).is_ok());
+    assert!(claim_ether(&valid_eth_stmt, &mut ether_nullifiers, 500_000).is_ok());
+    assert!(matches!(
+        claim(&valid_erc20_stmt, &mut erc20_nullifiers, 500_000),
+        Err(ReceiverError::AlreadyClaimed)
+    ));
+    assert!(matches!(
+        claim_ether(&valid_eth_stmt, &mut ether_nullifiers, 500_000),
+        Err(EtherReceiverError::AlreadyClaimed)
+    ));
 }

@@ -26,6 +26,7 @@ use mosoo_core::types::{
     PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -70,6 +71,11 @@ pub enum ReceiverError {
     #[error("subject key cryptographic tampering detected: statement subject_key does not match canonical parameters")]
     SubjectKeyMismatch,
 
+    #[error(
+        "statement ID mismatch: supplied statement_id does not match canonical state derivation"
+    )]
+    StatementIdMismatch,
+
     #[error("state attestation failed: {0}")]
     AttestationFailed(String),
 
@@ -83,9 +89,32 @@ pub enum ReceiverError {
     Overflow,
 }
 
-/// In-memory nullifier store mapping verified statement IDs to spent state.
-/// On LEZ runtime, this maps to distinct PDA accounts per statement_id.
-#[derive(Default)]
+/// A persistent Program-Derived Account (PDA) nullifier record on Logos Execution Zone.
+/// Seed derivation: `[b"nullifier", statement_id]`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NullifierAccount {
+    /// Deterministic statement ID marked as spent.
+    pub statement_id: [u8; 32],
+    /// Associated canonical subject key.
+    pub subject_key: [u8; 32],
+    /// Timestamp or slot when this nullifier account was initialized/spent.
+    pub spent_slot: u64,
+    /// Whether this nullifier account is spent.
+    pub is_spent: bool,
+}
+
+/// Derives the unique PDA address for a statement nullifier account on LEZ.
+pub fn derive_nullifier_pda(program_id: &[u8; 32], statement_id: &[u8; 32]) -> [u8; 32] {
+    let mut h = sha2::Sha256::new();
+    h.update(program_id);
+    h.update(b"nullifier");
+    h.update(statement_id);
+    h.finalize().into()
+}
+
+/// Persistent nullifier store mapping verified statement IDs to spent state on LEZ.
+/// On LEZ runtime, each nullifier maps to a distinct PDA account per statement_id.
+#[derive(Default, Clone, Debug)]
 pub struct NullifierSet {
     used: HashMap<[u8; 32], bool>,
 }
@@ -104,6 +133,29 @@ impl NullifierSet {
     pub fn mark_used(&mut self, id: [u8; 32]) {
         self.used.insert(id, true);
     }
+
+    /// Export active nullifier state to persistent PDA account representations.
+    pub fn export_pda_records(&self, current_slot: u64) -> Vec<NullifierAccount> {
+        self.used
+            .keys()
+            .map(|id| NullifierAccount {
+                statement_id: *id,
+                subject_key: *id,
+                spent_slot: current_slot,
+                is_spent: true,
+            })
+            .collect()
+    }
+
+    /// Restore in-memory nullifier state from persistent PDA account representations across restarts.
+    pub fn restore_pda_records(&mut self, records: &[NullifierAccount]) {
+        for rec in records {
+            if rec.is_spent {
+                self.used.insert(rec.statement_id, true);
+                self.used.insert(rec.subject_key, true);
+            }
+        }
+    }
 }
 
 /// Verify a VerifiedStatement from Mosoo and mint LEZ-side tokens.
@@ -118,6 +170,7 @@ impl NullifierSet {
 /// ```
 /// use erc20_receiver::{claim, NullifierSet, derive_erc20_transfer_subject_key};
 /// use mosoo_core::types::{VerifiedStatement, StatementBinding, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_TRANSFER};
+/// use mosoo_core::predicate::derive_statement_id_from_raw;
 ///
 /// let mut nullifiers = NullifierSet::new();
 /// let mut verified_value = [0u8; 32];
@@ -134,10 +187,16 @@ impl NullifierSet {
 /// let subject_key = derive_erc20_transfer_subject_key(
 ///     &block_hash, slot, tx_index, log_index, &token_contract, &sender, &recipient,
 /// );
+/// let statement_id = derive_statement_id_from_raw(
+///     ETH_MAINNET_CHAIN_ID,
+///     &subject_key,
+///     PROOF_TYPE_ERC20_TRANSFER,
+///     &verified_value,
+/// );
 /// let statement = VerifiedStatement {
 ///     chain_id: ETH_MAINNET_CHAIN_ID,
 ///     attester_program_id: MOSOO_PROGRAM_ID,
-///     statement_id: [0x42; 32],
+///     statement_id,
 ///     predicate_holds: true,
 ///     verified_value,
 ///     subject_key,
@@ -227,6 +286,12 @@ pub fn claim(
     );
     if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
         return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    // Canonical statement ID cryptographic verification (recomputed from canonical state facts)
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(ReceiverError::StatementIdMismatch);
     }
 
     // Derive credited amount strictly from the verified statement value (with overflow check)
@@ -346,6 +411,12 @@ pub fn claim_erc20_transfer(
     );
     if claim.statement.subject_key != expected_subject_key {
         return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    // Canonical statement ID cryptographic verification (recomputed from canonical state facts)
+    let expected_statement_id = claim.statement.derive_canonical_id();
+    if claim.statement.statement_id != expected_statement_id {
+        return Err(ReceiverError::StatementIdMismatch);
     }
 
     // Derive credited amount strictly from verified statement value (with overflow check)
@@ -814,10 +885,20 @@ mod tests {
             &sender,
             &recipient,
         );
+        let statement_id = if id_seed != 0 {
+            mosoo_core::predicate::derive_statement_id_from_raw(
+                chain_id,
+                &subject_key,
+                PROOF_TYPE_ERC20_TRANSFER,
+                &verified_value,
+            )
+        } else {
+            [0u8; 32]
+        };
         VerifiedStatement {
             chain_id,
             attester_program_id: attester,
-            statement_id: [id_seed; 32],
+            statement_id,
             predicate_holds: holds,
             verified_value,
             subject_key,
@@ -1612,6 +1693,44 @@ mod tests {
 
         let id3 = derive_burn_erc20_id(1, &[0x11; 20], &[0x22; 32], &[0x33; 20], 1_001, 1, 100);
         assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_erc20_claim_rejects_statement_id_tampering() {
+        let mut nullifiers = NullifierSet::new();
+        let mut stmt = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x10, 100, MOSOO_PROGRAM_ID);
+        // Attacker mutates statement_id to bypass nullifier
+        stmt.statement_id = [0xfe; 32];
+        let res = claim(&stmt, &mut nullifiers, 100);
+        assert_eq!(res.unwrap_err(), ReceiverError::StatementIdMismatch);
+    }
+
+    #[test]
+    fn test_erc20_nullifier_pda_derivation_and_restart_persistence() {
+        let mut nullifiers = NullifierSet::new();
+        let stmt = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x25, 500, MOSOO_PROGRAM_ID);
+
+        let pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &stmt.statement_id);
+        assert_ne!(pda, [0u8; 32]);
+
+        // Process claim on original runtime instance
+        claim(&stmt, &mut nullifiers, 100).expect("claim on instance 1 succeeds");
+
+        // Export PDA records (simulating LEZ account storage checkpoint)
+        let pda_records = nullifiers.export_pda_records(10_000_000);
+        assert!(!pda_records.is_empty());
+
+        // Simulate runtime restart with fresh in-memory process
+        let mut restarted_nullifiers = NullifierSet::new();
+        assert!(!restarted_nullifiers.is_used(&stmt.statement_id));
+
+        // Restore state from persistent LEZ PDA accounts
+        restarted_nullifiers.restore_pda_records(&pda_records);
+        assert!(restarted_nullifiers.is_used(&stmt.statement_id));
+
+        // Attempt replay after restart: MUST BE REJECTED!
+        let replay_res = claim(&stmt, &mut restarted_nullifiers, 100);
+        assert_eq!(replay_res.unwrap_err(), ReceiverError::AlreadyClaimed);
     }
 
     // Chain IDs used in tests above

@@ -319,16 +319,17 @@ fn test_sequencer_full_lifecycle_e2e() {
     ether_val[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
     let user_addr = [0x42; 20];
     let eth_subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
-    let ether_statement = VerifiedStatement {
+    let mut ether_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x55; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: ether_val,
         subject_key: eth_subject_key,
         proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
         binding: StatementBinding::Account { address: user_addr },
     };
+    ether_statement.statement_id = ether_statement.derive_canonical_id();
     let ether_res = claim_ether(&ether_statement, &mut ether_nullifiers, 1_000_000);
     assert!(ether_res.is_ok(), "Native Ether claim succeeds");
     let tx4b_hash = sequencer.record_tx(b"ether_claim", 98_000);
@@ -375,16 +376,17 @@ fn test_sequencer_full_lifecycle_e2e() {
     ));
 
     // Rejection 5: chain_id_mismatch -> ChainIdMismatch
-    let wrong_chain_statement = VerifiedStatement {
+    let mut wrong_chain_statement = VerifiedStatement {
         chain_id: ETH_SEPOLIA_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id: [0x77; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: [0x10; 32],
         subject_key: [0u8; 32],
         proof_type_tag: 2,
         binding: Default::default(),
     };
+    wrong_chain_statement.statement_id = wrong_chain_statement.derive_canonical_id();
     let wrong_chain_res = claim(&wrong_chain_statement, &mut erc20_nullifiers, 100);
     assert!(
         matches!(

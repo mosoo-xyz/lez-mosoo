@@ -10,7 +10,6 @@
 //! 7. Ethereum `MosooLocker.sol:unlockETH` verification & fund release
 //! 8. Cross-chain invariant and replay resistance enforcement
 
-use alloy_primitives::keccak256;
 use erc20_receiver::{
     derive_burn_erc20_id, Erc20Ledger, Erc20TransferClaim, NullifierSet as Erc20NullifierSet,
     ReceiverError,
@@ -187,12 +186,10 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     let mut val_bytes = [0u8; 32];
     val_bytes[16..32].copy_from_slice(&deposit_amount.to_be_bytes());
 
-    let statement_id = keccak256([&subject_key[..], &val_bytes[..]].concat()).0;
-
-    let statement = VerifiedStatement {
+    let mut statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id,
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_bytes,
         subject_key,
@@ -207,6 +204,7 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
             recipient: alice_lez,
         },
     };
+    statement.statement_id = statement.derive_canonical_id();
 
     let claim = NativeEthDepositClaim {
         statement,
@@ -355,12 +353,10 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
     let mut val_bytes = [0u8; 32];
     val_bytes[24..32].copy_from_slice(&(deposit_amount as u64).to_be_bytes());
 
-    let statement_id = keccak256([&subject_key[..], &val_bytes[..]].concat()).0;
-
-    let statement = VerifiedStatement {
+    let mut statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
-        statement_id,
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val_bytes,
         subject_key,
@@ -375,6 +371,7 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
             recipient: alice_lez,
         },
     };
+    statement.statement_id = statement.derive_canonical_id();
 
     let claim = Erc20TransferClaim {
         statement,

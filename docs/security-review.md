@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Audit Boundary & Milestones:**
-> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 34 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
+> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 37 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
 > - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
 
 ---
@@ -120,9 +120,39 @@ Both `handle_miller_update` and `handle_finish_update` recompute and verify this
 
 ---
 
+### Invariant 9: Genesis Bootstrap Weak-Subjectivity Boundary & Authority Provenance
+**Vulnerability:** Bootstrapping a light client from a stale or attacker-controlled initial state allows long-range fork attacks.
+**Enforcement:** In alignment with Ethereum PoS specification (`sync-protocol.md`), initial sync committees are verified at generalized index 54/86 against `bootstrap_header.state_root`. A mandatory `trusted_head_slot` ensures weak-subjectivity freshness ($\le 1,728,000$ slots / ~240 days). Once initialized, the instance is permanently immutable, and all future updates require BLS quorum ($\ge 342/512$) with zero operator trust.  
+*Validated in:* `test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected` and `test_weak_subjectivity_and_stale_instance_recovery`.
+
+---
+
+### Invariant 10: Canonical Statement ID Integrity & Decoupled State Derivation
+**Vulnerability:** If consuming contracts simply trust a caller-supplied `statement_id`, an attacker can modify the identifier to bypass nullifiers while pointing to the same underlying state.  
+**Enforcement:** Consumers strictly recompute `statement.derive_canonical_id()` from the canonical state tuple:
+$$\text{statement\_id} = \text{sha256}(\text{"mosoo\_statement\_v1"} \parallel \text{chain\_id} \parallel \text{subject\_key} \parallel \text{proof\_type} \parallel \text{value})$$
+Any mismatch triggers an immediate fail-closed `StatementIdMismatch` error.  
+*Validated in:* `test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected` and `test_erc20_claim_rejects_statement_id_tampering`.
+
+---
+
+### Invariant 11: Economic Separation of Read-Only Attestation vs Escrow-Backed Asset Minting
+**Vulnerability:** Allowing ordinary Ethereum account balance proofs (`StatementBinding::Account`) to mint synthetic `mETH` on LEZ enables infinite unbacked minting without real collateral.  
+**Enforcement:** Dual-interface separation: read-only access gating (`claim_ether`) allows balance proofs, while bridge minting (`MethLedger::mint_meth_atomic`) strictly enforces `StatementBinding::NativeEthDeposit` from verified `MosooLocker.sol` escrow receipts, rejecting unbacked balance claims with `DepositBackingRequired`.  
+*Validated in:* `test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_rejected` and `test_meth_ledger_mint_atomic_rejects_unbacked_account_balance`.
+
+---
+
+### Invariant 12: LEZ PDA-Backed Nullifier Persistence & Recovery
+**Vulnerability:** In-memory nullifier sets lose state upon contract upgrades or node restarts, allowing replay of historic claims.  
+**Enforcement:** Nullifiers are modeled as deterministic LEZ runtime PDA accounts (`["mosoo_nullifier", canonical_statement_id]`) with exportable/restorable state structures (`export_pda_records` / `restore_pda_records`), guaranteeing crash persistence across LEZ block boundaries.  
+*Validated in:* `test_erc20_nullifier_pda_derivation_and_restart_persistence` and `test_ether_nullifier_pda_derivation_and_restart_persistence`.
+
+---
+
 ## 3. Automated Adversarial Test Harness
 
-All 32 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
+All 37 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
 
 | Test Name | Attack Scenario Tested | Expected Rejection |
 | :--- | :--- | :--- |
@@ -160,6 +190,9 @@ All 32 attack vectors are implemented as automated regression tests in `tests/ad
 | `test_security_audit_attack_32` | Sequential multi-update boundary rotation invariant | Verified multi-update boundary progression |
 | `test_security_audit_attack_33` | Predicate variation replay on identical Ethereum state | Enforce canonical state fact binding; invariant statement ID rejects altered predicate replay |
 | `test_security_audit_attack_34` | Cross-instance job injection on same chain (RFP-021 #15) | Job PDA keying binds `instance_id` & `chain_id`; rejected with `JobInstanceMismatch` |
+| `test_security_audit_attack_35` | Historical header proof closure & branch tampering (RFP-021 #6) | Fail-closed rejection across slot mismatches, window expiration, domain mismatch, and corrupted branches |
+| `test_security_audit_attack_36` | Unbacked Ethereum account balance bridge minting attempt | Rejected with `EtherReceiverError::DepositBackingRequired`; zero unbacked synthetic mETH minted |
+| `test_security_audit_attack_37` | Tampered statement ID nullifier bypass attempt | Consumers recalculate canonical statement ID; strictly rejected with `StatementIdMismatch` |
 
 ### 3.1 Two-Way Bridge Security & Escrow Defense Harness
 

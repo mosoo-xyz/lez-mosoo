@@ -201,16 +201,17 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     let user_addr = [0x77; 20];
     let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
 
-    let stmt = VerifiedStatement {
+    let mut stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: mosoo_core::types::MOSOO_PROGRAM_ID,
-        statement_id: [0x77; 32],
+        statement_id: [0u8; 32],
         predicate_holds: true,
         verified_value: val,
         subject_key,
         proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
         binding: StatementBinding::Account { address: user_addr },
     };
+    stmt.statement_id = stmt.derive_canonical_id();
 
     let claimed_wei = claim_ether(&stmt, &mut ether_nullifiers, 1_000_000).unwrap();
     assert_eq!(claimed_wei, 1_000_000);
@@ -220,7 +221,7 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     assert!(replay.is_err());
 
     // Only the nullifier hash is marked, zero account correlation signal
-    assert!(ether_nullifiers.is_used(&[0x77; 32]));
+    assert!(ether_nullifiers.is_used(&stmt.statement_id));
     assert!(!ether_nullifiers.is_used(&[0x78; 32]));
 }
 

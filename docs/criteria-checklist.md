@@ -39,7 +39,7 @@ This document provides a technical mapping between the requirements in the [Logo
 
 ## 3. Adversarial Security & Edge Cases Remediated
 
-All 32 adversarial attack scenarios across 16 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
+All 37 adversarial attack scenarios across 18 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
 
 1. **Fabricated Beacon Header**: Rejection of unsigned or forged beacon headers (`MosooError::InvalidSignature`).
 2. **Sub-Threshold Participation**: Rejection of updates with < 342/512 validator quorum (`MosooError::InsufficientParticipation`).
@@ -62,6 +62,11 @@ All 32 adversarial attack scenarios across 16 primary attack classes are covered
 30. **Gloas Execution RLP Header Hash Mismatch Rejection**: Strict enforcement that $\text{keccak256}(\text{execution\_rlp}) == \text{payload\_header.block\_hash}$ (`MosooError::GloasExecutionRlpMismatch`).
 31. **Authentic Beacon Root with Tampered Execution Roots Rejection**: Cryptographic assertion that caller-supplied `HeaderRecord` execution roots match authenticated instance roots, strictly rejecting fabricated execution roots under genuine beacon roots (`MosooError::UnauthenticatedHeaderRecord`).
 32. **Sequential Multi-Update Rotation Invariant**: Verified sequential execution across period boundary transitions combining next-period signatures with previous-period finalized headers without committee desynchronization.
+33. **Predicate Variation Replay Rejection**: Strict enforcement that statement identity is derived from canonical underlying state facts (`derive_statement_id_from_raw`), mathematically preventing an attacker from crafting alternative predicates on the same event to bypass single-use nullifiers.
+34. **Cross-Instance Job Injection Isolation**: Cryptographic binding of `instance_id` and `chain_id` in JobAccount PDAs, strictly rejecting job injection across independent instances on the same chain (`MosooError::JobInstanceMismatch`).
+35. **Historical Header Proof Closure**: Complete fail-closed verification of historical proofs across slot mismatches, window expiration (> 8192 slots), cross-chain domain mismatches, corrupted execution branches, and tampered roots (RFP-021 Functionality #6).
+36. **Unbacked Ethereum Balance Bridge Minting Strict Rejection**: Economic isolation ensuring read-only balance attestations cannot be exploited to mint synthetic `mETH` bridge tokens without verified escrow deposit backing (`EtherReceiverError::DepositBackingRequired`).
+37. **Tampered Statement ID Nullifier Bypass Rejection**: Strict runtime recomputation of canonical statement ID by both ERC-20 and Ether consumers, rejecting any altered or decoupled statement IDs (`StatementIdMismatch`).
 
 Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.rs` and `contracts/MosooLocker.sol`) hardens against tampered burn receipt IDs, EIP-2 signature malleability, zero-address signers, fee-on-transfer discrepancies, and unauthorized ownership takeovers.
 
@@ -73,16 +78,18 @@ The repository test suite consists of **179 automated tests** (176 unit/integrat
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
-| **Core Verification & Crypto** | `mosoo-core/src/` | 47 (46 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety |
-| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 34 | 34 explicit attack scenarios tested against guest handlers |
+| **Core Verification & Crypto** | `mosoo-core/src/` | 37 (36 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety |
+| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 37 | 37 explicit attack scenarios tested against guest handlers |
 | **Light Client Suite** | `tests/light_client_tests.rs` | 21 | Canonical Period 1884 vector, bootstrap, multi-network domains |
 | **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 3 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, and unlock |
 | **LEZ v0.4 Acceptance Suite** | `tests/lez_v04_acceptance_tests.rs` | 4 | Single-tx gas envelopes (<=10M), PDA seeds, CPI dispatch, Core proxy routing |
 | **Privacy & Zero-Correlation** | `tests/privacy_and_correlation_tests.rs` | 5 | Address shielding, unlinkability, byte-level state-diff inspection |
-| **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 26 (25 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, burn & unlock |
-| **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 27 (26 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, BurnReceipt generation |
 | **Sequencer E2E Suite** | `tests/sequencer_e2e_tests.rs` | 2 | Full 3-Tx lifecycle on mock sequencer across Mainnet and Sepolia |
+| **Consumer Integration Suite** | `tests/e2e_consumer_tests.rs` | 2 | Cross-slot nullifier uniqueness, duplicate mint prevention |
+| **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 28 (27 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, PDA nullifier export/restore, burn & unlock |
+| **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 30 (29 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, PDA nullifier export/restore, BurnReceipt generation |
 | **Daemon Operational Suite** | `daemon/src/main.rs` | 9 | Beacon parsing, randomized jitter, competing-update recovery, proxy URL derivations |
+| **CLI Suite** | `cli/src/main.rs` | 1 | CLI argument parser and test vector loading |
 | **CLI Suite** | `cli/src/main.rs` | 1 | CLI argument parser and test vector loading |
 | **Two-Way Bridge Testnet Pipeline** | `scripts/testnet-two-way-bridge.py` | 1 script (5 phases) | Live testnet sequencer connectivity, deposit, 3-tx split, mint, burn, unlock |
 | **Evidence Verification Script** | `scripts/verify-evidence.py` | 1 script (12 checks) | Verifies committed sequencer harness execution manifests and tx receipts |
