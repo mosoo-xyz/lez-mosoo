@@ -556,6 +556,226 @@ pub fn claim_ether_atomic(
     Ok(verified_wei)
 }
 
+/// Strongly-typed cryptographic receipt proving a verified native ETH deposit or vault escrow lock event.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EthDepositReceipt {
+    pub statement_id: [u8; 32],
+    pub deposit_contract: [u8; 20],
+    pub sender: [u8; 20],
+    pub recipient: [u8; 32],
+    pub amount_wei: u64,
+    pub execution_block_hash: [u8; 32],
+    pub slot: u64,
+    pub tx_index: u64,
+    pub log_index: u64,
+}
+
+/// Strongly-typed attestation proving an Ethereum account balance at a verified execution state root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountBalanceAttestation {
+    pub statement_id: [u8; 32],
+    pub account_address: [u8; 20],
+    pub verified_balance_wei: u64,
+    pub execution_block_hash: [u8; 32],
+    pub slot: u64,
+}
+
+/// Execute atomic same-transaction verification of an Ethereum Account Balance attestation.
+///
+/// Returns a strongly-typed `AccountBalanceAttestation` strictly binding the account address
+/// and verified balance. Ordinary account balance attestations cannot be used to mint bridge tokens.
+pub fn claim_account_balance_atomic(
+    args: AtomicEtherClaimArgs,
+    nullifiers: &mut EtherNullifierSet,
+) -> Result<AccountBalanceAttestation, EtherReceiverError> {
+    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+    }
+
+    let header_slot = args.header.slot;
+    let header_exec_hash = args.header.execution_block_hash;
+
+    let attest_args = mosoo_core::verifier::AttestStateArgs {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
+        proof: args.proof,
+        predicate: args.predicate,
+    };
+
+    let output = mosoo_core::verifier::handle_attest_state(attest_args)
+        .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+
+    let statement = match output {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => {
+            return Err(EtherReceiverError::AttestationFailed(
+                "unexpected instruction output from handle_attest_state".into(),
+            ))
+        }
+    };
+
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+
+    let account_address = match &statement.binding {
+        StatementBinding::Account { address } => {
+            if *address != args.expected_address {
+                return Err(EtherReceiverError::ContractMismatch {
+                    expected: args.expected_address,
+                    actual: *address,
+                });
+            }
+            *address
+        }
+        _ => {
+            return Err(EtherReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ));
+        }
+    };
+
+    let verified_wei = statement
+        .value_as_u64_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    if verified_wei < args.min_wei {
+        return Err(EtherReceiverError::BalanceTooLow {
+            actual: verified_wei,
+            required: args.min_wei,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
+
+    Ok(AccountBalanceAttestation {
+        statement_id: statement.statement_id,
+        account_address,
+        verified_balance_wei: verified_wei,
+        execution_block_hash: header_exec_hash,
+        slot: header_slot,
+    })
+}
+
+/// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit.
+///
+/// Returns a strongly-typed `EthDepositReceipt` proving that the deposit was locked in
+/// the authentic vault contract for the benefit of `args.recipient`.
+pub fn claim_native_eth_deposit_atomic(
+    args: AtomicEtherClaimArgs,
+    nullifiers: &mut EtherNullifierSet,
+) -> Result<EthDepositReceipt, EtherReceiverError> {
+    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+    }
+
+    let attest_args = mosoo_core::verifier::AttestStateArgs {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
+        proof: args.proof,
+        predicate: args.predicate,
+    };
+
+    let output = mosoo_core::verifier::handle_attest_state(attest_args)
+        .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+
+    let statement = match output {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => {
+            return Err(EtherReceiverError::AttestationFailed(
+                "unexpected instruction output from handle_attest_state".into(),
+            ))
+        }
+    };
+
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+
+    let (deposit_contract, sender, recipient, execution_block_hash, slot, tx_index, log_index) =
+        match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                if *deposit_contract != args.expected_address {
+                    return Err(EtherReceiverError::ContractMismatch {
+                        expected: args.expected_address,
+                        actual: *deposit_contract,
+                    });
+                }
+                if *recipient != args.recipient {
+                    return Err(EtherReceiverError::RecipientMismatch {
+                        expected: args.recipient,
+                        actual: *recipient,
+                    });
+                }
+                (
+                    *deposit_contract,
+                    *sender,
+                    *recipient,
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index as u64,
+                )
+            }
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+        };
+
+    let verified_wei = statement
+        .value_as_u64_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    if verified_wei < args.min_wei {
+        return Err(EtherReceiverError::BalanceTooLow {
+            actual: verified_wei,
+            required: args.min_wei,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
+
+    Ok(EthDepositReceipt {
+        statement_id: statement.statement_id,
+        deposit_contract,
+        sender,
+        recipient,
+        amount_wei: verified_wei,
+        execution_block_hash,
+        slot,
+        tx_index,
+        log_index,
+    })
+}
+
 /// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol`:
 /// `keccak256(abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot))`
 pub fn derive_burn_id(
@@ -681,9 +901,9 @@ impl MethLedger {
             return Err(EtherReceiverError::DepositBackingRequired);
         }
 
-        let recipient = args.recipient;
-        let verified_wei = claim_ether_atomic(args, nullifiers)?;
-        let amount = verified_wei as u128;
+        let deposit_receipt = claim_native_eth_deposit_atomic(args, nullifiers)?;
+        let recipient = deposit_receipt.recipient;
+        let amount = deposit_receipt.amount_wei as u128;
 
         let entry = self
             .accounts
@@ -1324,6 +1544,87 @@ mod tests {
 
         // Replay rejection
         let replay = claim_ether_atomic(args, &mut nullifiers);
+        assert_eq!(replay, Err(EtherReceiverError::AlreadyClaimed));
+    }
+
+    #[test]
+    fn test_claim_account_balance_atomic_typed_receipt() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_account_balance_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = EtherNullifierSet::new();
+        let user_addr = [0x42; 20];
+        let balance_u64 = 7_000_000_000_000_000_000u64;
+        let balance = U256::from(balance_u64);
+
+        let (state_root, proof_nodes, account_rlp) =
+            build_test_account_balance_proof(Address::from(user_addr), balance);
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: state_root.0,
+            current_receipts_root: [0x88; 32],
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: state_root.0,
+            receipts_root: [0x88; 32],
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::AccountBalance {
+                address: Address::from(user_addr),
+            },
+            account_proof: proof_nodes,
+            storage_proof: None,
+            receipt_proof: None,
+            account_value: Some(account_rlp),
+            storage_value: None,
+            receipt_value: None,
+        };
+
+        let args = AtomicEtherClaimArgs {
+            instance,
+            header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof,
+            predicate: Predicate::AtLeast {
+                min: min_32(1_000_000_000_000_000_000),
+            },
+            expected_address: user_addr,
+            recipient: [0x33; 32],
+            min_wei: 1_000_000_000_000_000_000,
+        };
+
+        let attestation = claim_account_balance_atomic(args.clone(), &mut nullifiers)
+            .expect("Atomic account balance attestation must succeed");
+        assert_eq!(attestation.account_address, user_addr);
+        assert_eq!(attestation.verified_balance_wei, balance_u64);
+        assert_eq!(attestation.slot, 10_000_000);
+
+        // Replay rejection
+        let replay = claim_account_balance_atomic(args, &mut nullifiers);
         assert_eq!(replay, Err(EtherReceiverError::AlreadyClaimed));
     }
 

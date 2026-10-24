@@ -24,6 +24,10 @@ contract MosooLocker {
     address public owner;
     address public pendingOwner;
     address public attesterAuthority;
+    address public pendingAttesterAuthority;
+    uint256 public authorityTimelockUnlock;
+    uint256 public constant AUTHORITY_CHANGE_DELAY = 1 days;
+
     address public guardian;
     bool public paused;
 
@@ -36,6 +40,35 @@ contract MosooLocker {
 
     /// @notice ERC-20 token deposit accounting: token => total locked
     mapping(address => uint256) public totalLockedERC20;
+
+    /// @notice Optional token allowlist to restrict deposits to verified non-rebasing tokens
+    bool public tokenAllowlistEnabled;
+    mapping(address => bool) public isTokenAllowed;
+
+    // --- EIP-712 Domain Separation ---
+    bytes32 public constant EIP712_DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+    );
+
+    bytes32 public constant BURN_ETH_TYPEHASH = keccak256(
+        "BurnETH(bytes32 burnId,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
+    );
+
+    bytes32 public constant BURN_ERC20_TYPEHASH = keccak256(
+        "BurnERC20(bytes32 burnId,address token,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
+    );
+
+    function DOMAIN_SEPARATOR() public view returns (bytes32) {
+        return keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("MosooLocker")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(this)
+            )
+        );
+    }
 
     // --- Reentrancy Guard ---
     uint256 private constant _NOT_ENTERED = 1;
@@ -75,10 +108,13 @@ contract MosooLocker {
     );
 
     event AttesterAuthorityUpdated(address indexed oldAuthority, address indexed newAuthority);
+    event AttesterAuthorityChangeProposed(address indexed currentAuthority, address indexed proposedAuthority, uint256 unlockTimestamp);
     event GuardianUpdated(address indexed previousGuardian, address indexed newGuardian);
     event PausedStateChanged(bool isPaused);
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event TokenAllowlistToggled(bool enabled);
+    event TokenAllowedStatusUpdated(address indexed token, bool allowed);
 
     // --- Errors ---
 
@@ -93,6 +129,9 @@ contract MosooLocker {
     error InsufficientLockedERC20();
     error ETHTransferFailed();
     error ERC20TransferFailed();
+    error TokenNotAllowed();
+    error AuthorityTimelockActive(uint256 currentTime, uint256 unlockTime);
+    error NoPendingAuthority();
 
     // --- Modifiers ---
 
@@ -165,6 +204,7 @@ contract MosooLocker {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || lezRecipient == bytes32(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();
+        if (tokenAllowlistEnabled && !isTokenAllowed[token]) revert TokenNotAllowed();
 
         uint256 balanceBefore = _getTokenBalance(token, address(this));
         _safeTransferFrom(token, msg.sender, address(this), amount);
@@ -218,11 +258,20 @@ contract MosooLocker {
         );
         if (burnId != expectedBurnId) revert InvalidBurnProof();
 
-        // 2. Verify attestation signature over burnId
-        bytes32 ethSignedMessageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", burnId)
+        // 2. Verify signature using EIP-712 structured data (binding verifyingContract address(this))
+        // or standard eth_sign over burnId
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ETH_TYPEHASH,
+                burnId,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
         );
-        if (!_verifySignature(ethSignedMessageHash, attestationSignature, attesterAuthority)) {
+        if (!_verifyBurnSignature(structHash, burnId, attestationSignature)) {
             revert InvalidBurnProof();
         }
 
@@ -280,11 +329,21 @@ contract MosooLocker {
         );
         if (burnId != expectedBurnId) revert InvalidBurnProof();
 
-        // 2. Verify attestation signature over burnId
-        bytes32 ethSignedMessageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", burnId)
+        // 2. Verify signature using EIP-712 structured data (binding verifyingContract address(this))
+        // or standard eth_sign over burnId
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ERC20_TYPEHASH,
+                burnId,
+                token,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
         );
-        if (!_verifySignature(ethSignedMessageHash, attestationSignature, attesterAuthority)) {
+        if (!_verifyBurnSignature(structHash, burnId, attestationSignature)) {
             revert InvalidBurnProof();
         }
 
@@ -299,6 +358,26 @@ contract MosooLocker {
     }
 
     // --- Internal Helpers ---
+
+    function _verifyBurnSignature(
+        bytes32 structHash,
+        bytes32 burnId,
+        bytes calldata signature
+    ) internal view returns (bool) {
+        // Priority 1: EIP-712 structured data signing strictly binding verifyingContract address(this)
+        bytes32 eip712Digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
+        );
+        if (_verifySignature(eip712Digest, signature, attesterAuthority)) {
+            return true;
+        }
+
+        // Priority 2: Standard eth_sign over burnId (for backwards compatibility)
+        bytes32 ethSignedMessageHash = keccak256(
+            abi.encodePacked("\x19Ethereum Signed Message:\n32", burnId)
+        );
+        return _verifySignature(ethSignedMessageHash, signature, attesterAuthority);
+    }
 
     function _verifySignature(
         bytes32 hash,
@@ -357,10 +436,37 @@ contract MosooLocker {
 
     // --- Admin & Emergency Functions ---
 
+    function proposeAttesterAuthority(address _newAuthority) external onlyOwner {
+        if (_newAuthority == address(0)) revert ZeroAddress();
+        pendingAttesterAuthority = _newAuthority;
+        authorityTimelockUnlock = block.timestamp + AUTHORITY_CHANGE_DELAY;
+        emit AttesterAuthorityChangeProposed(attesterAuthority, _newAuthority, authorityTimelockUnlock);
+    }
+
+    function executeAttesterAuthority() external onlyOwner {
+        if (pendingAttesterAuthority == address(0)) revert NoPendingAuthority();
+        if (block.timestamp < authorityTimelockUnlock) revert AuthorityTimelockActive(block.timestamp, authorityTimelockUnlock);
+        emit AttesterAuthorityUpdated(attesterAuthority, pendingAttesterAuthority);
+        attesterAuthority = pendingAttesterAuthority;
+        pendingAttesterAuthority = address(0);
+        authorityTimelockUnlock = 0;
+    }
+
     function setAttesterAuthority(address _newAuthority) external onlyOwner {
         if (_newAuthority == address(0)) revert ZeroAddress();
         emit AttesterAuthorityUpdated(attesterAuthority, _newAuthority);
         attesterAuthority = _newAuthority;
+    }
+
+    function setTokenAllowed(address token, bool allowed) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        isTokenAllowed[token] = allowed;
+        emit TokenAllowedStatusUpdated(token, allowed);
+    }
+
+    function setTokenAllowlistEnabled(bool enabled) external onlyOwner {
+        tokenAllowlistEnabled = enabled;
+        emit TokenAllowlistToggled(enabled);
     }
 
     function setGuardian(address _newGuardian) external onlyOwner {

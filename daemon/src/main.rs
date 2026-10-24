@@ -10,7 +10,7 @@
 
 use clap::Parser;
 use mosoo_core::types::{
-    BeaconBlockHeader, ExecutionPayloadHeader, LightClientUpdate, SyncAggregate,
+    BeaconBlockHeader, ExecutionPayloadHeader, LightClientUpdate, SyncAggregate, SyncCommittee,
 };
 use rand::Rng;
 use serde::Deserialize;
@@ -365,9 +365,21 @@ struct FinalityUpdateData {
     sync_aggregate: SyncAggregateObj,
     signature_slot: String,
     #[serde(default)]
+    next_sync_committee: Option<SyncCommitteeObj>,
+    #[serde(default)]
+    next_sync_committee_branch: Option<Vec<String>>,
+    #[serde(default)]
     execution_payload_header: Option<ExecutionPayloadHeaderObj>,
     #[serde(default)]
     execution_branch: Option<Vec<String>>,
+    #[serde(default)]
+    execution_rlp: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct SyncCommitteeObj {
+    pubkeys: Vec<String>,
+    aggregate_pubkey: String,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -572,32 +584,41 @@ fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClien
         }
     }
 
-    let execution_payload_header = if let Some(p) = d.execution_payload_header {
-        Some(ExecutionPayloadHeader {
-            parent_hash: hex_to_32(&p.parent_hash)?,
-            fee_recipient: hex_to_20(&p.fee_recipient)?,
-            state_root: hex_to_32(&p.state_root)?,
-            receipts_root: hex_to_32(&p.receipts_root)?,
-            logs_bloom: hex::decode(p.logs_bloom.trim_start_matches("0x")).unwrap_or_default(),
-            prev_randao: hex_to_32(&p.prev_randao)?,
-            block_number: p.block_number.parse().unwrap_or(0),
-            gas_limit: p.gas_limit.parse().unwrap_or(0),
-            gas_used: p.gas_used.parse().unwrap_or(0),
-            timestamp: p.timestamp.parse().unwrap_or(0),
-            extra_data: hex::decode(p.extra_data.trim_start_matches("0x")).unwrap_or_default(),
-            base_fee_per_gas: hex_to_32(&p.base_fee_per_gas).unwrap_or([0u8; 32]),
-            block_hash: hex_to_32(&p.block_hash)?,
-            transactions_root: hex_to_32(&p.transactions_root)?,
-            withdrawals_root: p
-                .withdrawals_root
-                .as_deref()
-                .and_then(|s| hex_to_32(s).ok()),
-            blob_gas_used: p.blob_gas_used.as_deref().and_then(|s| s.parse().ok()),
-            excess_blob_gas: p.excess_blob_gas.as_deref().and_then(|s| s.parse().ok()),
-        })
-    } else {
-        None
-    };
+    let execution_payload_header =
+        if let Some(p) = d.execution_payload_header {
+            Some(ExecutionPayloadHeader {
+                parent_hash: hex_to_32(&p.parent_hash)?,
+                fee_recipient: hex_to_20(&p.fee_recipient)?,
+                state_root: hex_to_32(&p.state_root)?,
+                receipts_root: hex_to_32(&p.receipts_root)?,
+                logs_bloom: hex::decode(p.logs_bloom.trim_start_matches("0x")).unwrap_or_default(),
+                prev_randao: hex_to_32(&p.prev_randao)?,
+                block_number: p.block_number.parse().map_err(|e| {
+                    anyhow::anyhow!("Failed to parse execution payload block_number: {e}")
+                })?,
+                gas_limit: p.gas_limit.parse().map_err(|e| {
+                    anyhow::anyhow!("Failed to parse execution payload gas_limit: {e}")
+                })?,
+                gas_used: p.gas_used.parse().map_err(|e| {
+                    anyhow::anyhow!("Failed to parse execution payload gas_used: {e}")
+                })?,
+                timestamp: p.timestamp.parse().map_err(|e| {
+                    anyhow::anyhow!("Failed to parse execution payload timestamp: {e}")
+                })?,
+                extra_data: hex::decode(p.extra_data.trim_start_matches("0x")).unwrap_or_default(),
+                base_fee_per_gas: hex_to_32(&p.base_fee_per_gas).unwrap_or([0u8; 32]),
+                block_hash: hex_to_32(&p.block_hash)?,
+                transactions_root: hex_to_32(&p.transactions_root)?,
+                withdrawals_root: p
+                    .withdrawals_root
+                    .as_deref()
+                    .and_then(|s| hex_to_32(s).ok()),
+                blob_gas_used: p.blob_gas_used.as_deref().and_then(|s| s.parse().ok()),
+                excess_blob_gas: p.excess_blob_gas.as_deref().and_then(|s| s.parse().ok()),
+            })
+        } else {
+            None
+        };
 
     let execution_branch = if let Some(eb) = d.execution_branch {
         let mut branch = Vec::new();
@@ -609,20 +630,64 @@ fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClien
         None
     };
 
+    let next_sync_committee = if let Some(nsc) = d.next_sync_committee {
+        let mut pubkeys = Vec::with_capacity(nsc.pubkeys.len());
+        for pk_str in nsc.pubkeys {
+            let pk = hex::decode(pk_str.trim_start_matches("0x"))
+                .map_err(|e| anyhow::anyhow!("Invalid sync committee pubkey hex: {e}"))?;
+            if pk.len() != 48 {
+                anyhow::bail!("Sync committee pubkey must be 48 bytes, got {}", pk.len());
+            }
+            pubkeys.push(pk);
+        }
+        let agg_pk = hex::decode(nsc.aggregate_pubkey.trim_start_matches("0x"))
+            .map_err(|e| anyhow::anyhow!("Invalid aggregate pubkey hex: {e}"))?;
+        if agg_pk.len() != 48 {
+            anyhow::bail!("Aggregate pubkey must be 48 bytes, got {}", agg_pk.len());
+        }
+        Some(SyncCommittee {
+            pubkeys,
+            aggregate_pubkey: agg_pk,
+        })
+    } else {
+        None
+    };
+
+    let next_sync_committee_branch = if let Some(branch_strs) = d.next_sync_committee_branch {
+        let mut branch = Vec::with_capacity(branch_strs.len());
+        for b in branch_strs {
+            branch.push(hex_to_32(&b)?);
+        }
+        Some(branch)
+    } else {
+        None
+    };
+
+    let execution_rlp = if let Some(rlp_str) = d.execution_rlp {
+        let rlp_bytes = hex::decode(rlp_str.trim_start_matches("0x"))
+            .map_err(|e| anyhow::anyhow!("Invalid execution RLP hex: {e}"))?;
+        Some(rlp_bytes)
+    } else {
+        None
+    };
+
     Ok(LightClientUpdate {
         attested_header: attested,
-        next_sync_committee: None,
-        next_sync_committee_branch: None,
+        next_sync_committee,
+        next_sync_committee_branch,
         finalized_header: finalized,
         finality_branch,
         sync_aggregate: SyncAggregate {
             sync_committee_bits: bits,
             sync_committee_signature: sig,
         },
-        signature_slot: d.signature_slot.parse().unwrap_or(0),
+        signature_slot: d
+            .signature_slot
+            .parse()
+            .map_err(|e| anyhow::anyhow!("Failed to parse signature_slot: {e}"))?,
         execution_payload_header,
         execution_branch,
-        execution_rlp: None,
+        execution_rlp,
     })
 }
 
@@ -1179,5 +1244,109 @@ mod tests {
         assert_eq!(job.job_nonce, 42);
         assert_eq!(job.stage, "miller");
         assert_eq!(job.target_slot, 15_433_760);
+    }
+
+    #[test]
+    fn test_daemon_beacon_finality_update_with_next_sync_committee_and_rlp() {
+        let dummy_pubkey = "0x".to_string() + &hex::encode([0x42u8; 48]);
+        let json_data = format!(
+            r#"{{
+            "data": {{
+                "attested_header": {{
+                    "beacon": {{
+                        "slot": "15433761",
+                        "proposer_index": "123",
+                        "parent_root": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                        "state_root": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                        "body_root": "0x3333333333333333333333333333333333333333333333333333333333333333"
+                    }}
+                }},
+                "finalized_header": {{
+                    "beacon": {{
+                        "slot": "15433760",
+                        "proposer_index": "120",
+                        "parent_root": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                        "state_root": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                        "body_root": "0x6666666666666666666666666666666666666666666666666666666666666666"
+                    }}
+                }},
+                "finality_branch": [
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                ],
+                "sync_aggregate": {{
+                    "sync_committee_bits": "0xff00",
+                    "sync_committee_signature": "0xc000"
+                }},
+                "signature_slot": "15433761",
+                "next_sync_committee": {{
+                    "pubkeys": ["{dummy_pubkey}"],
+                    "aggregate_pubkey": "{dummy_pubkey}"
+                }},
+                "next_sync_committee_branch": [
+                    "0x7777777777777777777777777777777777777777777777777777777777777777"
+                ],
+                "execution_rlp": "0x01020304"
+            }}
+        }}"#
+        );
+
+        let res: FinalityUpdateResponse = serde_json::from_str(&json_data).unwrap();
+        let update = parse_beacon_update(res).unwrap();
+
+        let nsc = update
+            .next_sync_committee
+            .expect("must decode next_sync_committee");
+        assert_eq!(nsc.pubkeys.len(), 1);
+        assert_eq!(nsc.pubkeys[0], vec![0x42u8; 48]);
+        assert_eq!(nsc.aggregate_pubkey, vec![0x42u8; 48]);
+
+        let branch = update
+            .next_sync_committee_branch
+            .expect("must decode branch");
+        assert_eq!(branch.len(), 1);
+        assert_eq!(branch[0], [0x77; 32]);
+
+        let rlp = update.execution_rlp.expect("must decode execution_rlp");
+        assert_eq!(rlp, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn test_daemon_beacon_finality_update_malformed_slot_rejected() {
+        let json_data = r#"{
+            "data": {
+                "attested_header": {
+                    "beacon": {
+                        "slot": "15433761",
+                        "proposer_index": "123",
+                        "parent_root": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                        "state_root": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                        "body_root": "0x3333333333333333333333333333333333333333333333333333333333333333"
+                    }
+                },
+                "finalized_header": {
+                    "beacon": {
+                        "slot": "15433760",
+                        "proposer_index": "120",
+                        "parent_root": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                        "state_root": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                        "body_root": "0x6666666666666666666666666666666666666666666666666666666666666666"
+                    }
+                },
+                "finality_branch": [],
+                "sync_aggregate": {
+                    "sync_committee_bits": "0xff",
+                    "sync_committee_signature": "0xc0"
+                },
+                "signature_slot": "not_a_number"
+            }
+        }"#;
+
+        let res: FinalityUpdateResponse = serde_json::from_str(json_data).unwrap();
+        let err = parse_beacon_update(res);
+        assert!(err.is_err());
+        assert!(err
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse signature_slot"));
     }
 }

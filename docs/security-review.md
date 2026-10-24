@@ -198,6 +198,12 @@ All 37 attack vectors are implemented as automated regression tests in `tests/ad
 
 Tested in `tests/two_way_bridge_tests.rs`:
 - **Tampered Burn Receipt Defense (`test_two_way_bridge_adversarial_tampered_burn_id_rejected`):** Rejects forged burn identifiers or tampered recipients.
+- **EIP-712 Cross-Contract Replay Protection (Invariant 13) (`test_eip712_cross_contract_replay_protection`):**
+  Binds `verifyingContract: address(this)` and `chainId: block.chainid` into EIP-712 structured data hashes (`BurnETH` / `BurnERC20`). An attester authority signature crafted for Locker contract A is cryptographically rejected if submitted to Locker contract B, preventing cross-deployment signature replay.
+- **Token Allowlist Protection (Invariant 14) (`test_token_allowlist_enforcement`):**
+  Optional admin allowlist (`tokenAllowlistEnabled`, `isTokenAllowed`) prevents escrowing unvetted rebasing, fee-on-transfer, or adversarial ERC-20 tokens into the vault.
+- **Timelocked Authority Upgrades (Invariant 15) (`test_attester_authority_timelock_pipeline`):**
+  Enforces a mandatory 24-hour delay (`AUTHORITY_CHANGE_DELAY = 1 days`) between proposing a new `attesterAuthority` and executing the upgrade (`proposeAttesterAuthority` / `executeAttesterAuthority`), preventing instant unilateral authority key takeovers.
 - **Ethereum Escrow Contract Security (`contracts/MosooLocker.sol`):**
   - Strict EIP-2 upper-bound on $s$-values ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$).
   - Non-zero signer check (`recovered != address(0)`).

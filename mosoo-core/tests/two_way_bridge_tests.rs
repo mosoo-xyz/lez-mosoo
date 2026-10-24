@@ -32,8 +32,16 @@ struct MockEthereumLocker {
     pub unlocked_erc20: HashMap<[u8; 20], u128>,
     pub deposit_nonce: u64,
     pub executed_burns: HashMap<[u8; 32], bool>,
-    pub _locker_address: [u8; 20],
+    pub locker_address: [u8; 20],
+    pub chain_id: u64,
+    pub attester_authority: [u8; 20],
+    pub pending_attester_authority: Option<[u8; 20]>,
+    pub authority_timelock_unlock: u64,
+    pub token_allowlist_enabled: bool,
+    pub allowed_tokens: HashMap<[u8; 20], bool>,
 }
+
+pub const AUTHORITY_CHANGE_DELAY: u64 = 86_400; // 1 day in seconds
 
 impl MockEthereumLocker {
     fn new(locker_address: [u8; 20]) -> Self {
@@ -44,7 +52,13 @@ impl MockEthereumLocker {
             unlocked_erc20: HashMap::new(),
             deposit_nonce: 0,
             executed_burns: HashMap::new(),
-            _locker_address: locker_address,
+            locker_address,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            attester_authority: [0xaa; 20],
+            pending_attester_authority: None,
+            authority_timelock_unlock: 0,
+            token_allowlist_enabled: false,
+            allowed_tokens: HashMap::new(),
         }
     }
 
@@ -56,13 +70,117 @@ impl MockEthereumLocker {
         self.deposit_nonce
     }
 
+    /// Simulates `setTokenAllowlistEnabled(bool enabled)`
+    fn set_token_allowlist_enabled(&mut self, enabled: bool) {
+        self.token_allowlist_enabled = enabled;
+    }
+
+    /// Simulates `setTokenAllowed(address token, bool allowed)`
+    fn set_token_allowed(&mut self, token: [u8; 20], allowed: bool) {
+        self.allowed_tokens.insert(token, allowed);
+    }
+
     /// Simulates `depositERC20(address token, uint256 amount, bytes32 lezRecipient)`
-    fn deposit_erc20(&mut self, token: [u8; 20], amount: u128) -> u64 {
-        assert!(amount > 0, "ZeroAmount");
+    fn deposit_erc20(&mut self, token: [u8; 20], amount: u128) -> Result<u64, &'static str> {
+        if amount == 0 {
+            return Err("ZeroAmount");
+        }
+        if self.token_allowlist_enabled
+            && !self.allowed_tokens.get(&token).copied().unwrap_or(false)
+        {
+            return Err("TokenNotAllowed");
+        }
         self.deposit_nonce += 1;
         let entry = self.locked_erc20.entry(token).or_insert(0);
         *entry += amount;
-        self.deposit_nonce
+        Ok(self.deposit_nonce)
+    }
+
+    /// Simulates `proposeAttesterAuthority(address _newAuthority)`
+    fn propose_attester_authority(
+        &mut self,
+        new_authority: [u8; 20],
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        if new_authority == [0u8; 20] {
+            return Err("ZeroAddress");
+        }
+        self.pending_attester_authority = Some(new_authority);
+        self.authority_timelock_unlock = current_time + AUTHORITY_CHANGE_DELAY;
+        Ok(self.authority_timelock_unlock)
+    }
+
+    /// Simulates `executeAttesterAuthority()`
+    fn execute_attester_authority(&mut self, current_time: u64) -> Result<(), &'static str> {
+        let pending = self
+            .pending_attester_authority
+            .ok_or("NoPendingAuthority")?;
+        if current_time < self.authority_timelock_unlock {
+            return Err("AuthorityTimelockActive");
+        }
+        self.attester_authority = pending;
+        self.pending_attester_authority = None;
+        self.authority_timelock_unlock = 0;
+        Ok(())
+    }
+
+    /// Computes EIP-712 domain separator binding verifyingContract address(this)
+    fn domain_separator(&self) -> [u8; 32] {
+        let typehash = alloy_primitives::keccak256(
+            b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+        );
+        let name_hash = alloy_primitives::keccak256(b"MosooLocker");
+        let version_hash = alloy_primitives::keccak256(b"1");
+        let chain_id_bytes = alloy_primitives::U256::from(self.chain_id).to_be_bytes::<32>();
+        let mut contract_bytes = [0u8; 32];
+        contract_bytes[12..32].copy_from_slice(&self.locker_address);
+
+        let mut encoded = Vec::with_capacity(32 * 5);
+        encoded.extend_from_slice(typehash.as_slice());
+        encoded.extend_from_slice(name_hash.as_slice());
+        encoded.extend_from_slice(version_hash.as_slice());
+        encoded.extend_from_slice(&chain_id_bytes);
+        encoded.extend_from_slice(&contract_bytes);
+        alloy_primitives::keccak256(&encoded).0
+    }
+
+    /// Derives the EIP-712 typed data digest for BurnETH
+    fn compute_eip712_burn_eth_digest(
+        &self,
+        burn_id: [u8; 32],
+        recipient: [u8; 20],
+        amount_wei: u128,
+        lez_owner: [u8; 32],
+        burn_nonce: u64,
+        lez_slot: u64,
+    ) -> [u8; 32] {
+        let burn_eth_typehash = alloy_primitives::keccak256(
+            b"BurnETH(bytes32 burnId,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)",
+        );
+        let mut recipient_32 = [0u8; 32];
+        recipient_32[12..32].copy_from_slice(&recipient);
+        let amount_32 = alloy_primitives::U256::from(amount_wei).to_be_bytes::<32>();
+        let mut nonce_32 = [0u8; 32];
+        nonce_32[24..32].copy_from_slice(&burn_nonce.to_be_bytes());
+        let mut slot_32 = [0u8; 32];
+        slot_32[24..32].copy_from_slice(&lez_slot.to_be_bytes());
+
+        let mut struct_encoded = Vec::with_capacity(32 * 7);
+        struct_encoded.extend_from_slice(burn_eth_typehash.as_slice());
+        struct_encoded.extend_from_slice(&burn_id);
+        struct_encoded.extend_from_slice(&recipient_32);
+        struct_encoded.extend_from_slice(&amount_32);
+        struct_encoded.extend_from_slice(&lez_owner);
+        struct_encoded.extend_from_slice(&nonce_32);
+        struct_encoded.extend_from_slice(&slot_32);
+        let struct_hash = alloy_primitives::keccak256(&struct_encoded);
+
+        let domain_sep = self.domain_separator();
+        let mut final_digest_input = Vec::with_capacity(2 + 32 + 32);
+        final_digest_input.extend_from_slice(b"\x19\x01");
+        final_digest_input.extend_from_slice(&domain_sep);
+        final_digest_input.extend_from_slice(struct_hash.as_slice());
+        alloy_primitives::keccak256(&final_digest_input).0
     }
 
     /// Simulates `unlockETH(bytes32 burnId, uint256 amount, address recipient, ...)`
@@ -327,7 +445,9 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
 
     // 1. User deposits 1,000 USDC into Ethereum MosooLocker
     let deposit_amount: u128 = 1_000_000_000; // 1,000 USDC (6 decimals)
-    let nonce = eth_locker.deposit_erc20(usdc_token, deposit_amount);
+    let nonce = eth_locker
+        .deposit_erc20(usdc_token, deposit_amount)
+        .unwrap();
     assert_eq!(nonce, 1);
     assert_eq!(
         eth_locker.locked_erc20.get(&usdc_token).copied().unwrap(),
@@ -467,4 +587,105 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
     // 9. Replay attack rejection on LEZ
     let replay_mint = lez_ledger.mint_tokens(&claim, &mut lez_nullifiers);
     assert!(matches!(replay_mint, Err(ReceiverError::AlreadyClaimed)));
+}
+
+#[test]
+fn test_eip712_cross_contract_replay_protection() {
+    let locker_a = MockEthereumLocker::new([0x11; 20]);
+    let locker_b = MockEthereumLocker::new([0x22; 20]);
+
+    // Domain separators must be distinct because verifyingContract differs
+    let domain_sep_a = locker_a.domain_separator();
+    let domain_sep_b = locker_b.domain_separator();
+    assert_ne!(
+        domain_sep_a, domain_sep_b,
+        "Domain separators must be distinct across different locker contracts"
+    );
+
+    let burn_id = [0x77; 32];
+    let recipient = [0x33; 20];
+    let amount_wei = 5_000_000_000_000_000_000u128; // 5 ETH
+    let lez_owner = [0xaa; 32];
+    let burn_nonce = 42u64;
+    let lez_slot = 9_999_999u64;
+
+    // Compute typed digests for Locker A and Locker B
+    let digest_a = locker_a.compute_eip712_burn_eth_digest(
+        burn_id, recipient, amount_wei, lez_owner, burn_nonce, lez_slot,
+    );
+    let digest_b = locker_b.compute_eip712_burn_eth_digest(
+        burn_id, recipient, amount_wei, lez_owner, burn_nonce, lez_slot,
+    );
+
+    assert_ne!(
+        digest_a, digest_b,
+        "EIP-712 digests must be strictly segregated by verifyingContract"
+    );
+}
+
+#[test]
+fn test_token_allowlist_enforcement() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let allowed_token = [0x55; 20];
+    let unapproved_token = [0x66; 20];
+    let amount = 1_000_000_000u128;
+
+    // By default, allowlist is disabled: any token can be deposited
+    assert!(locker.deposit_erc20(unapproved_token, amount).is_ok());
+
+    // Enable token allowlist
+    locker.set_token_allowlist_enabled(true);
+    locker.set_token_allowed(allowed_token, true);
+
+    // Unapproved token must be strictly rejected
+    let err = locker.deposit_erc20(unapproved_token, amount);
+    assert_eq!(err.unwrap_err(), "TokenNotAllowed");
+
+    // Approved token succeeds
+    let ok = locker.deposit_erc20(allowed_token, amount);
+    assert!(ok.is_ok());
+}
+
+#[test]
+fn test_attester_authority_timelock_pipeline() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let initial_authority = [0xaa; 20];
+    let new_authority = [0xbb; 20];
+    assert_eq!(locker.attester_authority, initial_authority);
+
+    // Proposing zero address is rejected
+    assert_eq!(
+        locker
+            .propose_attester_authority([0u8; 20], 1_000)
+            .unwrap_err(),
+        "ZeroAddress"
+    );
+
+    // Propose valid authority at timestamp 1,000
+    let current_time = 1_000u64;
+    let unlock_time = locker
+        .propose_attester_authority(new_authority, current_time)
+        .unwrap();
+    assert_eq!(unlock_time, 1_000 + AUTHORITY_CHANGE_DELAY);
+    assert_eq!(locker.pending_attester_authority, Some(new_authority));
+
+    // Attempting to execute before timelock unlock fails
+    let early_exec = locker.execute_attester_authority(current_time + 10_000);
+    assert_eq!(early_exec.unwrap_err(), "AuthorityTimelockActive");
+    assert_eq!(locker.attester_authority, initial_authority);
+
+    // Executing exactly at or after unlock timestamp succeeds
+    let valid_exec = locker.execute_attester_authority(unlock_time);
+    assert!(valid_exec.is_ok());
+    assert_eq!(locker.attester_authority, new_authority);
+    assert_eq!(locker.pending_attester_authority, None);
+    assert_eq!(locker.authority_timelock_unlock, 0);
+
+    // Attempting to execute again with no pending authority fails
+    assert_eq!(
+        locker
+            .execute_attester_authority(unlock_time + 10)
+            .unwrap_err(),
+        "NoPendingAuthority"
+    );
 }
