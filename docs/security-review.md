@@ -211,7 +211,20 @@ Tested in `tests/two_way_bridge_tests.rs`:
   - Non-zero signer check (`recovered != address(0)`).
   - Nullifier tracking (`claimedBurnIds[burnId]`).
   - Fee-on-transfer balance differential verification on token deposits.
+  - Safe token balance query (`_getTokenBalance` reverts with `BalanceQueryFailed()` on staticcall failure or short returns).
   - Two-step ownership handover (`transferOwnership` + `acceptOwnership`).
+
+- **Local Transaction Signing & Secret Isolation (Invariant 16):**
+  The daemon and CLI parse operator private keys locally inside `alloy::signers::local::PrivateKeySigner`. The JSON-RPC envelope transmits only `from` and `signature` over RPC. Raw private key material is strictly prohibited from JSON parameters, HTTP payloads, error logs, and format strings (verified in `test_daemon_raw_private_key_never_sent_in_rpc_payload`).
+
+- **Fail-Closed Period-Crossing Beacon Synchronization (Invariant 17):**
+  Light client transitions crossing 8,192-slot period boundaries require `next_sync_committee` and its Merkle authentication branch. If `/light_client/updates` fails, the daemon fails closed immediately with an explicit error, refusing fallback to `/light_client/finality_update` which lacks committee handoff material.
+
+- **Persistent AccountStore Nullifier Replay Defense (Invariant 18):**
+  Consumer nullifiers are stored atomically in persistent `AccountStore` PDA records (`[b"nullifier", statement_id]` and `[b"ether_nullifier", statement_id]`). In-guest and host runtime execution verifies persistent account state, guaranteeing that replays are strictly rejected across full node restarts (verified in `test_sequencer_persistent_nullifier_atomic_claim_across_restart`).
+
+- **InstanceAccount Provenance & PDA Authentication (Invariant 19):**
+  Attestation verification verifies that instance accounts are loaded from authentic persistent PDA addresses (`["mosoo_instance", chain_id, instance_id]`) with verified non-zero instance IDs and valid bootstrap anchors, preventing fabricated instance injection (verified in `test_sequencer_fabricated_instance_account_rejected`).
 
 ---
 

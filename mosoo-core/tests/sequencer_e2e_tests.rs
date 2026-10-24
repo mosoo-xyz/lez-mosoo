@@ -8,15 +8,17 @@
 //! - Dual consumer settlement (ERC-20 and Native Ether)
 //! - Replay attack rejection
 
-use erc20_receiver::{claim, NullifierSet};
-use ether_receiver::{claim_ether, EtherNullifierSet};
+use erc20_receiver::{claim, claim_with_store, NullifierSet};
+use ether_receiver::{claim_ether, claim_ether_with_store, EtherNullifierSet};
 use mosoo_core::{
     crypto::*,
+    error::MosooError,
     predicate::{
-        derive_erc20_transfer_subject_key, derive_receipt_log_subject_key, evaluate,
-        evaluate_with_binding,
+        derive_erc20_transfer_subject_key, derive_eth_deposit_subject_key,
+        derive_receipt_log_subject_key, evaluate, evaluate_with_binding,
     },
     types::*,
+    verifier::verify_instance_account_authenticity,
 };
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
@@ -553,4 +555,165 @@ fn test_sequencer_sepolia_gloas_lifecycle_e2e() {
     println!("Tx 2B (Sepolia Miller): 0x{}", hex::encode(tx2b_hash));
     println!("Tx 2C (Sepolia Finish): 0x{}", hex::encode(tx2c_hash));
     println!("Tx 3  (Sepolia Attest): 0x{}", hex::encode(tx3_hash));
+}
+
+#[test]
+fn test_sequencer_fabricated_instance_account_rejected() {
+    let mut sequencer = MockLezSequencer::new();
+
+    // 1. Initialize legitimate instance account in persistent store
+    let legitimate_instance = InstanceAccount {
+        instance_id: [0x42; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0x55; 32],
+        current_state_root: [0x66; 32],
+        current_slot: 15_433_728,
+        current_sync_committee: make_committee_512(),
+        next_sync_committee: None,
+        bootstrap_slot: 15_433_728,
+        bootstrap_header_hash: [0x55; 32],
+        initialized: true,
+        current_execution_block_hash: [0x77; 32],
+        current_execution_state_root: [0x88; 32],
+        current_receipts_root: [0x99; 32],
+    };
+    let legitimate_pda = legitimate_instance.pda_address();
+    sequencer.accounts.insert(
+        legitimate_pda,
+        serde_json::to_vec(&legitimate_instance).unwrap(),
+    );
+
+    // Assert legitimate instance authenticates
+    let loaded = verify_instance_account_authenticity(&sequencer.accounts, &legitimate_pda);
+    assert!(
+        loaded.is_ok(),
+        "Legitimate instance in sequencer accounts must authenticate"
+    );
+
+    // 2. Attacker fabricates an instance with spoofed roots that does NOT exist in sequencer storage
+    let fake_instance_pda = [0xEE; 32];
+    let fake_res = verify_instance_account_authenticity(&sequencer.accounts, &fake_instance_pda);
+    assert!(matches!(fake_res.unwrap_err(), MosooError::NotInitialized));
+
+    // 3. Attacker fabricates an instance whose claimed PDA does not match its internal chain_id / instance_id
+    let mut spoofed_instance = legitimate_instance.clone();
+    spoofed_instance.instance_id = [0x99; 32]; // Different instance_id!
+    let wrong_pda = legitimate_pda; // Attempting to masquerade under legitimate PDA
+    sequencer
+        .accounts
+        .insert(wrong_pda, serde_json::to_vec(&spoofed_instance).unwrap());
+    let spoof_res = verify_instance_account_authenticity(&sequencer.accounts, &wrong_pda);
+    assert!(matches!(
+        spoof_res.unwrap_err(),
+        MosooError::DomainSeparationFailed
+    ));
+}
+
+#[test]
+fn test_sequencer_persistent_nullifier_atomic_claim_across_restart() {
+    let mut sequencer = MockLezSequencer::new();
+
+    // 1. Prepare valid ERC-20 transfer statement
+    let token_contract = [0xaa; 20];
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let block_hash = [0x33; 32];
+    let slot = 15_433_760u64;
+    let tx_index = 0u64;
+    let log_index = 0usize;
+
+    let subject_key = derive_erc20_transfer_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+    let mut val_bytes = [0u8; 32];
+    val_bytes[24..32].copy_from_slice(&500u64.to_be_bytes());
+    let verified_val = mosoo_core::inclusion::VerifiedValue::StorageValue(val_bytes);
+
+    let pred = Predicate::AtLeast { min: [0; 32] };
+    let statement = evaluate_with_binding(
+        &pred,
+        &verified_val,
+        ETH_MAINNET_CHAIN_ID,
+        subject_key,
+        PROOF_TYPE_ERC20_TRANSFER,
+        StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        },
+    )
+    .unwrap();
+
+    // 2. Claim using persistent AccountStore
+    let credited = claim_with_store(&statement, &mut sequencer.accounts, 100, 500_000);
+    assert_eq!(credited.unwrap(), 500);
+
+    // 3. Replay claim in the same session MUST fail
+    let replay_res = claim_with_store(&statement, &mut sequencer.accounts, 100, 500_001);
+    assert_eq!(
+        replay_res.unwrap_err(),
+        erc20_receiver::ReceiverError::AlreadyClaimed
+    );
+
+    // 4. Simulate complete node restart:
+    // All in-memory state is dropped; only sequencer.accounts is persisted on disk
+    let mut restarted_accounts = sequencer.accounts.clone();
+    let replay_after_restart = claim_with_store(&statement, &mut restarted_accounts, 100, 600_000);
+    assert_eq!(
+        replay_after_restart.unwrap_err(),
+        erc20_receiver::ReceiverError::AlreadyClaimed,
+        "Replay MUST be rejected from persistent account storage after restart"
+    );
+
+    // 5. Test Ether deposit nullifier persistence
+    let eth_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+    let eth_statement = evaluate_with_binding(
+        &pred,
+        &verified_val,
+        ETH_MAINNET_CHAIN_ID,
+        eth_subject_key,
+        PROOF_TYPE_ETH_DEPOSIT,
+        StatementBinding::NativeEthDeposit {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract: token_contract,
+            sender,
+            recipient,
+        },
+    )
+    .unwrap();
+
+    let eth_credited =
+        claim_ether_with_store(&eth_statement, &mut sequencer.accounts, 100, 500_000);
+    assert_eq!(eth_credited.unwrap(), 500);
+
+    // Replay after restart on ether claim
+    let mut restarted_accounts2 = sequencer.accounts.clone();
+    let eth_replay = claim_ether_with_store(&eth_statement, &mut restarted_accounts2, 100, 700_000);
+    assert_eq!(
+        eth_replay.unwrap_err(),
+        ether_receiver::EtherReceiverError::AlreadyClaimed,
+        "Ether deposit replay MUST be rejected from persistent account storage after restart"
+    );
 }

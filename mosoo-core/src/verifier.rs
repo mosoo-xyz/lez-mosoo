@@ -774,6 +774,36 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
     Ok(InstructionOutput::StatementIssued(statement))
 }
 
+/// Authenticate an InstanceAccount loaded from persistent LEZ storage.
+/// Verifies the instance is initialized, has authentic bootstrap parameters,
+/// and that the instance PDA matches the canonical address.
+pub fn verify_instance_account_authenticity<S: AccountStore>(
+    store: &S,
+    expected_pda: &[u8; 32],
+) -> Result<InstanceAccount, MosooError> {
+    let data = store
+        .get_account(expected_pda)
+        .ok_or(MosooError::NotInitialized)?;
+    let instance: InstanceAccount = serde_json::from_slice(&data).map_err(|e| {
+        MosooError::Internal(format!(
+            "Failed to deserialize InstanceAccount from persistent store: {e}"
+        ))
+    })?;
+    if !instance.initialized {
+        return Err(MosooError::NotInitialized);
+    }
+    if instance.bootstrap_slot == 0 || instance.bootstrap_header_hash == [0u8; 32] {
+        return Err(MosooError::InvalidBootstrap(
+            "Instance contains unauthenticated bootstrap parameters".into(),
+        ));
+    }
+    let derived_pda = instance.pda_address();
+    if derived_pda != *expected_pda {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+    Ok(instance)
+}
+
 /// Verify that `finalized_header` appears in the `attested_header` state trie
 /// at the fork's generalized index for the finalized checkpoint.
 pub fn verify_finality_branch(

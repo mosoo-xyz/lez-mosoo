@@ -22,7 +22,7 @@
 use alloy_primitives::{keccak256, U256};
 pub use mosoo_core::predicate::derive_erc20_transfer_subject_key;
 use mosoo_core::types::{
-    StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
+    AccountStore, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
     PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
@@ -314,6 +314,117 @@ pub fn claim(
     // Tokens credited 1:1 on LEZ matching the verified on-chain Ethereum value
     let minted_amount = verified_amount;
     Ok(minted_amount)
+}
+
+/// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
+/// writes the spent nullifier PDA record into `store`, and returns the credited amount.
+pub fn claim_with_store<S: AccountStore>(
+    statement: &VerifiedStatement,
+    store: &mut S,
+    min_amount: u64,
+    current_slot: u64,
+) -> Result<u64, ReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(statement.chain_id));
+    }
+
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+        return Err(ReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let (block_hash, slot, tx_index, log_index, token_contract, sender, recipient) =
+        match &statement.binding {
+            StatementBinding::Erc20Transfer {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                token_contract,
+                sender,
+                recipient,
+            } => {
+                if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                    return Err(ReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                (
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index,
+                    *token_contract,
+                    *sender,
+                    *recipient,
+                )
+            }
+            _ => {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    let expected_subject_key = derive_erc20_transfer_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(ReceiverError::StatementIdMismatch);
+    }
+
+    let verified_amount = statement
+        .value_as_u64_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    if verified_amount < min_amount {
+        return Err(ReceiverError::AmountTooLow {
+            min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    // 1. Check persistent PDA nullifiers in AccountStore
+    let statement_nullifier_pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_nullifier_pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.subject_key);
+
+    if store.has_account(&statement_nullifier_pda) || store.has_account(&subject_nullifier_pda) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+
+    // 2. Write persistent spent nullifier accounts to AccountStore atomically
+    let nullifier_record = NullifierAccount {
+        statement_id: statement.statement_id,
+        subject_key: statement.subject_key,
+        spent_slot: current_slot,
+        is_spent: true,
+    };
+    let encoded_record = serde_json::to_vec(&nullifier_record)
+        .map_err(|e| ReceiverError::AttestationFailed(format!("serialization failure: {e}")))?;
+
+    store.set_account(&statement_nullifier_pda, encoded_record.clone());
+    store.set_account(&subject_nullifier_pda, encoded_record);
+
+    Ok(verified_amount)
 }
 
 /// Detailed parameters for claiming a verified ERC-20 token transfer or vault deposit.

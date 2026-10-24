@@ -1,6 +1,7 @@
 //! Core account and message types shared between the guest program and the host.
 
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 
 pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
 pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
@@ -202,6 +203,33 @@ impl InstanceAccount {
     /// Returns true if the instance has stalled past Ethereum's weak-subjectivity window (1,728,000 slots / 54,000 epochs / ~240 days).
     pub fn is_stale(&self, network_slot: u64) -> bool {
         network_slot > self.current_slot + 1_728_000
+    }
+
+    /// Computes the deterministic 32-byte PDA address of this instance account on LEZ.
+    pub fn pda_address(&self) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"mosoo_instance");
+        hasher.update(self.chain_id.to_le_bytes());
+        hasher.update(self.instance_id);
+        hasher.finalize().into()
+    }
+}
+
+/// Persistent storage abstraction for LEZ Program-Derived Accounts (PDAs).
+pub trait AccountStore {
+    fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>>;
+    fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>);
+    fn has_account(&self, address: &[u8; 32]) -> bool {
+        self.get_account(address).is_some()
+    }
+}
+
+impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
+    fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>> {
+        self.get(address).cloned()
+    }
+    fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>) {
+        self.insert(*address, data);
     }
 }
 

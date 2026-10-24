@@ -2992,6 +2992,7 @@ dependencies = [
 name = "mosoo-cli"
 version = "0.1.0"
 dependencies = [
+ "alloy",
  "alloy-primitives",
  "alloy-rlp",
  "anyhow",
@@ -3039,6 +3040,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber 0.3.23",

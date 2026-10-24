@@ -8,12 +8,14 @@
 //! running simultaneously is fine — the LEZ program is idempotent and the
 //! randomized jitter delay reduces the chance of duplicate submissions.
 
+use alloy::signers::Signer;
 use clap::Parser;
 use mosoo_core::types::{
     BeaconBlockHeader, ExecutionPayloadHeader, LightClientUpdate, SyncAggregate, SyncCommittee,
 };
 use rand::Rng;
 use serde::Deserialize;
+use sha2::Digest;
 use std::time::Duration;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -566,10 +568,12 @@ pub async fn fetch_light_client_update(
         match fetch_updates_from_url(client, &url).await {
             Ok(update) => return Ok(update),
             Err(e) => {
-                warn!(
-                    error = %e,
-                    "Failed to fetch period update from {}; falling back to finality_update",
-                    url
+                anyhow::bail!(
+                    "Sync committee period transition required from period {} to {}, but query to {} failed: {}. Refusing to fall back to finality_update without next_sync_committee.",
+                    from_period,
+                    to_period,
+                    url,
+                    e
                 );
             }
         }
@@ -666,14 +670,9 @@ pub fn parse_beacon_update_data(d: FinalityUpdateData) -> anyhow::Result<LightCl
             .trim_start_matches("0x"),
     )?;
 
-    let mut finality_branch = Vec::new();
+    let mut finality_branch = Vec::with_capacity(d.finality_branch.len());
     for b in d.finality_branch {
-        let mut arr = [0u8; 32];
-        let bytes = hex::decode(b.trim_start_matches("0x"))?;
-        if bytes.len() == 32 {
-            arr.copy_from_slice(&bytes);
-            finality_branch.push(arr);
-        }
+        finality_branch.push(hex_to_32(&b)?);
     }
 
     let execution_payload_header =
@@ -683,7 +682,9 @@ pub fn parse_beacon_update_data(d: FinalityUpdateData) -> anyhow::Result<LightCl
                 fee_recipient: hex_to_20(&p.fee_recipient)?,
                 state_root: hex_to_32(&p.state_root)?,
                 receipts_root: hex_to_32(&p.receipts_root)?,
-                logs_bloom: hex::decode(p.logs_bloom.trim_start_matches("0x")).unwrap_or_default(),
+                logs_bloom: hex::decode(p.logs_bloom.trim_start_matches("0x")).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse execution payload logs_bloom hex: {e}")
+                })?,
                 prev_randao: hex_to_32(&p.prev_randao)?,
                 block_number: p.block_number.parse().map_err(|e| {
                     anyhow::anyhow!("Failed to parse execution payload block_number: {e}")
@@ -697,16 +698,29 @@ pub fn parse_beacon_update_data(d: FinalityUpdateData) -> anyhow::Result<LightCl
                 timestamp: p.timestamp.parse().map_err(|e| {
                     anyhow::anyhow!("Failed to parse execution payload timestamp: {e}")
                 })?,
-                extra_data: hex::decode(p.extra_data.trim_start_matches("0x")).unwrap_or_default(),
-                base_fee_per_gas: hex_to_32(&p.base_fee_per_gas).unwrap_or([0u8; 32]),
+                extra_data: hex::decode(p.extra_data.trim_start_matches("0x")).map_err(|e| {
+                    anyhow::anyhow!("Failed to parse execution payload extra_data hex: {e}")
+                })?,
+                base_fee_per_gas: hex_to_32(&p.base_fee_per_gas)?,
                 block_hash: hex_to_32(&p.block_hash)?,
                 transactions_root: hex_to_32(&p.transactions_root)?,
-                withdrawals_root: p
-                    .withdrawals_root
+                withdrawals_root: p.withdrawals_root.as_deref().map(hex_to_32).transpose()?,
+                blob_gas_used: p
+                    .blob_gas_used
                     .as_deref()
-                    .and_then(|s| hex_to_32(s).ok()),
-                blob_gas_used: p.blob_gas_used.as_deref().and_then(|s| s.parse().ok()),
-                excess_blob_gas: p.excess_blob_gas.as_deref().and_then(|s| s.parse().ok()),
+                    .map(|s| s.parse())
+                    .transpose()
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to parse execution payload blob_gas_used: {e}")
+                    })?,
+                excess_blob_gas: p
+                    .excess_blob_gas
+                    .as_deref()
+                    .map(|s| s.parse())
+                    .transpose()
+                    .map_err(|e| {
+                        anyhow::anyhow!("Failed to parse execution payload excess_blob_gas: {e}")
+                    })?,
             })
         } else {
             None
@@ -855,8 +869,32 @@ pub async fn submit_begin(
         anyhow::anyhow!("LEZ_PRIVATE_KEY is required to sign and submit consensus updates to LEZ")
     })?;
 
+    let signer: alloy::signers::local::PrivateKeySigner = key
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid LEZ_PRIVATE_KEY: {e}"))?;
+    let sender_address = signer.address();
+
     let update_json = serde_json::to_string(update)?;
     let update_hex = format!("0x{}", hex::encode(update_json.as_bytes()));
+
+    let tx_digest = {
+        let mut hasher = sha2::Sha256::new();
+        sha2::Digest::update(&mut hasher, b"lez_tx_v1");
+        sha2::Digest::update(
+            &mut hasher,
+            b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+        );
+        sha2::Digest::update(&mut hasher, b"begin_update");
+        sha2::Digest::update(&mut hasher, cli.eth_chain_id.to_be_bytes());
+        sha2::Digest::update(&mut hasher, update_json.as_bytes());
+        alloy::primitives::B256::from_slice(&sha2::Digest::finalize(hasher))
+    };
+
+    let sig = signer
+        .sign_hash(&tx_digest)
+        .await
+        .map_err(|e| anyhow::anyhow!("Local transaction signing failed for begin_update: {e}"))?;
 
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
@@ -866,7 +904,8 @@ pub async fn submit_begin(
             "instruction": "begin_update",
             "chain_id": cli.eth_chain_id,
             "data": update_hex,
-            "signer": key,
+            "from": format!("{:#x}", sender_address),
+            "signature": format!("0x{}", hex::encode(sig.as_bytes())),
         }],
         "id": 2
     });
@@ -923,6 +962,29 @@ pub async fn submit_miller(
         anyhow::anyhow!("LEZ_PRIVATE_KEY is required to sign and submit consensus updates to LEZ")
     })?;
 
+    let signer: alloy::signers::local::PrivateKeySigner = key
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid LEZ_PRIVATE_KEY: {e}"))?;
+    let sender_address = signer.address();
+
+    let tx_digest = {
+        let mut hasher = sha2::Sha256::new();
+        sha2::Digest::update(&mut hasher, b"lez_tx_v1");
+        sha2::Digest::update(
+            &mut hasher,
+            b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+        );
+        sha2::Digest::update(&mut hasher, b"miller_update");
+        sha2::Digest::update(&mut hasher, job_nonce.to_be_bytes());
+        alloy::primitives::B256::from_slice(&sha2::Digest::finalize(hasher))
+    };
+
+    let sig = signer
+        .sign_hash(&tx_digest)
+        .await
+        .map_err(|e| anyhow::anyhow!("Local transaction signing failed for miller_update: {e}"))?;
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "lez_sendTransaction",
@@ -930,7 +992,8 @@ pub async fn submit_miller(
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "miller_update",
             "job_nonce": job_nonce,
-            "signer": key,
+            "from": format!("{:#x}", sender_address),
+            "signature": format!("0x{}", hex::encode(sig.as_bytes())),
         }],
         "id": 3
     });
@@ -976,6 +1039,29 @@ pub async fn submit_finish(
         anyhow::anyhow!("LEZ_PRIVATE_KEY is required to sign and submit consensus updates to LEZ")
     })?;
 
+    let signer: alloy::signers::local::PrivateKeySigner = key
+        .trim()
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Invalid LEZ_PRIVATE_KEY: {e}"))?;
+    let sender_address = signer.address();
+
+    let tx_digest = {
+        let mut hasher = sha2::Sha256::new();
+        sha2::Digest::update(&mut hasher, b"lez_tx_v1");
+        sha2::Digest::update(
+            &mut hasher,
+            b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+        );
+        sha2::Digest::update(&mut hasher, b"finish_update");
+        sha2::Digest::update(&mut hasher, job_nonce.to_be_bytes());
+        alloy::primitives::B256::from_slice(&sha2::Digest::finalize(hasher))
+    };
+
+    let sig = signer
+        .sign_hash(&tx_digest)
+        .await
+        .map_err(|e| anyhow::anyhow!("Local transaction signing failed for finish_update: {e}"))?;
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "lez_sendTransaction",
@@ -983,7 +1069,8 @@ pub async fn submit_finish(
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "finish_update",
             "job_nonce": job_nonce,
-            "signer": key,
+            "from": format!("{:#x}", sender_address),
+            "signature": format!("0x{}", hex::encode(sig.as_bytes())),
         }],
         "id": 4
     });
@@ -1505,5 +1592,95 @@ mod tests {
             .next_sync_committee_branch
             .expect("branch must be present");
         assert_eq!(branch[0], [0x99; 32]);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_raw_private_key_never_sent_in_rpc_payload() {
+        let dummy_privkey = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+        let cli = Cli {
+            eth_consensus_rpc: "http://127.0.0.1:5052".to_string(),
+            eth_execution_rpc: "http://127.0.0.1:8545".to_string(),
+            eth_chain_id: 1,
+            lez_rpc_url: "http://127.0.0.1:8545".to_string(),
+            lez_private_key: Some(dummy_privkey.to_string()),
+            logos_ethereum_core_rpc: None,
+            poll_interval_secs: 60,
+            log_format: "json".to_string(),
+            log_level: "info".to_string(),
+        };
+
+        let signer: alloy::signers::local::PrivateKeySigner = dummy_privkey.parse().unwrap();
+        let expected_sender = format!("{:#x}", signer.address());
+
+        let update = synthesize_canonical_update();
+        let update_json = serde_json::to_string(&update).unwrap();
+        let tx_digest = {
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, b"lez_tx_v1");
+            sha2::Digest::update(
+                &mut hasher,
+                b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+            );
+            sha2::Digest::update(&mut hasher, b"begin_update");
+            sha2::Digest::update(&mut hasher, cli.eth_chain_id.to_be_bytes());
+            sha2::Digest::update(&mut hasher, update_json.as_bytes());
+            alloy::primitives::B256::from_slice(&sha2::Digest::finalize(hasher))
+        };
+        let sig = signer.sign_hash(&tx_digest).await.unwrap();
+
+        let payload = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "lez_sendTransaction",
+            "params": [{
+                "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+                "instruction": "begin_update",
+                "chain_id": cli.eth_chain_id,
+                "data": "0x1234",
+                "from": expected_sender,
+                "signature": format!("0x{}", hex::encode(sig.as_bytes())),
+            }],
+            "id": 2
+        });
+
+        let payload_str = payload.to_string();
+        assert!(!payload_str.contains(dummy_privkey.trim_start_matches("0x")));
+        assert!(payload_str.contains(&expected_sender));
+        assert!(payload_str.contains("signature"));
+    }
+
+    #[test]
+    fn test_daemon_malformed_branch_node_strictly_rejected() {
+        let json_data = r#"{
+            "data": {
+                "attested_header": {
+                    "beacon": {
+                        "slot": "15433761",
+                        "proposer_index": "123",
+                        "parent_root": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                        "state_root": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                        "body_root": "0x3333333333333333333333333333333333333333333333333333333333333333"
+                    }
+                },
+                "finalized_header": {
+                    "beacon": {
+                        "slot": "15433760",
+                        "proposer_index": "120",
+                        "parent_root": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                        "state_root": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                        "body_root": "0x6666666666666666666666666666666666666666666666666666666666666666"
+                    }
+                },
+                "finality_branch": ["0x1234"],
+                "sync_aggregate": {
+                    "sync_committee_bits": "0xff",
+                    "sync_committee_signature": "0xc0"
+                },
+                "signature_slot": "15433761"
+            }
+        }"#;
+
+        let res: FinalityUpdateResponse = serde_json::from_str(json_data).unwrap();
+        let err = parse_beacon_update(res);
+        assert!(err.is_err(), "Non-32-byte branch node must be rejected");
     }
 }

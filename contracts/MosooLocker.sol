@@ -130,6 +130,7 @@ contract MosooLocker {
     error ETHTransferFailed();
     error ERC20TransferFailed();
     error TokenNotAllowed();
+    error BalanceQueryFailed();
     error AuthorityTimelockActive(uint256 currentTime, uint256 unlockTime);
     error NoPendingAuthority();
 
@@ -421,7 +422,7 @@ contract MosooLocker {
     function _getTokenBalance(address token, address account) internal view returns (uint256) {
         bytes memory data = abi.encodeWithSelector(0x70a08231, account);
         (bool success, bytes memory returnData) = token.staticcall(data);
-        if (!success || returnData.length < 32) return 0;
+        if (!success || returnData.length < 32) revert BalanceQueryFailed();
         return abi.decode(returnData, (uint256));
     }
 

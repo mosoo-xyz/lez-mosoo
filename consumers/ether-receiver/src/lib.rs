@@ -1,7 +1,7 @@
 use alloy_primitives::{keccak256, U256};
 pub use mosoo_core::predicate::derive_eth_deposit_subject_key;
 use mosoo_core::types::{
-    StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
+    AccountStore, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
     PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
@@ -310,6 +310,162 @@ pub fn claim_ether(
     }
     nullifiers.mark_used(statement.statement_id);
     nullifiers.mark_used(statement.subject_key);
+
+    Ok(verified_wei)
+}
+
+/// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
+/// writes the spent nullifier PDA record into `store`, and returns the credited amount.
+pub fn claim_ether_with_store<S: AccountStore>(
+    statement: &VerifiedStatement,
+    store: &mut S,
+    min_wei: u64,
+    current_slot: u64,
+) -> Result<u64, EtherReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(EtherReceiverError::WrongChain(statement.chain_id));
+    }
+
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+
+    // Strict statement proof type and binding validation
+    let (block_hash, slot, tx_index, log_index, deposit_contract, sender, recipient) =
+        match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                if *deposit_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                (
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index,
+                    *deposit_contract,
+                    *sender,
+                    *recipient,
+                )
+            }
+            StatementBinding::Account { address } => {
+                if statement.proof_type_tag != PROOF_TYPE_ACCOUNT_BALANCE || *address == [0u8; 20] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                use sha2::Digest;
+                let expected_key: [u8; 32] = sha2::Sha256::digest(address.as_slice()).into();
+                if statement.subject_key != expected_key || statement.subject_key == [0u8; 32] {
+                    return Err(EtherReceiverError::SubjectKeyMismatch);
+                }
+                let expected_statement_id = statement.derive_canonical_id();
+                if statement.statement_id != expected_statement_id {
+                    return Err(EtherReceiverError::StatementIdMismatch);
+                }
+                let verified_wei = statement.value_as_u64_checked().map_err(|e| {
+                    EtherReceiverError::AttestationFailed(format!("value overflow: {e}"))
+                })?;
+                if verified_wei < min_wei {
+                    return Err(EtherReceiverError::BalanceTooLow {
+                        actual: verified_wei,
+                        required: min_wei,
+                    });
+                }
+
+                let statement_pda =
+                    derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+                let subject_pda =
+                    derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.subject_key);
+                if store.has_account(&statement_pda) || store.has_account(&subject_pda) {
+                    return Err(EtherReceiverError::AlreadyClaimed);
+                }
+
+                let record = EtherNullifierAccount {
+                    statement_id: statement.statement_id,
+                    subject_key: statement.subject_key,
+                    spent_slot: current_slot,
+                    is_spent: true,
+                };
+                let encoded = serde_json::to_vec(&record).map_err(|e| {
+                    EtherReceiverError::AttestationFailed(format!("serialization failure: {e}"))
+                })?;
+                store.set_account(&statement_pda, encoded.clone());
+                store.set_account(&subject_pda, encoded);
+
+                return Ok(verified_wei);
+            }
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    if statement.proof_type_tag != PROOF_TYPE_ETH_DEPOSIT {
+        return Err(EtherReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let expected_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(EtherReceiverError::StatementIdMismatch);
+    }
+
+    let verified_wei = statement
+        .value_as_u64_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    if verified_wei < min_wei {
+        return Err(EtherReceiverError::BalanceTooLow {
+            actual: verified_wei,
+            required: min_wei,
+        });
+    }
+
+    let statement_pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.subject_key);
+    if store.has_account(&statement_pda) || store.has_account(&subject_pda) {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+
+    let record = EtherNullifierAccount {
+        statement_id: statement.statement_id,
+        subject_key: statement.subject_key,
+        spent_slot: current_slot,
+        is_spent: true,
+    };
+    let encoded = serde_json::to_vec(&record).map_err(|e| {
+        EtherReceiverError::AttestationFailed(format!("serialization failure: {e}"))
+    })?;
+    store.set_account(&statement_pda, encoded.clone());
+    store.set_account(&subject_pda, encoded);
 
     Ok(verified_wei)
 }
