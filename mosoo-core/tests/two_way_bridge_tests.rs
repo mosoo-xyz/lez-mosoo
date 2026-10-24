@@ -39,9 +39,15 @@ struct MockEthereumLocker {
     pub authority_timelock_unlock: u64,
     pub token_allowlist_enabled: bool,
     pub allowed_tokens: HashMap<[u8; 20], bool>,
+    pub daily_withdrawal_limit_eth: u128,
+    pub daily_withdrawn_eth: u128,
+    pub large_withdrawal_threshold_eth: u128,
+    pub large_withdrawal_delay: u64,
+    pub queued_withdrawals: HashMap<[u8; 32], u64>,
 }
 
 pub const AUTHORITY_CHANGE_DELAY: u64 = 86_400; // 1 day in seconds
+pub const LARGE_WITHDRAWAL_THRESHOLD_ETH: u128 = 10_000_000_000_000_000_000; // 10 ETH
 
 impl MockEthereumLocker {
     fn new(locker_address: [u8; 20]) -> Self {
@@ -59,6 +65,11 @@ impl MockEthereumLocker {
             authority_timelock_unlock: 0,
             token_allowlist_enabled: true,
             allowed_tokens: HashMap::new(),
+            daily_withdrawal_limit_eth: 0,
+            daily_withdrawn_eth: 0,
+            large_withdrawal_threshold_eth: LARGE_WITHDRAWAL_THRESHOLD_ETH,
+            large_withdrawal_delay: 86_400,
+            queued_withdrawals: HashMap::new(),
         }
     }
 
@@ -183,6 +194,18 @@ impl MockEthereumLocker {
         alloy_primitives::keccak256(&final_digest_input).0
     }
 
+    fn set_daily_withdrawal_limit_eth(&mut self, limit: u128) {
+        self.daily_withdrawal_limit_eth = limit;
+    }
+
+    fn cancel_queued_withdrawal(&mut self, burn_id: [u8; 32]) -> Result<(), &'static str> {
+        if !self.queued_withdrawals.contains_key(&burn_id) {
+            return Err("NoQueuedWithdrawal");
+        }
+        self.queued_withdrawals.remove(&burn_id);
+        Ok(())
+    }
+
     /// Simulates `unlockETH(bytes32 burnId, uint256 amount, address recipient, ...)`
     fn unlock_eth(
         &mut self,
@@ -192,6 +215,29 @@ impl MockEthereumLocker {
         eth_recipient: [u8; 20],
         burn_nonce: u64,
         lez_slot: u64,
+    ) -> Result<(), &'static str> {
+        self.unlock_eth_with_time(
+            burn_id,
+            amount_wei,
+            lez_owner,
+            eth_recipient,
+            burn_nonce,
+            lez_slot,
+            0,
+        )
+    }
+
+    /// Simulates `unlockETH` with timestamp check for large withdrawal queue and daily rate limit
+    #[allow(clippy::too_many_arguments)]
+    fn unlock_eth_with_time(
+        &mut self,
+        burn_id: [u8; 32],
+        amount_wei: u128,
+        lez_owner: [u8; 32],
+        eth_recipient: [u8; 20],
+        burn_nonce: u64,
+        lez_slot: u64,
+        current_timestamp: u64,
     ) -> Result<(), &'static str> {
         if amount_wei == 0 {
             return Err("ZeroAmount");
@@ -213,6 +259,27 @@ impl MockEthereumLocker {
         );
         if burn_id != expected_burn_id {
             return Err("InvalidBurnProof");
+        }
+
+        // Large withdrawal timelock delay
+        if amount_wei >= self.large_withdrawal_threshold_eth && current_timestamp > 0 {
+            if let Some(&unlock_time) = self.queued_withdrawals.get(&burn_id) {
+                if current_timestamp < unlock_time {
+                    return Err("LargeWithdrawalPending");
+                }
+            } else {
+                let unlock_time = current_timestamp + self.large_withdrawal_delay;
+                self.queued_withdrawals.insert(burn_id, unlock_time);
+                return Err("WithdrawalQueued");
+            }
+        }
+
+        // Daily volume limit check
+        if self.daily_withdrawal_limit_eth > 0 {
+            if self.daily_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
+                return Err("DailyLimitExceeded");
+            }
+            self.daily_withdrawn_eth += amount_wei;
         }
 
         self.executed_burns.insert(burn_id, true);
@@ -693,4 +760,109 @@ fn test_attester_authority_timelock_pipeline() {
             .unwrap_err(),
         "NoPendingAuthority"
     );
+}
+
+#[test]
+fn test_mosoo_locker_daily_withdrawal_limit_enforced() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    let total_deposit: u128 = 20_000_000_000_000_000_000; // 20 ETH
+    locker.deposit_eth(total_deposit);
+
+    // Set daily withdrawal limit of 5 ETH
+    let daily_limit: u128 = 5_000_000_000_000_000_000;
+    locker.set_daily_withdrawal_limit_eth(daily_limit);
+
+    let burn_id_1 = derive_burn_id(
+        1,
+        &lez_owner,
+        &eth_recipient,
+        3_000_000_000_000_000_000,
+        1,
+        100,
+    );
+    // First withdrawal of 3 ETH succeeds
+    assert!(locker
+        .unlock_eth(
+            burn_id_1,
+            3_000_000_000_000_000_000,
+            lez_owner,
+            eth_recipient,
+            1,
+            100
+        )
+        .is_ok());
+
+    let burn_id_2 = derive_burn_id(
+        1,
+        &lez_owner,
+        &eth_recipient,
+        3_000_000_000_000_000_000,
+        2,
+        101,
+    );
+    // Second withdrawal of 3 ETH exceeds daily limit (3 + 3 = 6 > 5) -> must revert DailyLimitExceeded
+    let res = locker.unlock_eth(
+        burn_id_2,
+        3_000_000_000_000_000_000,
+        lez_owner,
+        eth_recipient,
+        2,
+        101,
+    );
+    assert_eq!(res.unwrap_err(), "DailyLimitExceeded");
+}
+
+#[test]
+fn test_mosoo_locker_large_withdrawal_queue_and_guardian_veto() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    let total_deposit: u128 = 50_000_000_000_000_000_000; // 50 ETH
+    locker.deposit_eth(total_deposit);
+
+    let large_burn_amount: u128 = 15_000_000_000_000_000_000; // 15 ETH (>= 10 ETH threshold)
+    let burn_id = derive_burn_id(1, &lez_owner, &eth_recipient, large_burn_amount, 1, 200);
+
+    let current_time = 1_000_000u64;
+    // First attempt queues the withdrawal and returns WithdrawalQueued
+    let queue_res = locker.unlock_eth_with_time(
+        burn_id,
+        large_burn_amount,
+        lez_owner,
+        eth_recipient,
+        1,
+        200,
+        current_time,
+    );
+    assert_eq!(queue_res.unwrap_err(), "WithdrawalQueued");
+
+    // Immediate retry fails with LargeWithdrawalPending
+    let early_res = locker.unlock_eth_with_time(
+        burn_id,
+        large_burn_amount,
+        lez_owner,
+        eth_recipient,
+        1,
+        200,
+        current_time + 10_000,
+    );
+    assert_eq!(early_res.unwrap_err(), "LargeWithdrawalPending");
+
+    // Guardian vetoes the malicious queued withdrawal during an emergency!
+    assert!(locker.cancel_queued_withdrawal(burn_id).is_ok());
+
+    // Subsequent unlock attempt fails because queue entry was purged
+    let post_cancel_res = locker.unlock_eth_with_time(
+        burn_id,
+        large_burn_amount,
+        lez_owner,
+        eth_recipient,
+        1,
+        200,
+        current_time + 100_000,
+    );
+    // Queues fresh rather than allowing instant execution!
+    assert_eq!(post_cancel_res.unwrap_err(), "WithdrawalQueued");
 }

@@ -26,9 +26,8 @@ import ssl
 DEFAULT_RPC = "https://testnet.lez.logos.co"
 GAS_CAP = 10_000_000
 
+# Standard strict TLS context with mandatory certificate and hostname verification
 ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
 
 def call_rpc(rpc_url: str, method: str, params: list):
     payload = json.dumps({

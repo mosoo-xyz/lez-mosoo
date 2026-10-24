@@ -6,17 +6,21 @@ pragma solidity ^0.8.20;
  * @notice Canonical Ethereum Escrow and Settlement contract for the Mosoo Light Client Bridge
  *         connecting Ethereum (Mainnet / Sepolia / Holesky) and the Logos Execution Zone (LEZ).
  *
- * @dev Comprehensive Security Hardening & Audit Remediations:
- * 1. Dual-Asset Settlement: Complete support for native ETH (`depositETH`, `unlockETH`) and
+ * @dev Comprehensive Trust Model & Security Hardening:
+ * 1. Inbound Bridge (Ethereum -> LEZ): 100% Trustless. Verified inside LEZ zkVM/runtime
+ *    using Merkle-Patricia Trie proofs against Ethereum consensus sync committee roots (Logos RFP-021).
+ * 2. Outbound Bridge (LEZ -> Ethereum): Witness-attested settlement model with multi-layered defense-in-depth:
+ *    - Strict EIP-712 structured data and domain separation binding verifyingContract `address(this)`.
+ *    - Replay protection via cryptographic `executedBurns[burnId]` nullifier registry.
+ *    - Rolling 24-hour daily volume limits (`dailyWithdrawalLimitETH`, `dailyWithdrawalLimitERC20`).
+ *    - Mandatory 24-hour timelock delay for large withdrawals (`>= 10 ether`).
+ *    - Emergency pause (`pause()`) and Guardian veto (`cancelQueuedWithdrawal()`).
+ * 3. Dual-Asset Settlement: Complete support for native ETH (`depositETH`, `unlockETH`) and
  *    ERC-20 tokens (`depositERC20`, `unlockERC20`).
- * 2. Signature Malleability Protection: Enforces strict EIP-2 upper-bound checks on `s` values
- *    (preventing malleable signatures) and guarantees non-zero address recovery.
- * 3. Fee-on-Transfer Protection: Uses before/after balance differentials on `depositERC20`
- *    preventing insolvency from deflationary or fee-bearing tokens.
- * 4. Reentrancy Protection: Custom non-reentrant mutex guarding all state-mutating deposit and unlock paths.
- * 5. Replay Attack Prevention: Cryptographic `executedBurns[burnId]` nullifier registry preventing
- *    cross-chain replay of burn receipts.
- * 6. Two-Step Ownership: Enforces `transferOwnership` + `acceptOwnership` preventing accidental contract loss.
+ * 4. Signature Malleability Protection: Enforces strict EIP-2 upper-bound checks on `s` values.
+ * 5. Fee-on-Transfer Protection: Uses before/after balance differentials on `depositERC20`.
+ * 6. Reentrancy Protection: Custom non-reentrant mutex guarding all state-mutating deposit and unlock paths.
+ * 7. Two-Step Ownership: Enforces `transferOwnership` + `acceptOwnership` preventing accidental contract loss.
  */
 contract MosooLocker {
     // --- State Variables ---
@@ -44,6 +48,25 @@ contract MosooLocker {
     /// @notice Optional token allowlist to restrict deposits to verified non-rebasing tokens
     bool public tokenAllowlistEnabled;
     mapping(address => bool) public isTokenAllowed;
+
+    // --- Rate Limiting & Timelock Defense-in-Depth ---
+
+    /// @notice Rolling daily withdrawal limit for ETH (0 = disabled/unlimited)
+    uint256 public dailyWithdrawalLimitETH;
+    uint256 public currentDayWindowETH;
+    uint256 public dailyWithdrawnETH;
+
+    /// @notice Rolling daily withdrawal limits for ERC-20 tokens (token => limit)
+    mapping(address => uint256) public dailyWithdrawalLimitERC20;
+    mapping(address => uint256) public currentDayWindowERC20;
+    mapping(address => uint256) public dailyWithdrawnERC20;
+
+    /// @notice Large withdrawal threshold requiring mandatory timelock delay
+    uint256 public constant LARGE_WITHDRAWAL_THRESHOLD_ETH = 10 ether;
+    uint256 public constant LARGE_WITHDRAWAL_DELAY = 1 days;
+
+    /// @notice Queued large withdrawals: burnId => executableTimestamp
+    mapping(bytes32 => uint256) public queuedWithdrawalUnlockTime;
 
     // --- EIP-712 Domain Separation ---
     bytes32 public constant EIP712_DOMAIN_TYPEHASH = keccak256(
@@ -115,6 +138,10 @@ contract MosooLocker {
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event TokenAllowlistToggled(bool enabled);
     event TokenAllowedStatusUpdated(address indexed token, bool allowed);
+    event WithdrawalQueued(bytes32 indexed burnId, address indexed recipient, uint256 amount, uint256 unlockTimestamp);
+    event QueuedWithdrawalCancelled(bytes32 indexed burnId, address indexed cancelledBy);
+    event DailyWithdrawalLimitUpdatedETH(uint256 oldLimit, uint256 newLimit);
+    event DailyWithdrawalLimitUpdatedERC20(address indexed token, uint256 oldLimit, uint256 newLimit);
 
     // --- Errors ---
 
@@ -133,6 +160,9 @@ contract MosooLocker {
     error BalanceQueryFailed();
     error AuthorityTimelockActive(uint256 currentTime, uint256 unlockTime);
     error NoPendingAuthority();
+    error DailyLimitExceeded(uint256 requested, uint256 available);
+    error LargeWithdrawalPending(uint256 unlockTimestamp);
+    error NoQueuedWithdrawal();
 
     // --- Modifiers ---
 
@@ -225,13 +255,15 @@ contract MosooLocker {
 
     /**
      * @notice Release locked native ETH back to an Ethereum address upon verifiable burn on LEZ.
+     * @dev Outbound settlement verifies EIP-712 signature from authorized attesterAuthority.
+     *      Hardened with rolling daily withdrawal volume caps and mandatory 24h timelock queue for amounts >= 10 ETH.
      * @param burnId The cryptographic identifier of the burn receipt on LEZ.
      * @param amount The amount of ETH (in wei) to unlock.
      * @param recipient The Ethereum recipient address receiving the unlocked ETH.
      * @param lezOwner The LEZ account that performed the burn.
      * @param burnNonce The sequential burn counter from the LEZ bridge.
      * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param attestationSignature Cryptographic signature from the attester authority or ZK proof.
+     * @param attestationSignature Cryptographic signature from the attester authority (EIP-712 witness attestation).
      */
     function unlockETH(
         bytes32 burnId,
@@ -277,12 +309,39 @@ contract MosooLocker {
             revert InvalidBurnProof();
         }
 
-        // 3. Mark burn nullifier as spent (prevents replay)
+        // 3. Defense-in-Depth: Timelock delay for large withdrawals (>= 10 ETH)
+        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
+            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
+            if (unlockTime == 0) {
+                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
+                queuedWithdrawalUnlockTime[burnId] = unlockTime;
+                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
+                return;
+            }
+            if (block.timestamp < unlockTime) {
+                revert LargeWithdrawalPending(unlockTime);
+            }
+        }
+
+        // 4. Defense-in-Depth: Rolling 24-hour daily volume limit check
+        if (dailyWithdrawalLimitETH > 0) {
+            uint256 currentDay = block.timestamp / 1 days;
+            if (currentDay > currentDayWindowETH) {
+                currentDayWindowETH = currentDay;
+                dailyWithdrawnETH = 0;
+            }
+            if (dailyWithdrawnETH + amount > dailyWithdrawalLimitETH) {
+                revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - dailyWithdrawnETH);
+            }
+            dailyWithdrawnETH += amount;
+        }
+
+        // 5. Mark burn nullifier as spent (prevents replay)
         executedBurns[burnId] = true;
         totalUnlockedETH += amount;
         totalLockedETH -= amount;
 
-        // 4. Transfer ETH to recipient
+        // 6. Transfer ETH to recipient
         (bool sent, ) = recipient.call{value: amount}("");
         if (!sent) revert ETHTransferFailed();
 
@@ -291,6 +350,7 @@ contract MosooLocker {
 
     /**
      * @notice Release locked ERC-20 tokens back to an Ethereum address upon verifiable burn on LEZ.
+     * @dev Outbound settlement verifies EIP-712 signature from authorized attesterAuthority with daily volume limits.
      * @param burnId The cryptographic identifier of the burn receipt on LEZ.
      * @param token The ERC-20 token contract address.
      * @param amount The token amount to unlock.
@@ -348,14 +408,51 @@ contract MosooLocker {
             revert InvalidBurnProof();
         }
 
-        // 3. Mark burn nullifier and update accounting
+        // 3. Defense-in-Depth: Rolling daily volume limit for token
+        uint256 limit = dailyWithdrawalLimitERC20[token];
+        if (limit > 0) {
+            uint256 currentDay = block.timestamp / 1 days;
+            if (currentDay > currentDayWindowERC20[token]) {
+                currentDayWindowERC20[token] = currentDay;
+                dailyWithdrawnERC20[token] = 0;
+            }
+            if (dailyWithdrawnERC20[token] + amount > limit) {
+                revert DailyLimitExceeded(amount, limit - dailyWithdrawnERC20[token]);
+            }
+            dailyWithdrawnERC20[token] += amount;
+        }
+
+        // 4. Mark burn nullifier and update accounting
         executedBurns[burnId] = true;
         totalLockedERC20[token] -= amount;
 
-        // 4. Transfer tokens to recipient
+        // 5. Transfer tokens to recipient
         _safeTransfer(token, recipient, amount);
 
         emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+    }
+
+    /// @notice Configure rolling daily withdrawal volume cap for native ETH
+    function setDailyWithdrawalLimitETH(uint256 newLimit) external onlyOwner {
+        uint256 oldLimit = dailyWithdrawalLimitETH;
+        dailyWithdrawalLimitETH = newLimit;
+        emit DailyWithdrawalLimitUpdatedETH(oldLimit, newLimit);
+    }
+
+    /// @notice Configure rolling daily withdrawal volume cap for a specific ERC-20 token
+    function setDailyWithdrawalLimitERC20(address token, uint256 newLimit) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        uint256 oldLimit = dailyWithdrawalLimitERC20[token];
+        dailyWithdrawalLimitERC20[token] = newLimit;
+        emit DailyWithdrawalLimitUpdatedERC20(token, oldLimit, newLimit);
+    }
+
+    /// @notice Cancel a queued large withdrawal in an emergency (guardian or owner)
+    function cancelQueuedWithdrawal(bytes32 burnId) external {
+        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        if (queuedWithdrawalUnlockTime[burnId] == 0) revert NoQueuedWithdrawal();
+        queuedWithdrawalUnlockTime[burnId] = 0;
+        emit QueuedWithdrawalCancelled(burnId, msg.sender);
     }
 
     // --- Internal Helpers ---

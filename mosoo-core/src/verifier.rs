@@ -756,6 +756,45 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
                 },
             )
         }
+        inclusion::ProofTarget::Erc20Deposit {
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            let mut tc = [0u8; 20];
+            tc.copy_from_slice(token_contract.as_slice());
+            let mut snd = [0u8; 20];
+            snd.copy_from_slice(sender.as_slice());
+            let key = predicate::derive_erc20_deposit_subject_key(
+                &args.header.execution_block_hash,
+                args.header.slot,
+                *tx_index,
+                *log_index,
+                &dc,
+                &tc,
+                &snd,
+                recipient,
+            );
+            (
+                key,
+                crate::types::PROOF_TYPE_ERC20_DEPOSIT,
+                crate::types::StatementBinding::Erc20Deposit {
+                    execution_block_hash: args.header.execution_block_hash,
+                    slot: args.header.slot,
+                    tx_index: *tx_index,
+                    log_index: *log_index,
+                    deposit_contract: dc,
+                    token_contract: tc,
+                    sender: snd,
+                    recipient: *recipient,
+                },
+            )
+        }
     };
     let statement = predicate::evaluate_with_binding(
         &args.predicate,
@@ -1021,4 +1060,145 @@ pub fn verify_historical_header_provenance(
     }
 
     Ok(())
+}
+
+/// Detailed diagnostic and verification report returned by `verify_weak_subjectivity_checkpoint`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointVerificationReport {
+    pub chain_id: u64,
+    pub checkpoint_slot: u64,
+    pub beacon_block_root: [u8; 32],
+    pub beacon_state_root: [u8; 32],
+    pub current_sync_committee_root: [u8; 32],
+    pub next_sync_committee_root: Option<[u8; 32]>,
+    pub trusted_head_slot: u64,
+    pub slot_delta: u64,
+    pub within_weak_subjectivity_window: bool,
+    pub within_operational_window: bool,
+    pub current_committee_branch_valid: bool,
+    pub next_committee_branch_valid: bool,
+    pub matches_trusted_block_root: Option<bool>,
+    pub is_valid: bool,
+}
+
+/// Standalone API to independently verify a weak-subjectivity bootstrap checkpoint
+/// against Ethereum consensus rules and optional public beacon chain state/roots.
+///
+/// In compliance with Logos RFP-021 Functionality requirements:
+/// 1. Validates the bootstrap header slot and state root.
+/// 2. Cryptographically validates the current sync committee SSZ Merkle branch against `bootstrap_header.state_root`
+///    using fork-aware generalized indices.
+/// 3. If provided, validates the initial next sync committee SSZ Merkle branch against `bootstrap_header.state_root`.
+/// 4. Checks the freshness delta against `trusted_head_slot` ensuring it is strictly within the consensus
+///    weak-subjectivity limit (1,728,000 slots / ~240 days) and recommended operational window (200,000 slots / ~28 days).
+/// 5. If `trusted_block_root` is provided (e.g. from public Beacon chain API), strictly confirms that the computed
+///    beacon block root matches.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_weak_subjectivity_checkpoint(
+    chain_id: u64,
+    bootstrap_header: &BeaconBlockHeader,
+    current_sync_committee: &SyncCommittee,
+    current_sync_committee_branch: &[[u8; 32]],
+    initial_next_committee: Option<&SyncCommittee>,
+    initial_next_committee_branch: Option<&[[u8; 32]]>,
+    trusted_head_slot: u64,
+    trusted_block_root: Option<[u8; 32]>,
+    network_config: Option<&NetworkConfig>,
+) -> Result<CheckpointVerificationReport, MosooError> {
+    if !crypto::is_supported_chain_or_configured(chain_id, network_config) {
+        return Err(MosooError::UnsupportedChain(chain_id));
+    }
+    if bootstrap_header.slot == 0 {
+        return Err(MosooError::InvalidBootstrap(
+            "bootstrap slot must be non-zero".into(),
+        ));
+    }
+    if current_sync_committee.pubkeys.len() != 512 {
+        return Err(MosooError::Internal(
+            "bootstrap sync committee must have exactly 512 pubkeys".into(),
+        ));
+    }
+
+    const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
+    const OPERATIONAL_WINDOW_SLOTS: u64 = 200_000;
+
+    if trusted_head_slot == 0 {
+        return Err(MosooError::InvalidBootstrap(
+            "trusted_head_slot is mandatory for weak-subjectivity verification and cannot be zero"
+                .into(),
+        ));
+    }
+    if trusted_head_slot < bootstrap_header.slot {
+        return Err(MosooError::InvalidBootstrap(format!(
+            "trusted_head_slot ({}) cannot precede bootstrap_header.slot ({})",
+            trusted_head_slot, bootstrap_header.slot
+        )));
+    }
+
+    let slot_delta = trusted_head_slot.saturating_sub(bootstrap_header.slot);
+    if slot_delta > WEAK_SUBJECTIVITY_SLOTS {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: bootstrap_header.slot,
+            current_slot: trusted_head_slot,
+        });
+    }
+
+    let committee_leaf = crypto::hash_tree_root_sync_committee(current_sync_committee)?;
+    let gindex = crypto::current_sync_committee_gindex(chain_id, bootstrap_header.slot);
+    let computed_root =
+        crypto::compute_branch_root_checked(committee_leaf, current_sync_committee_branch, gindex)?;
+
+    if computed_root != bootstrap_header.state_root {
+        return Err(MosooError::BootstrapCommitteeBranchInvalid);
+    }
+
+    let mut next_committee_leaf = None;
+    let mut next_branch_valid = false;
+    if let Some(next_comm) = initial_next_committee {
+        if next_comm.pubkeys.len() != 512 {
+            return Err(MosooError::Internal(
+                "bootstrap next sync committee must have exactly 512 pubkeys".into(),
+            ));
+        }
+        let branch =
+            initial_next_committee_branch.ok_or(MosooError::BootstrapNextCommitteeBranchInvalid)?;
+        let leaf = crypto::hash_tree_root_sync_committee(next_comm)?;
+        let next_gindex = crypto::next_sync_committee_gindex(chain_id, bootstrap_header.slot);
+        let computed_next = crypto::compute_branch_root_checked(leaf, branch, next_gindex)?;
+        if computed_next != bootstrap_header.state_root {
+            return Err(MosooError::BootstrapNextCommitteeBranchInvalid);
+        }
+        next_committee_leaf = Some(leaf);
+        next_branch_valid = true;
+    }
+
+    let computed_block_root = crypto::hash_tree_root_beacon_header(bootstrap_header);
+    let matches_trusted = if let Some(trusted_root) = trusted_block_root {
+        if computed_block_root != trusted_root {
+            return Err(MosooError::HeaderHashMismatch {
+                expected: trusted_root,
+                actual: computed_block_root,
+            });
+        }
+        Some(true)
+    } else {
+        None
+    };
+
+    Ok(CheckpointVerificationReport {
+        chain_id,
+        checkpoint_slot: bootstrap_header.slot,
+        beacon_block_root: computed_block_root,
+        beacon_state_root: bootstrap_header.state_root,
+        current_sync_committee_root: committee_leaf,
+        next_sync_committee_root: next_committee_leaf,
+        trusted_head_slot,
+        slot_delta,
+        within_weak_subjectivity_window: slot_delta <= WEAK_SUBJECTIVITY_SLOTS,
+        within_operational_window: slot_delta <= OPERATIONAL_WINDOW_SLOTS,
+        current_committee_branch_valid: true,
+        next_committee_branch_valid: next_branch_valid || initial_next_committee.is_none(),
+        matches_trusted_block_root: matches_trusted,
+        is_valid: true,
+    })
 }

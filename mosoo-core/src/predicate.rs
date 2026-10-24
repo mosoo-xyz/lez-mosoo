@@ -243,6 +243,34 @@ pub fn derive_erc20_transfer_subject_key(
     h.finalize().into()
 }
 
+/// Derives the canonical subject key for an Ethereum ERC-20 vault deposit (MosooLocker.sol).
+///
+/// Binds execution block hash, slot, transaction index, log index, deposit contract,
+/// token contract, sender address, and recipient LEZ address into a collision-resistant 32-byte identifier.
+#[allow(clippy::too_many_arguments)]
+pub fn derive_erc20_deposit_subject_key(
+    execution_block_hash: &[u8; 32],
+    slot: u64,
+    tx_index: u64,
+    log_index: usize,
+    deposit_contract: &[u8; 20],
+    token_contract: &[u8; 20],
+    sender: &[u8; 20],
+    recipient: &[u8; 32],
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"MOSOO_ERC20_DEPOSIT_V1:");
+    h.update(execution_block_hash);
+    h.update(slot.to_be_bytes());
+    h.update(tx_index.to_be_bytes());
+    h.update((log_index as u64).to_be_bytes());
+    h.update(deposit_contract);
+    h.update(token_contract);
+    h.update(sender);
+    h.update(recipient);
+    h.finalize().into()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

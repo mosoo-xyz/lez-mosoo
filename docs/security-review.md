@@ -206,6 +206,10 @@ Tested in `tests/two_way_bridge_tests.rs`:
 - **Inviolable Timelocked Authority Upgrades (Invariant 15) (`test_attester_authority_timelock_pipeline`):**
   Direct setters have been eliminated; all attester authority updates must pass through `proposeAttesterAuthority` with a mandatory 24-hour timelock delay before execution via `executeAttesterAuthority`.
   Enforces a mandatory 24-hour delay (`AUTHORITY_CHANGE_DELAY = 1 days`) between proposing a new `attesterAuthority` and executing the upgrade (`proposeAttesterAuthority` / `executeAttesterAuthority`), preventing instant unilateral authority key takeovers.
+- **Rolling Daily Withdrawal Limits (Invariant 20) (`test_mosoo_locker_daily_withdrawal_limit_enforced`):**
+  Enforces rolling 24-hour aggregate withdrawal volume limits for both ETH (`dailyWithdrawalLimitETH`) and ERC-20 tokens (`dailyWithdrawalLimitERC20`). Any withdrawal attempting to breach the 24-hour volume cap reverts with `DailyWithdrawalLimitExceeded()`, bounding maximum capital outflow velocity.
+- **Large Withdrawal Timelock Queue & Guardian Veto (Invariant 21) (`test_mosoo_locker_large_withdrawal_queue_and_guardian_veto`):**
+  Withdrawals equal to or exceeding `LARGE_WITHDRAWAL_THRESHOLD_ETH` (default 10 ETH) or equivalent ERC-20 thresholds cannot be settled immediately. They are placed into an on-chain queue with a mandatory 24-hour challenge delay (`WITHDRAWAL_TIMELOCK_DELAY = 1 days`). During this window, contract guardians or owners can execute `cancelQueuedWithdrawal` to neutralize fraudulent requests before funds leave escrow.
 - **Ethereum Escrow Contract Security (`contracts/MosooLocker.sol`):**
   - Strict EIP-2 upper-bound on $s$-values ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$).
   - Non-zero signer check (`recovered != address(0)`).

@@ -20,10 +20,12 @@
 //! statement cannot be claimed twice.
 
 use alloy_primitives::{keccak256, U256};
-pub use mosoo_core::predicate::derive_erc20_transfer_subject_key;
+pub use mosoo_core::predicate::{
+    derive_erc20_deposit_subject_key, derive_erc20_transfer_subject_key,
+};
 use mosoo_core::types::{
     AccountStore, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ERC20_TRANSFER,
+    PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -32,7 +34,7 @@ use thiserror::Error;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ReceiverError {
-    #[error("predicate did not hold â€” the Ethereum transfer was not verified")]
+    #[error("predicate did not hold — the Ethereum transfer was not verified")]
     PredicateFailed,
 
     #[error("unauthenticated attester: statement was not signed by authentic Mosoo program ID")]
@@ -45,13 +47,22 @@ pub enum ReceiverError {
     WrongChain(u64),
 
     #[error("expected at least {min_amount} tokens, verified statement value is {actual}")]
-    AmountTooLow { min_amount: u64, actual: u64 },
+    AmountTooLow { min_amount: u128, actual: u128 },
 
-    #[error("invalid statement type: expected ERC-20 transfer proof (tag 4), got tag {0}")]
+    #[error("expected at least {min_amount} tokens (U256), verified statement value is {actual}")]
+    AmountTooLowU256 { min_amount: U256, actual: U256 },
+
+    #[error("invalid statement type: expected ERC-20 transfer or deposit proof, got tag {0}")]
     InvalidStatementType(u8),
 
     #[error("token contract mismatch: expected {expected:?}, got {actual:?}")]
     TokenContractMismatch {
+        expected: [u8; 20],
+        actual: [u8; 20],
+    },
+
+    #[error("deposit contract mismatch: expected {expected:?}, got {actual:?}")]
+    DepositContractMismatch {
         expected: [u8; 20],
         actual: [u8; 20],
     },
@@ -233,57 +244,87 @@ pub fn claim(
         return Err(ReceiverError::PredicateFailed);
     }
 
-    // Strict statement proof type verification: MUST be authentic ERC-20 transfer
-    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER
+        && statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT
+    {
         return Err(ReceiverError::InvalidStatementType(
             statement.proof_type_tag,
         ));
     }
 
     // Strict statement binding validation: token, recipient, sender
-    let (block_hash, slot, tx_index, log_index, token_contract, sender, recipient) =
-        match &statement.binding {
-            StatementBinding::Erc20Transfer {
+    let expected_subject_key = match &statement.binding {
+        StatementBinding::Erc20Transfer {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_transfer_subject_key(
                 execution_block_hash,
-                slot,
-                tx_index,
-                log_index,
+                *slot,
+                *tx_index,
+                *log_index,
                 token_contract,
                 sender,
                 recipient,
-            } => {
-                if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
-                    return Err(ReceiverError::InvalidStatementType(
-                        statement.proof_type_tag,
-                    ));
-                }
-                (
-                    *execution_block_hash,
-                    *slot,
-                    *tx_index,
-                    *log_index,
-                    *token_contract,
-                    *sender,
-                    *recipient,
-                )
-            }
-            _ => {
+            )
+        }
+        StatementBinding::Erc20Deposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT {
                 return Err(ReceiverError::InvalidStatementType(
                     statement.proof_type_tag,
-                ))
+                ));
             }
-        };
+            if *deposit_contract == [0u8; 20]
+                || *token_contract == [0u8; 20]
+                || *recipient == [0u8; 32]
+            {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_deposit_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ))
+        }
+    };
 
     // Canonical subject key cryptographic verification
-    let expected_subject_key = derive_erc20_transfer_subject_key(
-        &block_hash,
-        slot,
-        tx_index,
-        log_index,
-        &token_contract,
-        &sender,
-        &recipient,
-    );
     if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
         return Err(ReceiverError::SubjectKeyMismatch);
     }
@@ -300,8 +341,8 @@ pub fn claim(
         .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_amount < min_amount {
         return Err(ReceiverError::AmountTooLow {
-            min_amount,
-            actual: verified_amount,
+            min_amount: min_amount as u128,
+            actual: verified_amount as u128,
         });
     }
 
@@ -314,6 +355,141 @@ pub fn claim(
     // Tokens credited 1:1 on LEZ matching the verified on-chain Ethereum value
     let minted_amount = verified_amount;
     Ok(minted_amount)
+}
+
+/// Verify a VerifiedStatement with full 256-bit (U256) precision and mint LEZ-side tokens.
+///
+/// Prevents truncation for amounts > u64::MAX (e.g. standard 18-decimal token transfers).
+pub fn claim_u256(
+    statement: &VerifiedStatement,
+    nullifiers: &mut NullifierSet,
+    min_amount: U256,
+) -> Result<U256, ReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(statement.chain_id));
+    }
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER
+        && statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT
+    {
+        return Err(ReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let expected_subject_key = match &statement.binding {
+        StatementBinding::Erc20Transfer {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_transfer_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        StatementBinding::Erc20Deposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            if *deposit_contract == [0u8; 20]
+                || *token_contract == [0u8; 20]
+                || *recipient == [0u8; 32]
+            {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_deposit_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ))
+        }
+    };
+
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(ReceiverError::StatementIdMismatch);
+    }
+
+    let verified_amount = statement.value_as_u256();
+    if verified_amount < min_amount {
+        return Err(ReceiverError::AmountTooLowU256 {
+            min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id) || nullifiers.is_used(&statement.subject_key) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    nullifiers.mark_used(statement.subject_key);
+
+    Ok(verified_amount)
+}
+
+/// Verify a VerifiedStatement with u128 precision (safe for amounts up to 3.4e38 units).
+pub fn claim_u128(
+    statement: &VerifiedStatement,
+    nullifiers: &mut NullifierSet,
+    min_amount: u128,
+) -> Result<u128, ReceiverError> {
+    claim_u256(statement, nullifiers, U256::from(min_amount))?;
+    statement
+        .value_as_u128_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow u128: {e}")))
 }
 
 /// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
@@ -336,54 +512,85 @@ pub fn claim_with_store<S: AccountStore>(
         return Err(ReceiverError::PredicateFailed);
     }
 
-    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER
+        && statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT
+    {
         return Err(ReceiverError::InvalidStatementType(
             statement.proof_type_tag,
         ));
     }
 
-    let (block_hash, slot, tx_index, log_index, token_contract, sender, recipient) =
-        match &statement.binding {
-            StatementBinding::Erc20Transfer {
+    let expected_subject_key = match &statement.binding {
+        StatementBinding::Erc20Transfer {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_transfer_subject_key(
                 execution_block_hash,
-                slot,
-                tx_index,
-                log_index,
+                *slot,
+                *tx_index,
+                *log_index,
                 token_contract,
                 sender,
                 recipient,
-            } => {
-                if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
-                    return Err(ReceiverError::InvalidStatementType(
-                        statement.proof_type_tag,
-                    ));
-                }
-                (
-                    *execution_block_hash,
-                    *slot,
-                    *tx_index,
-                    *log_index,
-                    *token_contract,
-                    *sender,
-                    *recipient,
-                )
-            }
-            _ => {
+            )
+        }
+        StatementBinding::Erc20Deposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT {
                 return Err(ReceiverError::InvalidStatementType(
                     statement.proof_type_tag,
-                ))
+                ));
             }
-        };
+            if *deposit_contract == [0u8; 20]
+                || *token_contract == [0u8; 20]
+                || *recipient == [0u8; 32]
+            {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_deposit_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ))
+        }
+    };
 
-    let expected_subject_key = derive_erc20_transfer_subject_key(
-        &block_hash,
-        slot,
-        tx_index,
-        log_index,
-        &token_contract,
-        &sender,
-        &recipient,
-    );
     if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
         return Err(ReceiverError::SubjectKeyMismatch);
     }
@@ -398,8 +605,8 @@ pub fn claim_with_store<S: AccountStore>(
         .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_amount < min_amount {
         return Err(ReceiverError::AmountTooLow {
-            min_amount,
-            actual: verified_amount,
+            min_amount: min_amount as u128,
+            actual: verified_amount as u128,
         });
     }
 
@@ -425,6 +632,156 @@ pub fn claim_with_store<S: AccountStore>(
     store.set_account(&subject_nullifier_pda, encoded_record);
 
     Ok(verified_amount)
+}
+
+/// Atomically verifies statement with full 256-bit (U256) precision against persistent PDA nullifiers in AccountStore.
+pub fn claim_with_store_u256<S: AccountStore>(
+    statement: &VerifiedStatement,
+    store: &mut S,
+    min_amount: U256,
+    current_slot: u64,
+) -> Result<U256, ReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(statement.chain_id));
+    }
+
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER
+        && statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT
+    {
+        return Err(ReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let expected_subject_key = match &statement.binding {
+        StatementBinding::Erc20Transfer {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_transfer_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        StatementBinding::Erc20Deposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            if *deposit_contract == [0u8; 20]
+                || *token_contract == [0u8; 20]
+                || *recipient == [0u8; 32]
+            {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_deposit_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ))
+        }
+    };
+
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(ReceiverError::StatementIdMismatch);
+    }
+
+    let verified_amount = statement.value_as_u256();
+    if verified_amount < min_amount {
+        return Err(ReceiverError::AmountTooLowU256 {
+            min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    let statement_nullifier_pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_nullifier_pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.subject_key);
+
+    if store.has_account(&statement_nullifier_pda) || store.has_account(&subject_nullifier_pda) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+
+    let nullifier_record = NullifierAccount {
+        statement_id: statement.statement_id,
+        subject_key: statement.subject_key,
+        spent_slot: current_slot,
+        is_spent: true,
+    };
+    let encoded_record = serde_json::to_vec(&nullifier_record)
+        .map_err(|e| ReceiverError::AttestationFailed(format!("serialization failure: {e}")))?;
+
+    store.set_account(&statement_nullifier_pda, encoded_record.clone());
+    store.set_account(&subject_nullifier_pda, encoded_record);
+
+    Ok(verified_amount)
+}
+
+/// Atomically verifies statement with u128 precision against persistent PDA nullifiers in AccountStore.
+pub fn claim_with_store_u128<S: AccountStore>(
+    statement: &VerifiedStatement,
+    store: &mut S,
+    min_amount: u128,
+    current_slot: u64,
+) -> Result<u128, ReceiverError> {
+    claim_with_store_u256(statement, store, U256::from(min_amount), current_slot)?;
+    statement
+        .value_as_u128_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow u128: {e}")))
 }
 
 /// Detailed parameters for claiming a verified ERC-20 token transfer or vault deposit.
@@ -535,6 +892,129 @@ pub fn claim_erc20_transfer(
         .statement
         .value_as_u64_checked()
         .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    if verified_amount < claim.min_amount {
+        return Err(ReceiverError::AmountTooLow {
+            min_amount: claim.min_amount as u128,
+            actual: verified_amount as u128,
+        });
+    }
+
+    if nullifiers.is_used(&expected_subject_key)
+        || nullifiers.is_used(&claim.statement.statement_id)
+    {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(expected_subject_key);
+    nullifiers.mark_used(claim.statement.statement_id);
+
+    Ok(verified_amount)
+}
+
+/// Parameters for claiming a verified ERC-20 vault deposit to MosooLocker.sol.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Erc20DepositClaim {
+    /// The verified statement emitted by the Mosoo attestation module.
+    pub statement: VerifiedStatement,
+    /// The canonical bridge vault contract address on Ethereum (e.g. MosooLocker).
+    pub deposit_contract: [u8; 20],
+    /// The deposited ERC-20 token contract address on Ethereum.
+    pub token_contract: [u8; 20],
+    /// The Ethereum sender / depositor address.
+    pub sender: [u8; 20],
+    /// The designated LEZ recipient address.
+    pub recipient: [u8; 32],
+    /// Minimum tokens expected (u128 precision).
+    pub min_amount: u128,
+}
+
+/// Process a verified ERC-20 deposit event log from MosooLocker.sol:
+/// DepositERC20(address indexed token, address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 nonce)
+pub fn claim_erc20_deposit(
+    claim: &Erc20DepositClaim,
+    nullifiers: &mut NullifierSet,
+) -> Result<u128, ReceiverError> {
+    if claim.statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(ReceiverError::WrongChain(claim.statement.chain_id));
+    }
+    if claim.statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+    if !claim.statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+    if claim.statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT {
+        return Err(ReceiverError::InvalidStatementType(
+            claim.statement.proof_type_tag,
+        ));
+    }
+
+    let (block_hash, slot, tx_index, log_index) = match &claim.statement.binding {
+        StatementBinding::Erc20Deposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if *deposit_contract != claim.deposit_contract {
+                return Err(ReceiverError::DepositContractMismatch {
+                    expected: claim.deposit_contract,
+                    actual: *deposit_contract,
+                });
+            }
+            if *token_contract != claim.token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: claim.token_contract,
+                    actual: *token_contract,
+                });
+            }
+            if *sender != claim.sender {
+                return Err(ReceiverError::SenderMismatch {
+                    expected: claim.sender,
+                    actual: *sender,
+                });
+            }
+            if *recipient != claim.recipient {
+                return Err(ReceiverError::RecipientMismatch {
+                    expected: claim.recipient,
+                    actual: *recipient,
+                });
+            }
+            (*execution_block_hash, *slot, *tx_index, *log_index)
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                claim.statement.proof_type_tag,
+            ));
+        }
+    };
+
+    let expected_subject_key = derive_erc20_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &claim.deposit_contract,
+        &claim.token_contract,
+        &claim.sender,
+        &claim.recipient,
+    );
+    if claim.statement.subject_key != expected_subject_key {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = claim.statement.derive_canonical_id();
+    if claim.statement.statement_id != expected_statement_id {
+        return Err(ReceiverError::StatementIdMismatch);
+    }
+
+    let verified_amount = claim
+        .statement
+        .value_as_u128_checked()
+        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow u128: {e}")))?;
     if verified_amount < claim.min_amount {
         return Err(ReceiverError::AmountTooLow {
             min_amount: claim.min_amount,
@@ -677,8 +1157,8 @@ pub fn claim_atomic(
         .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_amount < args.min_amount {
         return Err(ReceiverError::AmountTooLow {
-            min_amount: args.min_amount,
-            actual: verified_amount,
+            min_amount: args.min_amount as u128,
+            actual: verified_amount as u128,
         });
     }
 
@@ -791,6 +1271,35 @@ impl Erc20Ledger {
     ) -> Result<u128, ReceiverError> {
         let verified_amount = claim_erc20_transfer(claim, nullifiers)?;
         let amount = verified_amount as u128;
+
+        let key = (claim.token_contract, claim.recipient);
+        let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
+            token: claim.token_contract,
+            owner: claim.recipient,
+            balance: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance = entry
+            .balance
+            .checked_add(amount)
+            .ok_or(ReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        let supply = self.total_supplies.entry(claim.token_contract).or_insert(0);
+        *supply = supply.checked_add(amount).ok_or(ReceiverError::Overflow)?;
+
+        Ok(entry.balance)
+    }
+
+    /// Mint synthetic tokens upon verification of a canonical DepositERC20 log from MosooLocker.sol.
+    pub fn mint_deposit_tokens(
+        &mut self,
+        claim: &Erc20DepositClaim,
+        nullifiers: &mut NullifierSet,
+    ) -> Result<u128, ReceiverError> {
+        let amount = claim_erc20_deposit(claim, nullifiers)?;
 
         let key = (claim.token_contract, claim.recipient);
         let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
@@ -1842,6 +2351,155 @@ mod tests {
         // Attempt replay after restart: MUST BE REJECTED!
         let replay_res = claim(&stmt, &mut restarted_nullifiers, 100);
         assert_eq!(replay_res.unwrap_err(), ReceiverError::AlreadyClaimed);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn make_erc20_deposit_statement(
+        chain_id: u64,
+        holds: bool,
+        amount_u128: u128,
+        attester: [u8; 32],
+        deposit_contract: [u8; 20],
+        token_contract: [u8; 20],
+        sender: [u8; 20],
+        recipient: [u8; 32],
+    ) -> VerifiedStatement {
+        let mut verified_value = [0u8; 32];
+        verified_value.copy_from_slice(&U256::from(amount_u128).to_be_bytes::<32>());
+        let block_hash = [0x55; 32];
+        let slot = 10_500_000;
+        let tx_index = 2;
+        let log_index = 1;
+
+        let subject_key = derive_erc20_deposit_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &deposit_contract,
+            &token_contract,
+            &sender,
+            &recipient,
+        );
+        let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
+            chain_id,
+            &subject_key,
+            PROOF_TYPE_ERC20_DEPOSIT,
+            &verified_value,
+        );
+        VerifiedStatement {
+            chain_id,
+            attester_program_id: attester,
+            statement_id,
+            predicate_holds: holds,
+            verified_value,
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ERC20_DEPOSIT,
+            binding: StatementBinding::Erc20Deposit {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            },
+        }
+    }
+
+    #[test]
+    fn test_claim_u256_amounts_exceeding_u64_max_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        // 100 tokens with 18 decimals = 100 * 10^18 = 10^20, which is > u64::MAX (~1.84 * 10^19)
+        let large_amount: u128 = 100_000_000_000_000_000_000;
+        assert!(large_amount > u64::MAX as u128);
+
+        let statement = make_erc20_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            large_amount,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 20],
+            [0x44; 32],
+        );
+
+        // Standard u64 claim fails closed with overflow protection error
+        let u64_res = claim(&statement, &mut nullifiers, 100);
+        assert!(matches!(u64_res, Err(ReceiverError::AttestationFailed(_))));
+
+        // U256 claim succeeds with full 256-bit fidelity
+        let claimed_u256 = claim_u256(&statement, &mut nullifiers, U256::from(large_amount))
+            .expect("U256 claim for amounts > u64::MAX MUST succeed");
+        assert_eq!(claimed_u256, U256::from(large_amount));
+
+        // Duplicate claim rejected
+        let replay = claim_u256(&statement, &mut nullifiers, U256::from(large_amount));
+        assert_eq!(replay.unwrap_err(), ReceiverError::AlreadyClaimed);
+    }
+
+    #[test]
+    fn test_claim_u128_amounts_exceeding_u64_max_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        let large_amount: u128 = 50_000_000_000_000_000_000; // 50 tokens (18 decimals)
+        let statement = make_erc20_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            large_amount,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 20],
+            [0x44; 32],
+        );
+
+        let claimed = claim_u128(&statement, &mut nullifiers, large_amount)
+            .expect("u128 claim for amounts > u64::MAX MUST succeed");
+        assert_eq!(claimed, large_amount);
+    }
+
+    #[test]
+    fn test_canonical_deposit_erc20_claim_and_mint_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        let mut ledger = Erc20Ledger::new();
+        let token = [0x22; 20];
+        let deposit_contract = [0x11; 20];
+        let sender = [0x33; 20];
+        let recipient = [0x44; 32];
+        let amount: u128 = 250_000_000_000_000_000_000; // 250 tokens
+
+        let statement = make_erc20_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            amount,
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            token,
+            sender,
+            recipient,
+        );
+
+        let claim = Erc20DepositClaim {
+            statement,
+            deposit_contract,
+            token_contract: token,
+            sender,
+            recipient,
+            min_amount: 100_000_000_000_000_000_000,
+        };
+
+        let new_bal = ledger
+            .mint_deposit_tokens(&claim, &mut nullifiers)
+            .expect("Minting from verified canonical DepositERC20 log must succeed");
+        assert_eq!(new_bal, amount);
+        assert_eq!(ledger.get_balance(&token, &recipient), amount);
+        assert_eq!(ledger.get_total_supply(&token), amount);
+
+        // Replay rejection
+        let replay = ledger.mint_deposit_tokens(&claim, &mut nullifiers);
+        assert_eq!(replay.unwrap_err(), ReceiverError::AlreadyClaimed);
     }
 
     // Chain IDs used in tests above

@@ -81,11 +81,22 @@ pub enum ProofTarget {
         recipient: [u8; 32],
     },
     /// Prove a Native ETH deposit to a bridge vault contract:
-    /// Deposit(address sender, bytes32 recipient, uint256 amount) or Deposit(address sender, address recipient, uint256 amount).
+    /// DepositETH(address sender, bytes32 recipient, uint256 amount, uint64 nonce) [canonical MosooLocker.sol event],
+    /// Deposit(address sender, bytes32 recipient, uint256 amount), or Deposit(address sender, address recipient, uint256 amount).
     NativeEthDeposit {
         tx_index: u64,
         log_index: usize,
         deposit_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+    },
+    /// Prove an ERC-20 token deposit to MosooLocker bridge vault contract:
+    /// DepositERC20(address indexed token, address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 nonce)
+    Erc20Deposit {
+        tx_index: u64,
+        log_index: usize,
+        deposit_contract: Address,
+        token_contract: Address,
         sender: Address,
         recipient: [u8; 32],
     },
@@ -250,6 +261,9 @@ pub fn verify_state_proof(
             sender,
             recipient,
         } => {
+            let deposit_eth_canonical_topic0 = B256::from(alloy_primitives::keccak256(
+                b"DepositETH(address,bytes32,uint256,uint64)",
+            ));
             let deposit_topic0_bytes32 = B256::from(alloy_primitives::keccak256(
                 b"Deposit(address,bytes32,uint256)",
             ));
@@ -273,10 +287,15 @@ pub fn verify_state_proof(
                 return Err(MosooError::Internal("deposit log missing topics".into()));
             }
             let sig = verified_log.topics[0];
-            if sig != deposit_topic0_bytes32 && sig != deposit_topic0_addr {
+            if sig != deposit_eth_canonical_topic0
+                && sig != deposit_topic0_bytes32
+                && sig != deposit_topic0_addr
+            {
                 return Err(MosooError::EventTopicMismatch {
                     index: 0,
-                    expected: format!("{deposit_topic0_bytes32:?}"),
+                    expected: format!(
+                        "{deposit_eth_canonical_topic0:?} or {deposit_topic0_bytes32:?}"
+                    ),
                     actual: format!("{sig:?}"),
                 });
             }
@@ -311,7 +330,79 @@ pub fn verify_state_proof(
                     "missing deposit amount in log data".into(),
                 ));
             }
-            Ok(VerifiedValue::LogData(verified_log.data))
+            // For standard 32-byte amount word
+            let amount_bytes = if verified_log.data.len() >= 32 {
+                verified_log.data[..32].to_vec()
+            } else {
+                verified_log.data
+            };
+            Ok(VerifiedValue::LogData(amount_bytes))
+        }
+        ProofTarget::Erc20Deposit {
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            let deposit_erc20_topic0 = B256::from(alloy_primitives::keccak256(
+                b"DepositERC20(address,address,bytes32,uint256,uint64)",
+            ));
+            let r_proof = ReceiptLogProof {
+                tx_index: *tx_index,
+                log_index: *log_index,
+                expected_emitter: Some(*deposit_contract),
+                expected_topic0: Some(deposit_erc20_topic0),
+                receipt_proof: proof.receipt_proof.clone().ok_or_else(|| {
+                    MosooError::Internal("receipt_proof required for Erc20Deposit proof".into())
+                })?,
+                receipt_rlp: proof.receipt_value.clone().ok_or_else(|| {
+                    MosooError::Internal("receipt_value required for Erc20Deposit proof".into())
+                })?,
+            };
+            let verified_log = verify_receipt_log_proof(&r_proof, header)?;
+            if verified_log.topics.len() < 4 {
+                return Err(MosooError::RlpDecodeFailed(
+                    "DepositERC20 log must have at least 4 topics (sig, token, sender, recipient)"
+                        .into(),
+                ));
+            }
+            let token_topic = verified_log.topics[1];
+            if &token_topic.0[12..32] != token_contract.as_slice() {
+                return Err(MosooError::Internal(
+                    "token contract mismatch in DepositERC20 log".into(),
+                ));
+            }
+            let sender_topic = verified_log.topics[2];
+            if &sender_topic.0[12..32] != sender.as_slice() {
+                return Err(MosooError::Internal(
+                    "sender address mismatch in DepositERC20 log".into(),
+                ));
+            }
+            let recipient_topic = verified_log.topics[3];
+            let matches_recipient = if recipient_topic.0 == *recipient {
+                true
+            } else if recipient[0..12] == [0u8; 12] {
+                recipient_topic.0[12..32] == recipient[12..32]
+            } else if recipient_topic.0[0..12] == [0u8; 12] {
+                recipient_topic.0[12..32] == recipient[12..32]
+                    || recipient_topic.0[12..32] == recipient[0..20]
+            } else {
+                false
+            };
+            if !matches_recipient {
+                return Err(MosooError::Internal(
+                    "recipient mismatch in DepositERC20 log".into(),
+                ));
+            }
+            if verified_log.data.len() < 32 {
+                return Err(MosooError::Internal(
+                    "missing amount in DepositERC20 log data (expected at least 32 bytes)".into(),
+                ));
+            }
+            // data is abi.encode(amount, nonce): first 32 bytes is amount
+            Ok(VerifiedValue::LogData(verified_log.data[..32].to_vec()))
         }
     }
 }
@@ -458,6 +549,115 @@ pub fn decode_and_validate_receipt(
         tx_index,
         log_index: target_log_index,
     })
+}
+
+/// Decodes a verified DepositETH event log emitted by MosooLocker.sol.
+///
+/// Event signature: `DepositETH(address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 indexed nonce)`
+/// Returns `(sender, recipient, amount, nonce)`.
+pub fn decode_deposit_eth_log(
+    log: &VerifiedLog,
+) -> Result<(Address, [u8; 32], U256, u64), MosooError> {
+    let deposit_eth_canonical_topic0 = B256::from(alloy_primitives::keccak256(
+        b"DepositETH(address,bytes32,uint256,uint64)",
+    ));
+    let deposit_topic0_bytes32 = B256::from(alloy_primitives::keccak256(
+        b"Deposit(address,bytes32,uint256)",
+    ));
+    let deposit_topic0_addr = B256::from(alloy_primitives::keccak256(
+        b"Deposit(address,address,uint256)",
+    ));
+
+    if log.topics.is_empty() {
+        return Err(MosooError::Internal("deposit log missing topics".into()));
+    }
+    let sig = log.topics[0];
+    if sig != deposit_eth_canonical_topic0
+        && sig != deposit_topic0_bytes32
+        && sig != deposit_topic0_addr
+    {
+        return Err(MosooError::EventTopicMismatch {
+            index: 0,
+            expected: format!("{deposit_eth_canonical_topic0:?}"),
+            actual: format!("{sig:?}"),
+        });
+    }
+
+    if log.topics.len() < 3 {
+        return Err(MosooError::RlpDecodeFailed(
+            "Deposit log must have at least 3 topics (sig, sender, recipient)".into(),
+        ));
+    }
+
+    let sender = Address::from_slice(&log.topics[1].0[12..32]);
+    let recipient = log.topics[2].0;
+
+    let nonce = if sig == deposit_eth_canonical_topic0 && log.topics.len() >= 4 {
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&log.topics[3].0[24..32]);
+        u64::from_be_bytes(buf)
+    } else {
+        0
+    };
+
+    if log.data.len() < 32 {
+        return Err(MosooError::Internal(
+            "deposit log missing 32-byte amount".into(),
+        ));
+    }
+    let mut amount_bytes = [0u8; 32];
+    amount_bytes.copy_from_slice(&log.data[0..32]);
+    let amount = U256::from_be_bytes(amount_bytes);
+
+    Ok((sender, recipient, amount, nonce))
+}
+
+/// Decodes a verified DepositERC20 event log emitted by MosooLocker.sol.
+///
+/// Event signature: `DepositERC20(address indexed token, address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 nonce)`
+/// Returns `(token, sender, recipient, amount, nonce)`.
+pub fn decode_deposit_erc20_log(
+    log: &VerifiedLog,
+) -> Result<(Address, Address, [u8; 32], U256, u64), MosooError> {
+    let deposit_erc20_topic0 = B256::from(alloy_primitives::keccak256(
+        b"DepositERC20(address,address,bytes32,uint256,uint64)",
+    ));
+
+    if log.topics.len() < 4 {
+        return Err(MosooError::RlpDecodeFailed(
+            "DepositERC20 log must have at least 4 topics (sig, token, sender, recipient)".into(),
+        ));
+    }
+    if log.topics[0] != deposit_erc20_topic0 {
+        return Err(MosooError::EventTopicMismatch {
+            index: 0,
+            expected: format!("{deposit_erc20_topic0:?}"),
+            actual: format!("{:?}", log.topics[0]),
+        });
+    }
+
+    let token = Address::from_slice(&log.topics[1].0[12..32]);
+    let sender = Address::from_slice(&log.topics[2].0[12..32]);
+    let recipient = log.topics[3].0;
+
+    if log.data.len() < 32 {
+        return Err(MosooError::Internal(
+            "DepositERC20 log missing amount".into(),
+        ));
+    }
+    let mut amount_bytes = [0u8; 32];
+    amount_bytes.copy_from_slice(&log.data[0..32]);
+    let amount = U256::from_be_bytes(amount_bytes);
+
+    let nonce = if log.data.len() >= 64 {
+        let mut nonce_buf = [0u8; 8];
+        nonce_buf.copy_from_slice(&log.data[56..64]);
+        u64::from_be_bytes(nonce_buf)
+    } else {
+        0
+    };
+
+    Ok((token, sender, recipient, amount, nonce))
 }
 
 /// Parse an RLP list into the byte slices of its child items.
@@ -1132,6 +1332,209 @@ pub mod test_helpers {
         let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
         (receipts_root, proof_nodes, receipt_rlp)
     }
+
+    /// Construct a valid EIP-1559 receipt (type 0x02) containing the canonical MosooLocker DepositETH log:
+    /// DepositETH(address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 indexed nonce).
+    pub fn build_test_eip1559_deposit_eth_canonical_receipt(
+        deposit_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+        amount: U256,
+        nonce: u64,
+    ) -> Vec<u8> {
+        let deposit_sig = keccak256("DepositETH(address,bytes32,uint256,uint64)");
+        let topic1 = B256::left_padding_from(sender.as_slice());
+        let topic2 = B256::from(recipient);
+        let topic3 = B256::left_padding_from(&nonce.to_be_bytes());
+
+        // Topics RLP list
+        let mut topics_payload = Vec::new();
+        topics_payload.extend_from_slice(&alloy_rlp::encode(deposit_sig.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic1.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic2.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic3.0));
+        let mut topics_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: topics_payload.len(),
+        }
+        .encode(&mut topics_rlp);
+        topics_rlp.extend_from_slice(&topics_payload);
+
+        // Data: amount as 32-byte BE
+        let data_bytes = amount.to_be_bytes::<32>();
+        let data_rlp = alloy_rlp::encode(&data_bytes[..]);
+
+        // Log RLP: [address, topics, data]
+        let mut log_payload = Vec::new();
+        log_payload.extend_from_slice(&alloy_rlp::encode(deposit_contract.as_slice()));
+        log_payload.extend_from_slice(&topics_rlp);
+        log_payload.extend_from_slice(&data_rlp);
+        let mut log_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_payload.len(),
+        }
+        .encode(&mut log_rlp);
+        log_rlp.extend_from_slice(&log_payload);
+
+        // Logs list: [log_rlp]
+        let mut logs_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_rlp.len(),
+        }
+        .encode(&mut logs_list);
+        logs_list.extend_from_slice(&log_rlp);
+
+        // Receipt fields: [status=1, cumulative_gas=50000, bloom=256 zeros, logs]
+        let status_rlp = alloy_rlp::encode(1u8);
+        let gas_rlp = alloy_rlp::encode(50000u64);
+        let bloom_bytes = [0u8; 256];
+        let bloom_rlp = alloy_rlp::encode(&bloom_bytes[..]);
+
+        let mut receipt_payload = Vec::new();
+        receipt_payload.extend_from_slice(&status_rlp);
+        receipt_payload.extend_from_slice(&gas_rlp);
+        receipt_payload.extend_from_slice(&bloom_rlp);
+        receipt_payload.extend_from_slice(&logs_list);
+
+        let mut receipt_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: receipt_payload.len(),
+        }
+        .encode(&mut receipt_list);
+        receipt_list.extend_from_slice(&receipt_payload);
+
+        let mut full_receipt = vec![0x02u8];
+        full_receipt.extend_from_slice(&receipt_list);
+        full_receipt
+    }
+
+    /// Construct a complete MPT receipt proof for canonical MosooLocker DepositETH log.
+    pub fn build_test_deposit_eth_canonical_proof(
+        deposit_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+        amount: U256,
+        nonce: u64,
+    ) -> (B256, Vec<Bytes>, Vec<u8>) {
+        let receipt_rlp = build_test_eip1559_deposit_eth_canonical_receipt(
+            deposit_contract,
+            sender,
+            recipient,
+            amount,
+            nonce,
+        );
+        let key_bytes = alloy_rlp::encode(0u64);
+        let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
+        (receipts_root, proof_nodes, receipt_rlp)
+    }
+
+    /// Construct a valid EIP-1559 receipt (type 0x02) containing the canonical MosooLocker DepositERC20 log:
+    /// DepositERC20(address indexed token, address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 nonce).
+    pub fn build_test_eip1559_deposit_erc20_receipt(
+        deposit_contract: Address,
+        token: Address,
+        sender: Address,
+        recipient: [u8; 32],
+        amount: U256,
+        nonce: u64,
+    ) -> Vec<u8> {
+        let deposit_sig = keccak256("DepositERC20(address,address,bytes32,uint256,uint64)");
+        let topic1 = B256::left_padding_from(token.as_slice());
+        let topic2 = B256::left_padding_from(sender.as_slice());
+        let topic3 = B256::from(recipient);
+
+        // Topics RLP list
+        let mut topics_payload = Vec::new();
+        topics_payload.extend_from_slice(&alloy_rlp::encode(deposit_sig.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic1.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic2.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic3.0));
+        let mut topics_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: topics_payload.len(),
+        }
+        .encode(&mut topics_rlp);
+        topics_rlp.extend_from_slice(&topics_payload);
+
+        // Data: abi.encode(amount, nonce) -> 64 bytes
+        let mut data_bytes = [0u8; 64];
+        data_bytes[0..32].copy_from_slice(&amount.to_be_bytes::<32>());
+        data_bytes[56..64].copy_from_slice(&nonce.to_be_bytes());
+        let data_rlp = alloy_rlp::encode(&data_bytes[..]);
+
+        // Log RLP: [address, topics, data]
+        let mut log_payload = Vec::new();
+        log_payload.extend_from_slice(&alloy_rlp::encode(deposit_contract.as_slice()));
+        log_payload.extend_from_slice(&topics_rlp);
+        log_payload.extend_from_slice(&data_rlp);
+        let mut log_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_payload.len(),
+        }
+        .encode(&mut log_rlp);
+        log_rlp.extend_from_slice(&log_payload);
+
+        // Logs list: [log_rlp]
+        let mut logs_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_rlp.len(),
+        }
+        .encode(&mut logs_list);
+        logs_list.extend_from_slice(&log_rlp);
+
+        // Receipt fields: [status=1, cumulative_gas=50000, bloom=256 zeros, logs]
+        let status_rlp = alloy_rlp::encode(1u8);
+        let gas_rlp = alloy_rlp::encode(50000u64);
+        let bloom_bytes = [0u8; 256];
+        let bloom_rlp = alloy_rlp::encode(&bloom_bytes[..]);
+
+        let mut receipt_payload = Vec::new();
+        receipt_payload.extend_from_slice(&status_rlp);
+        receipt_payload.extend_from_slice(&gas_rlp);
+        receipt_payload.extend_from_slice(&bloom_rlp);
+        receipt_payload.extend_from_slice(&logs_list);
+
+        let mut receipt_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: receipt_payload.len(),
+        }
+        .encode(&mut receipt_list);
+        receipt_list.extend_from_slice(&receipt_payload);
+
+        let mut full_receipt = vec![0x02u8];
+        full_receipt.extend_from_slice(&receipt_list);
+        full_receipt
+    }
+
+    /// Construct a complete MPT receipt proof for canonical MosooLocker DepositERC20 log.
+    pub fn build_test_deposit_erc20_proof(
+        deposit_contract: Address,
+        token: Address,
+        sender: Address,
+        recipient: [u8; 32],
+        amount: U256,
+        nonce: u64,
+    ) -> (B256, Vec<Bytes>, Vec<u8>) {
+        let receipt_rlp = build_test_eip1559_deposit_erc20_receipt(
+            deposit_contract,
+            token,
+            sender,
+            recipient,
+            amount,
+            nonce,
+        );
+        let key_bytes = alloy_rlp::encode(0u64);
+        let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
+        (receipts_root, proof_nodes, receipt_rlp)
+    }
 }
 
 #[cfg(test)]
@@ -1541,6 +1944,111 @@ mod tests {
 
         let verified =
             verify_state_proof(&proof, &header).expect("Deposit receipt proof must verify");
+        match verified {
+            VerifiedValue::LogData(data) => {
+                assert_eq!(data, amount.to_be_bytes::<32>());
+            }
+            _ => panic!("Expected LogData"),
+        }
+    }
+
+    #[test]
+    fn test_canonical_deposit_eth_mpt_inclusion_verification_success() {
+        let deposit_contract = Address::repeat_byte(0x42);
+        let sender = Address::repeat_byte(0x11);
+        let recipient = [0x22u8; 32];
+        let amount = U256::from(25_000_000_000_000_000_000u128); // 25 ETH
+        let nonce = 7u64;
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_eth_canonical_proof(
+            deposit_contract,
+            sender,
+            recipient,
+            amount,
+            nonce,
+        );
+
+        let header = HeaderRecord {
+            chain_id: 1,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x66; 32],
+            execution_state_root: [0x77; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::NativeEthDeposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract,
+                sender,
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let verified =
+            verify_state_proof(&proof, &header).expect("Canonical DepositETH proof must verify");
+        match verified {
+            VerifiedValue::LogData(data) => {
+                assert_eq!(data, amount.to_be_bytes::<32>());
+            }
+            _ => panic!("Expected LogData"),
+        }
+    }
+
+    #[test]
+    fn test_canonical_deposit_erc20_mpt_inclusion_verification_success() {
+        let deposit_contract = Address::repeat_byte(0x42);
+        let token = Address::repeat_byte(0xa0);
+        let sender = Address::repeat_byte(0x11);
+        let recipient = [0x22u8; 32];
+        let amount = U256::from(100_000_000_000_000_000_000u128); // 100 tokens (18 dec)
+        let nonce = 12u64;
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_erc20_proof(
+            deposit_contract,
+            token,
+            sender,
+            recipient,
+            amount,
+            nonce,
+        );
+
+        let header = HeaderRecord {
+            chain_id: 1,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x66; 32],
+            execution_state_root: [0x77; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::Erc20Deposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract,
+                token_contract: token,
+                sender,
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let verified =
+            verify_state_proof(&proof, &header).expect("Canonical DepositERC20 proof must verify");
         match verified {
             VerifiedValue::LogData(data) => {
                 assert_eq!(data, amount.to_be_bytes::<32>());

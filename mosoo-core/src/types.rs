@@ -403,6 +403,7 @@ pub const PROOF_TYPE_STORAGE_SLOT: u8 = 1;
 pub const PROOF_TYPE_RECEIPT_LOG: u8 = 2;
 pub const PROOF_TYPE_ETH_DEPOSIT: u8 = 3;
 pub const PROOF_TYPE_ERC20_TRANSFER: u8 = 4;
+pub const PROOF_TYPE_ERC20_DEPOSIT: u8 = 5;
 
 /// Canonical on-chain provenance binding of an attested Ethereum state, event, or transfer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -429,6 +430,17 @@ pub enum StatementBinding {
         slot: u64,
         tx_index: u64,
         log_index: usize,
+        token_contract: [u8; 20],
+        sender: [u8; 20],
+        recipient: [u8; 32],
+    },
+    /// ERC-20 deposit into a designated bridge vault contract (MosooLocker.sol)
+    Erc20Deposit {
+        execution_block_hash: [u8; 32],
+        slot: u64,
+        tx_index: u64,
+        log_index: usize,
+        deposit_contract: [u8; 20],
         token_contract: [u8; 20],
         sender: [u8; 20],
         recipient: [u8; 32],
@@ -486,11 +498,29 @@ impl VerifiedStatement {
         )
     }
 
+    /// Decode the verified 32-byte EVM value as a U256 (big-endian).
+    pub fn value_as_u256(&self) -> alloy_primitives::U256 {
+        alloy_primitives::U256::from_be_bytes(self.verified_value)
+    }
+
     /// Decode the verified 32-byte EVM value as a u128 (big-endian).
     pub fn value_as_u128(&self) -> u128 {
         let mut buf = [0u8; 16];
         buf.copy_from_slice(&self.verified_value[16..32]);
         u128::from_be_bytes(buf)
+    }
+
+    /// Decode the verified 32-byte EVM value as a u128 (big-endian), strictly asserting that the
+    /// top 16 bytes are zero to prevent silent arithmetic truncation for amounts > u128::MAX.
+    pub fn value_as_u128_checked(&self) -> Result<u128, crate::error::MosooError> {
+        if self.verified_value[..16] != [0u8; 16] {
+            return Err(crate::error::MosooError::Internal(
+                "verified statement value exceeds u128::MAX (silent truncation prevented)".into(),
+            ));
+        }
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(&self.verified_value[16..32]);
+        Ok(u128::from_be_bytes(buf))
     }
 
     /// Decode the verified 32-byte EVM value as a u64 (big-endian), strictly asserting that the

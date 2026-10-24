@@ -23,7 +23,10 @@ pub enum EtherReceiverError {
     WrongChain(u64),
 
     #[error("verified balance {actual} wei is less than required {required} wei")]
-    BalanceTooLow { actual: u64, required: u64 },
+    BalanceTooLow { actual: u128, required: u128 },
+
+    #[error("verified balance {actual} wei (U256) is less than required {required} wei")]
+    BalanceTooLowU256 { actual: U256, required: U256 },
 
     #[error("invalid statement type: expected native ETH deposit proof (tag 3), got tag {0}")]
     InvalidStatementType(u8),
@@ -249,8 +252,8 @@ pub fn claim_ether(
                 })?;
                 if verified_wei < min_wei {
                     return Err(EtherReceiverError::BalanceTooLow {
-                        actual: verified_wei,
-                        required: min_wei,
+                        actual: verified_wei as u128,
+                        required: min_wei as u128,
                     });
                 }
                 if nullifiers.is_used(&statement.statement_id)
@@ -300,6 +303,129 @@ pub fn claim_ether(
         .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
+            actual: verified_wei as u128,
+            required: min_wei as u128,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id) || nullifiers.is_used(&statement.subject_key) {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    nullifiers.mark_used(statement.subject_key);
+
+    Ok(verified_wei)
+}
+
+/// Verify an Ether statement with full 256-bit (U256) precision and credit LEZ-side ether.
+///
+/// Prevents truncation or rejection for high-value transfers > u64::MAX (e.g. >18.45 ETH in wei).
+pub fn claim_ether_u256(
+    statement: &VerifiedStatement,
+    nullifiers: &mut EtherNullifierSet,
+    min_wei: U256,
+) -> Result<U256, EtherReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(EtherReceiverError::WrongChain(statement.chain_id));
+    }
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+
+    let (block_hash, slot, tx_index, log_index, deposit_contract, sender, recipient) =
+        match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                if *deposit_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                (
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index,
+                    *deposit_contract,
+                    *sender,
+                    *recipient,
+                )
+            }
+            StatementBinding::Account { address } => {
+                if statement.proof_type_tag != PROOF_TYPE_ACCOUNT_BALANCE || *address == [0u8; 20] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                use sha2::Digest;
+                let expected_key: [u8; 32] = sha2::Sha256::digest(address.as_slice()).into();
+                if statement.subject_key != expected_key || statement.subject_key == [0u8; 32] {
+                    return Err(EtherReceiverError::SubjectKeyMismatch);
+                }
+                let expected_statement_id = statement.derive_canonical_id();
+                if statement.statement_id != expected_statement_id {
+                    return Err(EtherReceiverError::StatementIdMismatch);
+                }
+                let verified_wei = statement.value_as_u256();
+                if verified_wei < min_wei {
+                    return Err(EtherReceiverError::BalanceTooLowU256 {
+                        actual: verified_wei,
+                        required: min_wei,
+                    });
+                }
+                if nullifiers.is_used(&statement.statement_id)
+                    || nullifiers.is_used(&statement.subject_key)
+                {
+                    return Err(EtherReceiverError::AlreadyClaimed);
+                }
+                nullifiers.mark_used(statement.statement_id);
+                nullifiers.mark_used(statement.subject_key);
+                return Ok(verified_wei);
+            }
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    if statement.proof_type_tag != PROOF_TYPE_ETH_DEPOSIT {
+        return Err(EtherReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let expected_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(EtherReceiverError::StatementIdMismatch);
+    }
+
+    let verified_wei = statement.value_as_u256();
+    if verified_wei < min_wei {
+        return Err(EtherReceiverError::BalanceTooLowU256 {
             actual: verified_wei,
             required: min_wei,
         });
@@ -312,6 +438,18 @@ pub fn claim_ether(
     nullifiers.mark_used(statement.subject_key);
 
     Ok(verified_wei)
+}
+
+/// Verify an Ether statement with u128 precision.
+pub fn claim_ether_u128(
+    statement: &VerifiedStatement,
+    nullifiers: &mut EtherNullifierSet,
+    min_wei: u128,
+) -> Result<u128, EtherReceiverError> {
+    claim_ether_u256(statement, nullifiers, U256::from(min_wei))?;
+    statement
+        .value_as_u128_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow u128: {e}")))
 }
 
 /// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
@@ -381,8 +519,8 @@ pub fn claim_ether_with_store<S: AccountStore>(
                 })?;
                 if verified_wei < min_wei {
                     return Err(EtherReceiverError::BalanceTooLow {
-                        actual: verified_wei,
-                        required: min_wei,
+                        actual: verified_wei as u128,
+                        required: min_wei as u128,
                     });
                 }
 
@@ -444,6 +582,151 @@ pub fn claim_ether_with_store<S: AccountStore>(
         .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
+            actual: verified_wei as u128,
+            required: min_wei as u128,
+        });
+    }
+
+    let statement_pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.subject_key);
+    if store.has_account(&statement_pda) || store.has_account(&subject_pda) {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+
+    let record = EtherNullifierAccount {
+        statement_id: statement.statement_id,
+        subject_key: statement.subject_key,
+        spent_slot: current_slot,
+        is_spent: true,
+    };
+    let encoded = serde_json::to_vec(&record).map_err(|e| {
+        EtherReceiverError::AttestationFailed(format!("serialization failure: {e}"))
+    })?;
+    store.set_account(&statement_pda, encoded.clone());
+    store.set_account(&subject_pda, encoded);
+
+    Ok(verified_wei)
+}
+
+/// Atomically verifies an Ether statement with full 256-bit (U256) precision against persistent PDA nullifiers in AccountStore.
+pub fn claim_ether_with_store_u256<S: AccountStore>(
+    statement: &VerifiedStatement,
+    store: &mut S,
+    min_wei: U256,
+    current_slot: u64,
+) -> Result<U256, EtherReceiverError> {
+    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+        return Err(EtherReceiverError::WrongChain(statement.chain_id));
+    }
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+
+    let (block_hash, slot, tx_index, log_index, deposit_contract, sender, recipient) =
+        match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                if *deposit_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                (
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index,
+                    *deposit_contract,
+                    *sender,
+                    *recipient,
+                )
+            }
+            StatementBinding::Account { address } => {
+                if statement.proof_type_tag != PROOF_TYPE_ACCOUNT_BALANCE || *address == [0u8; 20] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                use sha2::Digest;
+                let expected_key: [u8; 32] = sha2::Sha256::digest(address.as_slice()).into();
+                if statement.subject_key != expected_key || statement.subject_key == [0u8; 32] {
+                    return Err(EtherReceiverError::SubjectKeyMismatch);
+                }
+                let expected_statement_id = statement.derive_canonical_id();
+                if statement.statement_id != expected_statement_id {
+                    return Err(EtherReceiverError::StatementIdMismatch);
+                }
+                let verified_wei = statement.value_as_u256();
+                if verified_wei < min_wei {
+                    return Err(EtherReceiverError::BalanceTooLowU256 {
+                        actual: verified_wei,
+                        required: min_wei,
+                    });
+                }
+                let statement_pda =
+                    derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+                let subject_pda =
+                    derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.subject_key);
+                if store.has_account(&statement_pda) || store.has_account(&subject_pda) {
+                    return Err(EtherReceiverError::AlreadyClaimed);
+                }
+                let record = EtherNullifierAccount {
+                    statement_id: statement.statement_id,
+                    subject_key: statement.subject_key,
+                    spent_slot: current_slot,
+                    is_spent: true,
+                };
+                let encoded = serde_json::to_vec(&record).map_err(|e| {
+                    EtherReceiverError::AttestationFailed(format!("serialization failure: {e}"))
+                })?;
+                store.set_account(&statement_pda, encoded.clone());
+                store.set_account(&subject_pda, encoded);
+                return Ok(verified_wei);
+            }
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    if statement.proof_type_tag != PROOF_TYPE_ETH_DEPOSIT {
+        return Err(EtherReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let expected_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    let expected_statement_id = statement.derive_canonical_id();
+    if statement.statement_id != expected_statement_id {
+        return Err(EtherReceiverError::StatementIdMismatch);
+    }
+
+    let verified_wei = statement.value_as_u256();
+    if verified_wei < min_wei {
+        return Err(EtherReceiverError::BalanceTooLowU256 {
             actual: verified_wei,
             required: min_wei,
         });
@@ -468,6 +751,19 @@ pub fn claim_ether_with_store<S: AccountStore>(
     store.set_account(&subject_pda, encoded);
 
     Ok(verified_wei)
+}
+
+/// Atomically verifies an Ether statement with u128 precision against persistent PDA nullifiers in AccountStore.
+pub fn claim_ether_with_store_u128<S: AccountStore>(
+    statement: &VerifiedStatement,
+    store: &mut S,
+    min_wei: u128,
+    current_slot: u64,
+) -> Result<u128, EtherReceiverError> {
+    claim_ether_with_store_u256(statement, store, U256::from(min_wei), current_slot)?;
+    statement
+        .value_as_u128_checked()
+        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow u128: {e}")))
 }
 
 /// Detailed parameters for claiming a verified Native ETH transfer or deposit to a specific contract.
@@ -580,8 +876,8 @@ pub fn claim_native_eth_deposit(
         .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < claim.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
-            actual: verified_wei,
-            required: claim.min_wei,
+            actual: verified_wei as u128,
+            required: claim.min_wei as u128,
         });
     }
 
@@ -694,8 +990,8 @@ pub fn claim_ether_atomic(
         .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < args.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
-            actual: verified_wei,
-            required: args.min_wei,
+            actual: verified_wei as u128,
+            required: args.min_wei as u128,
         });
     }
 
@@ -798,8 +1094,8 @@ pub fn claim_account_balance_atomic(
         .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < args.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
-            actual: verified_wei,
-            required: args.min_wei,
+            actual: verified_wei as u128,
+            required: args.min_wei as u128,
         });
     }
 
@@ -904,8 +1200,8 @@ pub fn claim_native_eth_deposit_atomic(
         .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
     if verified_wei < args.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
-            actual: verified_wei,
-            required: args.min_wei,
+            actual: verified_wei as u128,
+            required: args.min_wei as u128,
         });
     }
 
@@ -2286,5 +2582,130 @@ mod tests {
 
         let id3 = derive_burn_id(1, &[0x11; 32], &[0x22; 20], 1_000_001, 1, 100);
         assert_ne!(id1, id3);
+    }
+
+    #[test]
+    fn test_claim_ether_u256_amounts_exceeding_u64_max_succeeds() {
+        let mut nullifiers = EtherNullifierSet::new();
+        // 50 ETH = 50 * 10^18 wei = 50_000_000_000_000_000_000 > u64::MAX (~18.44 ETH in wei)
+        let large_wei: u128 = 50_000_000_000_000_000_000;
+        assert!(large_wei > u64::MAX as u128);
+
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let block_hash = [0x44; 32];
+        let slot = 10_500_000;
+        let tx_index = 1;
+        let log_index = 0;
+
+        let subject_key = derive_eth_deposit_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &deposit_contract,
+            &sender,
+            &recipient,
+        );
+        let mut verified_value = [0u8; 32];
+        verified_value.copy_from_slice(&U256::from(large_wei).to_be_bytes::<32>());
+
+        let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
+            ETH_MAINNET_CHAIN_ID,
+            &subject_key,
+            PROOF_TYPE_ETH_DEPOSIT,
+            &verified_value,
+        );
+
+        let statement = VerifiedStatement {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            attester_program_id: MOSOO_PROGRAM_ID,
+            statement_id,
+            predicate_holds: true,
+            verified_value,
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+            binding: StatementBinding::NativeEthDeposit {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            },
+        };
+
+        // Standard u64 claim fails closed with overflow protection
+        let u64_res = claim_ether(&statement, &mut nullifiers, 1_000_000_000);
+        assert!(matches!(
+            u64_res,
+            Err(EtherReceiverError::AttestationFailed(_))
+        ));
+
+        // U256 claim succeeds
+        let claimed = claim_ether_u256(&statement, &mut nullifiers, U256::from(large_wei))
+            .expect("claim_ether_u256 for > u64::MAX wei must succeed");
+        assert_eq!(claimed, U256::from(large_wei));
+
+        // Replay rejected
+        let replay = claim_ether_u256(&statement, &mut nullifiers, U256::from(large_wei));
+        assert_eq!(replay.unwrap_err(), EtherReceiverError::AlreadyClaimed);
+    }
+
+    #[test]
+    fn test_claim_ether_u128_amounts_exceeding_u64_max_succeeds() {
+        let mut nullifiers = EtherNullifierSet::new();
+        let large_wei: u128 = 25_000_000_000_000_000_000; // 25 ETH
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let block_hash = [0x44; 32];
+        let slot = 10_500_000;
+        let tx_index = 1;
+        let log_index = 0;
+
+        let subject_key = derive_eth_deposit_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &deposit_contract,
+            &sender,
+            &recipient,
+        );
+        let mut verified_value = [0u8; 32];
+        verified_value.copy_from_slice(&U256::from(large_wei).to_be_bytes::<32>());
+
+        let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
+            ETH_MAINNET_CHAIN_ID,
+            &subject_key,
+            PROOF_TYPE_ETH_DEPOSIT,
+            &verified_value,
+        );
+
+        let statement = VerifiedStatement {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            attester_program_id: MOSOO_PROGRAM_ID,
+            statement_id,
+            predicate_holds: true,
+            verified_value,
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+            binding: StatementBinding::NativeEthDeposit {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            },
+        };
+
+        let claimed = claim_ether_u128(&statement, &mut nullifiers, large_wei)
+            .expect("claim_ether_u128 for > u64::MAX wei must succeed");
+        assert_eq!(claimed, large_wei);
     }
 }

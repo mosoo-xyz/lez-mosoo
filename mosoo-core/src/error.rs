@@ -151,6 +151,12 @@ pub enum MosooError {
     #[error("header record is unauthenticated or does not match active instance finalized state")]
     UnauthenticatedHeaderRecord,
 
+    #[error("beacon block root mismatch: expected {expected:?}, actual {actual:?}")]
+    HeaderHashMismatch {
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+
     #[error("historical execution roots unauthenticated: complete beacon body and execution payload branch proof required")]
     HistoricalExecutionRootUnauthenticated,
 
