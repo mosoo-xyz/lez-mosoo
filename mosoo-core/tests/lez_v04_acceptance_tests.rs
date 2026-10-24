@@ -187,6 +187,7 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         instance: erc20_instance,
         header: erc20_header.clone(),
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: erc20_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
     })
@@ -267,6 +268,7 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         instance: eth_instance,
         header: eth_header.clone(),
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: eth_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
     })

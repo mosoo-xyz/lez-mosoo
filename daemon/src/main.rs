@@ -9,7 +9,9 @@
 //! randomized jitter delay reduces the chance of duplicate submissions.
 
 use clap::Parser;
-use mosoo_core::types::{BeaconBlockHeader, LightClientUpdate, SyncAggregate};
+use mosoo_core::types::{
+    BeaconBlockHeader, ExecutionPayloadHeader, LightClientUpdate, SyncAggregate,
+};
 use rand::Rng;
 use serde::Deserialize;
 use std::time::Duration;
@@ -53,10 +55,14 @@ pub struct Cli {
     #[arg(long, env = "LEZ_PRIVATE_KEY")]
     pub lez_private_key: Option<String>,
 
-    /// Optional Logos Ethereum Core module verified-proxy endpoint.
-    /// When specified, update materials, beacon headers, and inclusion proofs
-    /// are routed through the Logos Core Ethereum proxy catalog service.
-    #[arg(long, env = "LOGOS_ETHEREUM_CORE_RPC")]
+    /// Logos Ethereum Core module verified-proxy endpoint.
+    /// In compliance with Logos RFP-021, defaults to the official Logos Core Ethereum proxy catalog service.
+    /// Can be overridden or routed directly to a custom beacon node via CLI flags or env vars.
+    #[arg(
+        long,
+        env = "LOGOS_ETHEREUM_CORE_RPC",
+        default_value = "https://ethereum-core.logos.co"
+    )]
     pub logos_ethereum_core_rpc: Option<String>,
 
     /// Polling interval in seconds.
@@ -173,6 +179,16 @@ pub async fn try_submit_update(
     cli: &Cli,
     client: &reqwest::Client,
 ) -> anyhow::Result<SubmitResult> {
+    // 1. Reliability guard: check if an unfinalized job from a previous crashed/restarted daemon is pending completion
+    if let Ok(Some(open_job)) = query_active_job(cli, client).await {
+        info!(
+            job_nonce = open_job.job_nonce,
+            stage = %open_job.stage,
+            "Resuming uncompleted consensus job from prior session"
+        );
+        return resume_open_job(cli, client, open_job).await;
+    }
+
     let lez_head_slot = fetch_lez_head_slot(cli, client).await?;
     let eth_finalized_slot = fetch_eth_finalized_slot(cli, client).await?;
 
@@ -192,7 +208,23 @@ pub async fn try_submit_update(
     let update = fetch_light_client_update(cli, client, lez_head_slot, eth_finalized_slot).await?;
 
     info!(slot = eth_finalized_slot, "Submitting Tx 1/3: BeginUpdate");
-    let job_nonce = submit_begin(cli, client, &update).await?;
+    let job_nonce = match submit_begin(cli, client, &update).await {
+        Ok(nonce) => nonce,
+        Err(e) if e.to_string().contains("JobAlreadyOpen") => {
+            if let Ok(Some(open_job)) = query_active_job(cli, client).await {
+                info!(
+                    job_nonce = open_job.job_nonce,
+                    stage = %open_job.stage,
+                    "Detected open verification job on LEZ; resuming completion"
+                );
+                return resume_open_job(cli, client, open_job).await;
+            }
+            return Ok(SubmitResult::JobAlreadyOpen {
+                slot: eth_finalized_slot,
+            });
+        }
+        Err(e) => return Err(e),
+    };
 
     tokio::time::sleep(Duration::from_millis(500)).await;
 
@@ -207,6 +239,95 @@ pub async fn try_submit_update(
     Ok(SubmitResult::Submitted {
         slot: eth_finalized_slot,
     })
+}
+
+#[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
+pub struct OpenJobStatus {
+    pub job_nonce: u64,
+    pub stage: String,
+    pub target_slot: u64,
+}
+
+pub async fn query_active_job(
+    cli: &Cli,
+    client: &reqwest::Client,
+) -> anyhow::Result<Option<OpenJobStatus>> {
+    let payload = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "lez_getActiveJob",
+        "params": [cli.eth_chain_id],
+        "id": 10
+    });
+
+    let resp = match client.post(&cli.lez_rpc_url).json(&payload).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!("lez_getActiveJob query skipped: {}", e);
+            return Ok(None);
+        }
+    };
+
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
+
+    let json: serde_json::Value = resp.json().await.unwrap_or_default();
+    if let Some(result) = json.get("result").filter(|v| !v.is_null()) {
+        if let Some(nonce) = result.get("job_nonce").and_then(|n| n.as_u64()) {
+            let stage = result
+                .get("stage")
+                .and_then(|s| s.as_str())
+                .unwrap_or("miller")
+                .to_string();
+            let target_slot = result
+                .get("target_slot")
+                .and_then(|s| s.as_u64())
+                .unwrap_or(0);
+            return Ok(Some(OpenJobStatus {
+                job_nonce: nonce,
+                stage,
+                target_slot,
+            }));
+        }
+    }
+    Ok(None)
+}
+
+pub async fn resume_open_job(
+    cli: &Cli,
+    client: &reqwest::Client,
+    job: OpenJobStatus,
+) -> anyhow::Result<SubmitResult> {
+    info!(
+        job_nonce = job.job_nonce,
+        stage = %job.stage,
+        target_slot = job.target_slot,
+        "Resuming unfinalized verification job from previous daemon run"
+    );
+
+    match job.stage.as_str() {
+        "begin" | "miller" => {
+            info!(job_nonce = job.job_nonce, "Resuming Tx 2/3: MillerUpdate");
+            submit_miller(cli, client, job.job_nonce).await?;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+
+            info!(job_nonce = job.job_nonce, "Resuming Tx 3/3: FinishUpdate");
+            submit_finish(cli, client, job.job_nonce).await?;
+            Ok(SubmitResult::Submitted {
+                slot: job.target_slot,
+            })
+        }
+        "finish" => {
+            info!(job_nonce = job.job_nonce, "Resuming Tx 3/3: FinishUpdate");
+            submit_finish(cli, client, job.job_nonce).await?;
+            Ok(SubmitResult::Submitted {
+                slot: job.target_slot,
+            })
+        }
+        other => {
+            anyhow::bail!("Unrecognized open job stage: {}", other);
+        }
+    }
 }
 
 // Ethereum Beacon REST API Response Models
@@ -243,6 +364,34 @@ struct FinalityUpdateData {
     finality_branch: Vec<String>,
     sync_aggregate: SyncAggregateObj,
     signature_slot: String,
+    #[serde(default)]
+    execution_payload_header: Option<ExecutionPayloadHeaderObj>,
+    #[serde(default)]
+    execution_branch: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct ExecutionPayloadHeaderObj {
+    parent_hash: String,
+    fee_recipient: String,
+    state_root: String,
+    receipts_root: String,
+    logs_bloom: String,
+    prev_randao: String,
+    block_number: String,
+    gas_limit: String,
+    gas_used: String,
+    timestamp: String,
+    extra_data: String,
+    base_fee_per_gas: String,
+    block_hash: String,
+    transactions_root: String,
+    #[serde(default)]
+    withdrawals_root: Option<String>,
+    #[serde(default)]
+    blob_gas_used: Option<String>,
+    #[serde(default)]
+    excess_blob_gas: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -423,6 +572,43 @@ fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClien
         }
     }
 
+    let execution_payload_header = if let Some(p) = d.execution_payload_header {
+        Some(ExecutionPayloadHeader {
+            parent_hash: hex_to_32(&p.parent_hash)?,
+            fee_recipient: hex_to_20(&p.fee_recipient)?,
+            state_root: hex_to_32(&p.state_root)?,
+            receipts_root: hex_to_32(&p.receipts_root)?,
+            logs_bloom: hex::decode(p.logs_bloom.trim_start_matches("0x")).unwrap_or_default(),
+            prev_randao: hex_to_32(&p.prev_randao)?,
+            block_number: p.block_number.parse().unwrap_or(0),
+            gas_limit: p.gas_limit.parse().unwrap_or(0),
+            gas_used: p.gas_used.parse().unwrap_or(0),
+            timestamp: p.timestamp.parse().unwrap_or(0),
+            extra_data: hex::decode(p.extra_data.trim_start_matches("0x")).unwrap_or_default(),
+            base_fee_per_gas: hex_to_32(&p.base_fee_per_gas).unwrap_or([0u8; 32]),
+            block_hash: hex_to_32(&p.block_hash)?,
+            transactions_root: hex_to_32(&p.transactions_root)?,
+            withdrawals_root: p
+                .withdrawals_root
+                .as_deref()
+                .and_then(|s| hex_to_32(s).ok()),
+            blob_gas_used: p.blob_gas_used.as_deref().and_then(|s| s.parse().ok()),
+            excess_blob_gas: p.excess_blob_gas.as_deref().and_then(|s| s.parse().ok()),
+        })
+    } else {
+        None
+    };
+
+    let execution_branch = if let Some(eb) = d.execution_branch {
+        let mut branch = Vec::new();
+        for b in eb {
+            branch.push(hex_to_32(&b)?);
+        }
+        Some(branch)
+    } else {
+        None
+    };
+
     Ok(LightClientUpdate {
         attested_header: attested,
         next_sync_committee: None,
@@ -434,8 +620,8 @@ fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClien
             sync_committee_signature: sig,
         },
         signature_slot: d.signature_slot.parse().unwrap_or(0),
-        execution_payload_header: None,
-        execution_branch: None,
+        execution_payload_header,
+        execution_branch,
         execution_rlp: None,
     })
 }
@@ -452,7 +638,20 @@ fn parse_header(f: &BeaconHeaderFields) -> anyhow::Result<BeaconBlockHeader> {
 
 fn hex_to_32(s: &str) -> anyhow::Result<[u8; 32]> {
     let bytes = hex::decode(s.trim_start_matches("0x"))?;
+    if bytes.len() != 32 {
+        anyhow::bail!("Expected 32 hex bytes, got {}", bytes.len());
+    }
     let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
+}
+
+fn hex_to_20(s: &str) -> anyhow::Result<[u8; 20]> {
+    let bytes = hex::decode(s.trim_start_matches("0x"))?;
+    if bytes.len() != 20 {
+        anyhow::bail!("Expected 20 hex bytes, got {}", bytes.len());
+    }
+    let mut arr = [0u8; 20];
     arr.copy_from_slice(&bytes);
     Ok(arr)
 }
@@ -552,7 +751,9 @@ pub async fn submit_begin(
         .get("result")
         .and_then(|r| r.get("job_nonce").or(Some(r)))
         .and_then(|v| v.as_u64())
-        .unwrap_or_else(|| rand::thread_rng().gen_range(1..100_000));
+        .ok_or_else(|| {
+            anyhow::anyhow!("LEZ begin_update response missing valid numeric job_nonce in result")
+        })?;
     Ok(job_nonce)
 }
 
@@ -890,5 +1091,93 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("LEZ_PRIVATE_KEY is required"));
+    }
+
+    #[test]
+    fn test_daemon_beacon_finality_update_with_execution_payload_parsing() {
+        let json_data = r#"{
+            "data": {
+                "attested_header": {
+                    "beacon": {
+                        "slot": "15433761",
+                        "proposer_index": "123",
+                        "parent_root": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                        "state_root": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                        "body_root": "0x3333333333333333333333333333333333333333333333333333333333333333"
+                    }
+                },
+                "finalized_header": {
+                    "beacon": {
+                        "slot": "15433760",
+                        "proposer_index": "120",
+                        "parent_root": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                        "state_root": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                        "body_root": "0x6666666666666666666666666666666666666666666666666666666666666666"
+                    }
+                },
+                "finality_branch": [
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ],
+                "sync_aggregate": {
+                    "sync_committee_bits": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000",
+                    "sync_committee_signature": "0xc00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+                },
+                "signature_slot": "15433761",
+                "execution_payload_header": {
+                    "parent_hash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                    "fee_recipient": "0x2222222222222222222222222222222222222222",
+                    "state_root": "0x3333333333333333333333333333333333333333333333333333333333333333",
+                    "receipts_root": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                    "logs_bloom": "0x00",
+                    "prev_randao": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                    "block_number": "1000",
+                    "gas_limit": "30000000",
+                    "gas_used": "15000000",
+                    "timestamp": "1700000000",
+                    "extra_data": "0x",
+                    "base_fee_per_gas": "0x0000000000000000000000000000000000000000000000000000000000000001",
+                    "block_hash": "0x6666666666666666666666666666666666666666666666666666666666666666",
+                    "transactions_root": "0x7777777777777777777777777777777777777777777777777777777777777777"
+                },
+                "execution_branch": [
+                    "0x8888888888888888888888888888888888888888888888888888888888888888",
+                    "0x9999999999999999999999999999999999999999999999999999999999999999",
+                    "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                ]
+            }
+        }"#;
+
+        let res: FinalityUpdateResponse = serde_json::from_str(json_data).unwrap();
+        let update = parse_beacon_update(res).unwrap();
+
+        assert_eq!(update.finalized_header.slot, 15_433_760);
+        let exec = update
+            .execution_payload_header
+            .expect("must decode execution payload header");
+        assert_eq!(exec.block_number, 1000);
+        assert_eq!(exec.fee_recipient, [0x22; 20]);
+        assert_eq!(exec.state_root, [0x33; 32]);
+        assert_eq!(exec.receipts_root, [0x44; 32]);
+        assert_eq!(exec.block_hash, [0x66; 32]);
+
+        let branch = update
+            .execution_branch
+            .expect("must decode execution branch");
+        assert_eq!(branch.len(), 4);
+        assert_eq!(branch[0], [0x88; 32]);
+    }
+
+    #[test]
+    fn test_daemon_open_job_status_representation() {
+        let job = OpenJobStatus {
+            job_nonce: 42,
+            stage: "miller".to_string(),
+            target_slot: 15_433_760,
+        };
+        assert_eq!(job.job_nonce, 42);
+        assert_eq!(job.stage, "miller");
+        assert_eq!(job.target_slot, 15_433_760);
     }
 }

@@ -17,6 +17,7 @@ use mosoo_core::{
     types::*,
     verifier::*,
 };
+use sha2::Digest;
 
 fn make_test_committee(count: usize) -> SyncCommittee {
     let pubkeys: Vec<Vec<u8>> = (0..count)
@@ -432,15 +433,39 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
     );
 
     // Sub-test 7B: Valid claim succeeds first time
+    let token_contract = [0xaa; 20];
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let block_hash = [0x33; 32];
+    let slot = 10_000_000u64;
+    let tx_index = 0u64;
+    let log_index = 0usize;
+    let subject_key = derive_erc20_transfer_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
     let valid_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0x88; 32],
         predicate_holds: true,
         verified_value: val_500,
-        subject_key: [0u8; 32],
-        proof_type_tag: 0,
-        binding: Default::default(),
+        subject_key,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        },
     };
     let first_claim = claim(&valid_statement, &mut nullifiers, 500);
     assert!(first_claim.is_ok(), "First valid claim must succeed");
@@ -457,15 +482,18 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
 
     // Sub-test 7D: Native Ether Duplicate Claim Rejection
     let mut eth_nullifiers = EtherNullifierSet::new();
+    let eth_user = [0x77; 20];
+    use sha2::Digest;
+    let eth_subject_key: [u8; 32] = sha2::Sha256::digest(eth_user).into();
     let eth_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0x99; 32],
         predicate_holds: true,
         verified_value: val_1000,
-        subject_key: [0u8; 32],
-        proof_type_tag: 0,
-        binding: Default::default(),
+        subject_key: eth_subject_key,
+        proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+        binding: StatementBinding::Account { address: eth_user },
     };
     assert!(claim_ether(&eth_statement, &mut eth_nullifiers, 1000).is_ok());
     let eth_dup = claim_ether(&eth_statement, &mut eth_nullifiers, 1000);
@@ -558,6 +586,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         instance: instance.clone(),
         header: wrong_chain_header,
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof.clone(),
         predicate: dummy_predicate.clone(),
     });
@@ -579,6 +608,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         instance: instance.clone(),
         header: unfinalized_header,
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof.clone(),
         predicate: dummy_predicate.clone(),
     });
@@ -606,6 +636,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         instance: instance.clone(),
         header: forged_beacon_root_header,
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof.clone(),
         predicate: dummy_predicate.clone(),
     });
@@ -640,6 +671,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
             receipts_root: [0x33; 32],
         },
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof,
         predicate: dummy_predicate,
     });
@@ -692,11 +724,45 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
         "Transfers at same tx/log in different blocks MUST have unique subject keys"
     );
 
+    let token_contract = [0xaa; 20];
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let transfer_key_a = derive_erc20_transfer_subject_key(
+        &block_hash_a,
+        slot_a,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+    let transfer_key_b = derive_erc20_transfer_subject_key(
+        &block_hash_b,
+        slot_b,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+
     let val = mosoo_core::inclusion::VerifiedValue::StorageValue([0x42; 32]);
     let pred = Predicate::AtLeast { min: [0; 32] };
 
-    let id_a = derive_statement_id(ETH_MAINNET_CHAIN_ID, &key_a, 2, &val, &pred);
-    let id_b = derive_statement_id(ETH_MAINNET_CHAIN_ID, &key_b, 2, &val, &pred);
+    let id_a = derive_statement_id(
+        ETH_MAINNET_CHAIN_ID,
+        &transfer_key_a,
+        PROOF_TYPE_ERC20_TRANSFER,
+        &val,
+        &pred,
+    );
+    let id_b = derive_statement_id(
+        ETH_MAINNET_CHAIN_ID,
+        &transfer_key_b,
+        PROOF_TYPE_ERC20_TRANSFER,
+        &val,
+        &pred,
+    );
 
     assert_ne!(
         id_a, id_b,
@@ -714,9 +780,17 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
         statement_id: id_a,
         predicate_holds: true,
         verified_value: val_10,
-        subject_key: [0u8; 32],
-        proof_type_tag: 0,
-        binding: Default::default(),
+        subject_key: transfer_key_a,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash_a,
+            slot: slot_a,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        },
     };
     let stmt_b = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
@@ -724,9 +798,17 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
         statement_id: id_b,
         predicate_holds: true,
         verified_value: val_10,
-        subject_key: [0u8; 32],
-        proof_type_tag: 0,
-        binding: Default::default(),
+        subject_key: transfer_key_b,
+        proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+        binding: StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash_b,
+            slot: slot_b,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        },
     };
     assert!(claim(&stmt_a, &mut nullifiers, 10).is_ok());
     assert!(
@@ -940,13 +1022,53 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
 fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection() {
     let historical_slot = 15_433_700u64;
     let current_slot = 15_433_728u64;
-    let historical_beacon_root = [0x77; 32];
 
-    let gindex = mosoo_core::crypto::historical_block_roots_gindex(
-        ETH_MAINNET_CHAIN_ID,
-        current_slot,
-        historical_slot,
+    let emitter = alloy_primitives::Address::repeat_byte(0xaa);
+    let from = alloy_primitives::Address::repeat_byte(0x11);
+    let to = alloy_primitives::Address::repeat_byte(0x22);
+    let amount = alloy_primitives::U256::from(100_000u64);
+    let receipt_bytes = mosoo_core::inclusion::test_helpers::build_test_eip1559_transfer_receipt(
+        emitter, from, to, amount,
     );
+    let key_bytes = alloy_rlp::encode(0u64);
+    let (receipts_root, proof_nodes) =
+        mosoo_core::inclusion::test_helpers::build_leaf_mpt_proof(&key_bytes, &receipt_bytes);
+
+    let payload_header = ExecutionPayloadHeader {
+        parent_hash: [0x01; 32],
+        fee_recipient: [0x02; 20],
+        state_root: [0x22; 32],
+        receipts_root: receipts_root.0,
+        logs_bloom: vec![0u8; 256],
+        prev_randao: [0x03; 32],
+        block_number: 1_000_000,
+        gas_limit: 30_000_000,
+        gas_used: 15_000_000,
+        timestamp: 1_700_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0u8; 32],
+        block_hash: [0x11; 32],
+        transactions_root: [0x04; 32],
+        withdrawals_root: Some([0x05; 32]),
+        blob_gas_used: Some(0),
+        excess_blob_gas: Some(0),
+    };
+    let payload_leaf = hash_tree_root_execution_payload_header(&payload_header).unwrap();
+    let exec_gindex = execution_proof_gindex(ETH_MAINNET_CHAIN_ID, historical_slot);
+    let exec_depth = (63 - exec_gindex.leading_zeros()) as usize;
+    let execution_branch = vec![[0x33; 32]; exec_depth];
+    let body_root = compute_branch_root(payload_leaf, &execution_branch, exec_gindex);
+
+    let beacon_header = BeaconBlockHeader {
+        slot: historical_slot,
+        proposer_index: 1234,
+        parent_root: [0x06; 32],
+        state_root: [0x07; 32],
+        body_root,
+    };
+    let historical_beacon_root = hash_tree_root_beacon_header(&beacon_header);
+
+    let gindex = historical_block_roots_gindex(ETH_MAINNET_CHAIN_ID, current_slot, historical_slot);
     // Fork-aware generalized index: prefix 69 in Electra/Fulu has depth 19 (6 + 13)
     let depth = (63 - gindex.leading_zeros()) as usize;
     assert_eq!(
@@ -970,17 +1092,6 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         current_execution_state_root: [0u8; 32],
         current_receipts_root: [0u8; 32],
     };
-
-    let emitter = alloy_primitives::Address::repeat_byte(0xaa);
-    let from = alloy_primitives::Address::repeat_byte(0x11);
-    let to = alloy_primitives::Address::repeat_byte(0x22);
-    let amount = alloy_primitives::U256::from(100_000u64);
-    let receipt_bytes = mosoo_core::inclusion::test_helpers::build_test_eip1559_transfer_receipt(
-        emitter, from, to, amount,
-    );
-    let key_bytes = alloy_rlp::encode(0u64);
-    let (receipts_root, proof_nodes) =
-        mosoo_core::inclusion::test_helpers::build_leaf_mpt_proof(&key_bytes, &receipt_bytes);
 
     let historical_header = HeaderRecord {
         chain_id: ETH_MAINNET_CHAIN_ID,
@@ -1008,11 +1119,20 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
 
     let predicate = Predicate::AtLeast { min: [0; 32] };
 
-    // Valid historical branch: evaluates successfully against authenticated current_state_root
+    let hist_proof = HistoricalHeaderProof {
+        block_roots_branch: branch.clone(),
+        beacon_header: beacon_header.clone(),
+        execution_payload_header: payload_header.clone(),
+        execution_branch: execution_branch.clone(),
+        execution_rlp: None,
+    };
+
+    // 1. Valid historical execution proof: evaluates successfully against authenticated current_state_root
     let res = handle_attest_state(AttestStateArgs {
         instance: instance.clone(),
         header: historical_header.clone(),
         header_history_branch: Some(branch.clone()),
+        historical_execution_proof: Some(hist_proof.clone()),
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
     });
@@ -1021,13 +1141,34 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         "Valid historical header proof anchored at state accumulator must succeed"
     );
 
-    // Tampered historical beacon root MUST be rejected
+    // 2. verify_historical_header_provenance succeeds with authentic proof
+    assert!(
+        verify_historical_header_provenance(&instance, &historical_header, &hist_proof).is_ok(),
+        "verify_historical_header_provenance must succeed with genuine historical proof"
+    );
+
+    // 3. Historical state attestation without historical_execution_proof MUST FAIL
+    let missing_proof_res = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: historical_header.clone(),
+        header_history_branch: Some(branch.clone()),
+        historical_execution_proof: None,
+        proof: dummy_proof.clone(),
+        predicate: predicate.clone(),
+    });
+    assert!(
+        matches!(missing_proof_res, Err(MosooError::HistoricalExecutionRootUnauthenticated)),
+        "Historical slot without HistoricalHeaderProof must fail with HistoricalExecutionRootUnauthenticated"
+    );
+
+    // 4. Tampered historical beacon root MUST be rejected
     let mut tampered_header = historical_header.clone();
     tampered_header.beacon_block_root = [0xff; 32];
     let tampered_res = handle_attest_state(AttestStateArgs {
         instance: instance.clone(),
-        header: tampered_header,
+        header: tampered_header.clone(),
         header_history_branch: Some(branch.clone()),
+        historical_execution_proof: Some(hist_proof.clone()),
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
     });
@@ -1035,14 +1176,76 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         matches!(tampered_res, Err(MosooError::UnauthenticatedHeaderRecord)),
         "Tampered historical root must be rejected with UnauthenticatedHeaderRecord"
     );
+    assert!(verify_historical_header_provenance(&instance, &tampered_header, &hist_proof).is_err());
 
-    // Zero/uninitialized execution roots on historical header MUST be rejected
+    // 5. Genuine finalized beacon root but forged execution_state_root MUST be rejected!
+    let mut fake_state_header = historical_header.clone();
+    fake_state_header.execution_state_root = [0xFA; 32];
+    let fake_state_res = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: fake_state_header.clone(),
+        header_history_branch: Some(branch.clone()),
+        historical_execution_proof: Some(hist_proof.clone()),
+        proof: dummy_proof.clone(),
+        predicate: predicate.clone(),
+    });
+    assert!(
+        matches!(fake_state_res, Err(MosooError::UnauthenticatedHeaderRecord)),
+        "Genuine historical beacon root with forged execution_state_root MUST be rejected"
+    );
+    assert!(
+        verify_historical_header_provenance(&instance, &fake_state_header, &hist_proof).is_err()
+    );
+
+    // 6. Genuine finalized beacon root but forged receipts_root MUST be rejected!
+    let mut fake_receipts_header = historical_header.clone();
+    fake_receipts_header.receipts_root = [0xFB; 32];
+    let fake_receipts_res = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: fake_receipts_header.clone(),
+        header_history_branch: Some(branch.clone()),
+        historical_execution_proof: Some(hist_proof.clone()),
+        proof: dummy_proof.clone(),
+        predicate: predicate.clone(),
+    });
+    assert!(
+        matches!(
+            fake_receipts_res,
+            Err(MosooError::UnauthenticatedHeaderRecord)
+        ),
+        "Genuine historical beacon root with forged receipts_root MUST be rejected"
+    );
+    assert!(
+        verify_historical_header_provenance(&instance, &fake_receipts_header, &hist_proof).is_err()
+    );
+
+    // 7. Genuine finalized beacon root but forged execution_block_hash MUST be rejected!
+    let mut fake_hash_header = historical_header.clone();
+    fake_hash_header.execution_block_hash = [0xFC; 32];
+    let fake_hash_res = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: fake_hash_header.clone(),
+        header_history_branch: Some(branch.clone()),
+        historical_execution_proof: Some(hist_proof.clone()),
+        proof: dummy_proof.clone(),
+        predicate: predicate.clone(),
+    });
+    assert!(
+        matches!(fake_hash_res, Err(MosooError::UnauthenticatedHeaderRecord)),
+        "Genuine historical beacon root with forged execution_block_hash MUST be rejected"
+    );
+    assert!(
+        verify_historical_header_provenance(&instance, &fake_hash_header, &hist_proof).is_err()
+    );
+
+    // 8. Zero/uninitialized execution roots on historical header MUST be rejected
     let mut zero_exec_header = historical_header.clone();
     zero_exec_header.execution_state_root = [0u8; 32];
     let zero_res = handle_attest_state(AttestStateArgs {
         instance: instance.clone(),
         header: zero_exec_header.clone(),
         header_history_branch: Some(branch.clone()),
+        historical_execution_proof: Some(hist_proof.clone()),
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
     });
@@ -1050,14 +1253,17 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         matches!(zero_res, Err(MosooError::UnauthenticatedHeaderRecord)),
         "Historical header with zero execution_state_root must be rejected"
     );
-    assert!(verify_header_record_provenance(&instance, &zero_exec_header).is_err());
+    assert!(
+        verify_historical_header_provenance(&instance, &zero_exec_header, &hist_proof).is_err()
+    );
 
-    // Malformed branch depth (17 instead of expected depth 19 for Fulu) MUST be rejected with InvalidProofBranchDepth
+    // 9. Malformed branch depth (17 instead of expected depth 19 for Fulu) MUST be rejected with InvalidProofBranchDepth
     let malformed_branch = vec![[0x88; 32]; 17];
     let malformed_res = handle_attest_state(AttestStateArgs {
         instance,
         header: historical_header,
         header_history_branch: Some(malformed_branch),
+        historical_execution_proof: Some(hist_proof),
         proof: dummy_proof,
         predicate,
     });
@@ -1265,17 +1471,18 @@ fn test_security_audit_attack_14_silent_u64_truncation_overflow_rejected() {
     bad_val[20] = 0x01; // Non-zero high byte (val >= 2^88)
     bad_val[31] = 0x64; // Low byte 100
 
+    let user_addr = [0x11; 20];
+    let user_subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
+
     let stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0x33; 32],
         predicate_holds: true,
         verified_value: bad_val,
-        subject_key: [0x44; 32],
+        subject_key: user_subject_key,
         proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
-        binding: StatementBinding::Account {
-            address: [0x11; 20],
-        },
+        binding: StatementBinding::Account { address: user_addr },
     };
 
     // value_as_u64_checked MUST return error rather than truncating to 100
@@ -1372,13 +1579,20 @@ fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
         instance,
         header: stale_header,
         header_history_branch: Some(vec![[0x88; 32]; 19]),
+        historical_execution_proof: None,
         proof: dummy_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
     });
 
     assert!(
-        matches!(res, Err(MosooError::Internal(msg)) if msg.contains("8,192 slots")),
-        "Historical proof beyond 8,192 slots MUST be rejected by circular buffer guard"
+        matches!(
+            res,
+            Err(MosooError::HistoricalSummariesWindowExceeded {
+                target_slot: 5_000,
+                current_slot: 20_000,
+            })
+        ),
+        "Historical proof beyond 8,192 slots MUST be rejected with HistoricalSummariesWindowExceeded"
     );
 }
 
@@ -1850,6 +2064,7 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
         instance,
         header: valid_header,
         header_history_branch: None,
+        historical_execution_proof: None,
         proof,
         predicate: failing_predicate,
     });
@@ -2375,6 +2590,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         instance: instance.clone(),
         header: tampered_state_header.clone(),
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
     })
@@ -2397,6 +2613,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         instance: instance.clone(),
         header: tampered_receipts_header.clone(),
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
     })
@@ -2422,6 +2639,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         instance: instance.clone(),
         header: tampered_block_hash_header.clone(),
         header_history_branch: None,
+        historical_execution_proof: None,
         proof: dummy_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
     })

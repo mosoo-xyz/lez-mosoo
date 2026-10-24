@@ -151,6 +151,12 @@ pub enum MosooError {
     #[error("header record is unauthenticated or does not match active instance finalized state")]
     UnauthenticatedHeaderRecord,
 
+    #[error("historical execution roots unauthenticated: complete beacon body and execution payload branch proof required")]
+    HistoricalExecutionRootUnauthenticated,
+
+    #[error("historical block is older than 8,192 slots ({target_slot} vs {current_slot}); outside active block_roots ring buffer")]
+    HistoricalSummariesWindowExceeded { target_slot: u64, current_slot: u64 },
+
     #[error("header slot {header_slot} exceeds latest finalized consensus slot {current_slot}")]
     UnfinalizedHeader { header_slot: u64, current_slot: u64 },
 

@@ -30,6 +30,8 @@ pub struct AttestStateArgs {
     pub instance: InstanceAccount,
     pub header: HeaderRecord,
     pub header_history_branch: Option<Vec<[u8; 32]>>,
+    #[serde(default)]
+    pub historical_execution_proof: Option<HistoricalHeaderProof>,
     pub proof: inclusion::StateProof,
     pub predicate: Predicate,
 }
@@ -528,28 +530,69 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         // Guard: block_roots is a cyclic ring buffer of 8,192 slots. Proving blocks older than
         // 8,192 slots requires historical_summaries / historical_roots.
         const SLOTS_PER_HISTORICAL_ROOT: u64 = 8192;
-        if args.instance.current_slot.saturating_sub(args.header.slot) > SLOTS_PER_HISTORICAL_ROOT {
-            return Err(MosooError::Internal(
-                "historical block is older than 8,192 slots; outside BeaconState.block_roots ring buffer".into(),
-            ));
+        let delta = args.instance.current_slot.saturating_sub(args.header.slot);
+        if delta == 0 || delta > SLOTS_PER_HISTORICAL_ROOT {
+            return Err(MosooError::HistoricalSummariesWindowExceeded {
+                target_slot: args.header.slot,
+                current_slot: args.instance.current_slot,
+            });
         }
 
-        let branch = args
-            .header_history_branch
+        // Fail-closed cryptographic provenance: Historical execution roots MUST be independently
+        // authenticated against the historical beacon block body. A caller CANNOT supply arbitrary
+        // execution roots with a genuine beacon block root!
+        let hist_proof = args
+            .historical_execution_proof
             .as_ref()
-            .ok_or(MosooError::UnauthenticatedHeaderRecord)?;
+            .ok_or(MosooError::HistoricalExecutionRootUnauthenticated)?;
+
+        // 1. Verify beacon block header matches the claimed beacon_block_root
+        if hist_proof.beacon_header.slot != args.header.slot {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        let computed_beacon_root = crypto::hash_tree_root_beacon_header(&hist_proof.beacon_header);
+        if computed_beacon_root != args.header.beacon_block_root {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+
+        // 2. Verify beacon block root is anchored in instance.current_state_root (block_roots ring buffer)
         let gindex = crypto::historical_block_roots_gindex(
             args.instance.chain_id,
             args.instance.current_slot,
             args.header.slot,
         );
+        let branch = args
+            .header_history_branch
+            .as_ref()
+            .unwrap_or(&hist_proof.block_roots_branch);
         let computed_state_root =
             crypto::compute_branch_root_checked(args.header.beacon_block_root, branch, gindex)?;
         if computed_state_root != args.instance.current_state_root {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if args.header.beacon_block_root == [0u8; 32]
+
+        // 3. Verify execution payload header is anchored in beacon_header.body_root
+        verify_execution_payload_branch(
+            args.instance.chain_id,
+            &hist_proof.execution_payload_header,
+            &hist_proof.beacon_header,
+            &hist_proof.execution_branch,
+        )?;
+
+        // 4. Derive authentic execution roots from verified payload header
+        let (auth_exec_hash, auth_state_root, auth_receipts_root) = verify_execution_roots_binding(
+            args.instance.chain_id,
+            args.header.slot,
+            &hist_proof.execution_payload_header,
+            hist_proof.execution_rlp.as_deref(),
+        )?;
+
+        // 5. Strict equality check: the caller's HeaderRecord execution roots MUST match the authenticated roots!
+        if args.header.execution_state_root != auth_state_root
+            || args.header.receipts_root != auth_receipts_root
+            || args.header.execution_block_hash != auth_exec_hash
             || args.header.execution_state_root == [0u8; 32]
+            || args.header.receipts_root == [0u8; 32]
             || args.header.execution_block_hash == [0u8; 32]
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
@@ -844,13 +887,81 @@ pub fn verify_header_record_provenance(
         }
     } else {
         // Enforce fail-closed invariant for historical slots (header.slot < instance.current_slot):
-        // Neither the beacon block root nor execution roots may be trivial / uninitialized zero bytes.
-        if header.beacon_block_root == [0u8; 32]
-            || header.execution_state_root == [0u8; 32]
-            || header.execution_block_hash == [0u8; 32]
-        {
-            return Err(MosooError::UnauthenticatedHeaderRecord);
-        }
+        // Standalone InstanceAccount does not hold historical execution roots. Complete
+        // cryptographic provenance requires HistoricalHeaderProof via verify_historical_header_provenance.
+        return Err(MosooError::HistoricalExecutionRootUnauthenticated);
     }
+    Ok(())
+}
+
+/// Verify cryptographic provenance and execution root authenticity of a historical `HeaderRecord`.
+pub fn verify_historical_header_provenance(
+    instance: &InstanceAccount,
+    header: &HeaderRecord,
+    proof: &HistoricalHeaderProof,
+) -> Result<(), MosooError> {
+    if header.chain_id != instance.chain_id {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+    if header.slot >= instance.current_slot {
+        return Err(MosooError::Internal(
+            "verify_historical_header_provenance expects historical slot strictly prior to current head".into(),
+        ));
+    }
+    const SLOTS_PER_HISTORICAL_ROOT: u64 = 8192;
+    let delta = instance.current_slot.saturating_sub(header.slot);
+    if delta == 0 || delta > SLOTS_PER_HISTORICAL_ROOT {
+        return Err(MosooError::HistoricalSummariesWindowExceeded {
+            target_slot: header.slot,
+            current_slot: instance.current_slot,
+        });
+    }
+
+    if proof.beacon_header.slot != header.slot {
+        return Err(MosooError::UnauthenticatedHeaderRecord);
+    }
+    let computed_beacon_root = crypto::hash_tree_root_beacon_header(&proof.beacon_header);
+    if computed_beacon_root != header.beacon_block_root {
+        return Err(MosooError::UnauthenticatedHeaderRecord);
+    }
+
+    let gindex = crypto::historical_block_roots_gindex(
+        instance.chain_id,
+        instance.current_slot,
+        header.slot,
+    );
+    let computed_state_root = crypto::compute_branch_root_checked(
+        header.beacon_block_root,
+        &proof.block_roots_branch,
+        gindex,
+    )?;
+    if computed_state_root != instance.current_state_root {
+        return Err(MosooError::UnauthenticatedHeaderRecord);
+    }
+
+    verify_execution_payload_branch(
+        instance.chain_id,
+        &proof.execution_payload_header,
+        &proof.beacon_header,
+        &proof.execution_branch,
+    )?;
+
+    let (auth_exec_hash, auth_state_root, auth_receipts_root) = verify_execution_roots_binding(
+        instance.chain_id,
+        header.slot,
+        &proof.execution_payload_header,
+        proof.execution_rlp.as_deref(),
+    )?;
+
+    if header.execution_state_root != auth_state_root
+        || header.receipts_root != auth_receipts_root
+        || header.execution_block_hash != auth_exec_hash
+        || header.execution_state_root == [0u8; 32]
+        || header.receipts_root == [0u8; 32]
+        || header.execution_block_hash == [0u8; 32]
+    {
+        return Err(MosooError::UnauthenticatedHeaderRecord);
+    }
+
     Ok(())
 }

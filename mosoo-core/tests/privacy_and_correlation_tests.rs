@@ -2,8 +2,15 @@ use alloy_primitives::{Address, B256, U256};
 use erc20_receiver::{claim, NullifierSet};
 use ether_receiver::{claim_ether, EtherNullifierSet};
 use mosoo_core::inclusion::VerifiedValue;
-use mosoo_core::predicate::{derive_receipt_log_subject_key, derive_statement_id, evaluate};
-use mosoo_core::types::{Predicate, VerifiedStatement, ETH_MAINNET_CHAIN_ID};
+use mosoo_core::predicate::{
+    derive_erc20_transfer_subject_key, derive_receipt_log_subject_key, derive_statement_id,
+    evaluate_with_binding,
+};
+use mosoo_core::types::{
+    Predicate, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID,
+    PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ERC20_TRANSFER,
+};
+use sha2::Digest;
 
 /// Test 1: Zero Ethereum Identity or Private Balance Leakage in Consumer State Diff.
 ///
@@ -15,18 +22,21 @@ use mosoo_core::types::{Predicate, VerifiedStatement, ETH_MAINNET_CHAIN_ID};
 fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
     let eth_sender = Address::repeat_byte(0xab);
     let eth_vault = Address::repeat_byte(0xcd);
-    let topic_transfer = B256::repeat_byte(0xef);
     let exec_block_hash = [0x11; 32];
     let slot = 15_433_760u64;
+    let token_contract: [u8; 20] = eth_vault.0 .0;
+    let sender: [u8; 20] = eth_sender.0 .0;
+    let recipient = [0x99; 32];
 
     // Derive privacy-preserving subject key
-    let subject_key = derive_receipt_log_subject_key(
+    let subject_key = derive_erc20_transfer_subject_key(
         &exec_block_hash,
         slot,
         4, // tx_index
         2, // log_index
-        &eth_vault,
-        &topic_transfer,
+        &token_contract,
+        &sender,
+        &recipient,
     );
 
     let mut actual_deposit = [0u8; 32];
@@ -37,12 +47,23 @@ fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
     min_deposit[24..32].copy_from_slice(&500u64.to_be_bytes());
     let predicate = Predicate::AtLeast { min: min_deposit };
 
-    let statement = evaluate(
+    let binding = StatementBinding::Erc20Transfer {
+        execution_block_hash: exec_block_hash,
+        slot,
+        tx_index: 4,
+        log_index: 2,
+        token_contract,
+        sender,
+        recipient,
+    };
+
+    let statement = evaluate_with_binding(
         &predicate,
         &verified_val,
         ETH_MAINNET_CHAIN_ID,
         subject_key,
-        2, // ProofType::ReceiptLog
+        PROOF_TYPE_ERC20_TRANSFER,
+        binding,
     )
     .expect("evaluation succeeds");
 
@@ -79,7 +100,9 @@ fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
 /// The consumer only learns that `predicate_holds == true`.
 #[test]
 fn test_privacy_predicate_value_shielding_in_consumer_records() {
-    let subject_key = [0x55; 32];
+    let user_addr = [0x55; 20];
+    let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
+    let binding = StatementBinding::Account { address: user_addr };
 
     let mut min_thresh = [0u8; 32];
     min_thresh[31] = 100;
@@ -87,23 +110,39 @@ fn test_privacy_predicate_value_shielding_in_consumer_records() {
 
     // Scenario A: User deposited exactly 100
     let v_a = VerifiedValue::EthBalance(U256::from(100u64));
-    let stmt_a = evaluate(&predicate, &v_a, ETH_MAINNET_CHAIN_ID, subject_key, 1).unwrap();
+    let stmt_a = evaluate_with_binding(
+        &predicate,
+        &v_a,
+        ETH_MAINNET_CHAIN_ID,
+        subject_key,
+        PROOF_TYPE_ACCOUNT_BALANCE,
+        binding.clone(),
+    )
+    .unwrap();
 
     // Scenario B: Whale deposited 100,000,000
     let v_b = VerifiedValue::EthBalance(U256::from(100_000_000u64));
-    let stmt_b = evaluate(&predicate, &v_b, ETH_MAINNET_CHAIN_ID, subject_key, 1).unwrap();
+    let stmt_b = evaluate_with_binding(
+        &predicate,
+        &v_b,
+        ETH_MAINNET_CHAIN_ID,
+        subject_key,
+        PROOF_TYPE_ACCOUNT_BALANCE,
+        binding,
+    )
+    .unwrap();
 
     // Both hold true
     assert!(stmt_a.predicate_holds);
     assert!(stmt_b.predicate_holds);
 
     // Both claim identical fixed-tier reward
-    let mut nullifiers = NullifierSet::new();
-    let reward_a = claim(&stmt_a, &mut nullifiers, 100).unwrap();
+    let mut nullifiers = EtherNullifierSet::new();
+    let reward_a = claim_ether(&stmt_a, &mut nullifiers, 100).unwrap();
     assert_eq!(reward_a, 100);
 
-    let mut nullifiers_b = NullifierSet::new();
-    let reward_b = claim(&stmt_b, &mut nullifiers_b, 100).unwrap();
+    let mut nullifiers_b = EtherNullifierSet::new();
+    let reward_b = claim_ether(&stmt_b, &mut nullifiers_b, 100).unwrap();
     assert_eq!(reward_b, 100_000_000);
 
     // The consumer's credited amount is strictly verified from on-chain state, leaking zero sender/account identity
@@ -159,15 +198,18 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     let mut val = [0u8; 32];
     val[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
 
+    let user_addr = [0x77; 20];
+    let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
+
     let stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: mosoo_core::types::MOSOO_PROGRAM_ID,
         statement_id: [0x77; 32],
         predicate_holds: true,
         verified_value: val,
-        subject_key: [0u8; 32],
-        proof_type_tag: 0,
-        binding: Default::default(),
+        subject_key,
+        proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+        binding: StatementBinding::Account { address: user_addr },
     };
 
     let claimed_wei = claim_ether(&stmt, &mut ether_nullifiers, 1_000_000).unwrap();
@@ -193,8 +235,6 @@ fn test_privacy_adversary_cannot_correlate_statements() {
 /// 4. Merkle-Patricia proof node preimage bytes
 #[test]
 fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
-    use sha2::Digest;
-
     let eth_sender_bytes = [
         0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe,
         0xef, 0xde, 0xad, 0xbe, 0xef,
@@ -215,18 +255,37 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
     min_val_bytes[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
     let predicate = Predicate::AtLeast { min: min_val_bytes };
 
-    // Deterministic subject key derived from contract + slot
-    let mut hasher = sha2::Sha256::new();
-    hasher.update(eth_contract_bytes);
-    hasher.update([0x42u8; 32]);
-    let subject_key: [u8; 32] = hasher.finalize().into();
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let exec_block_hash = [0x55; 32];
+    let slot = 12_000_000u64;
+    let subject_key = derive_erc20_transfer_subject_key(
+        &exec_block_hash,
+        slot,
+        0,
+        0,
+        &eth_contract_bytes,
+        &sender,
+        &recipient,
+    );
 
-    let statement = evaluate(
+    let binding = StatementBinding::Erc20Transfer {
+        execution_block_hash: exec_block_hash,
+        slot,
+        tx_index: 0,
+        log_index: 0,
+        token_contract: eth_contract_bytes,
+        sender,
+        recipient,
+    };
+
+    let statement = evaluate_with_binding(
         &predicate,
         &verified_val,
         ETH_MAINNET_CHAIN_ID,
         subject_key,
-        1, // StorageSlot
+        PROOF_TYPE_ERC20_TRANSFER,
+        binding,
     )
     .expect("statement evaluates");
 

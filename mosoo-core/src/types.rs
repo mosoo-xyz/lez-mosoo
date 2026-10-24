@@ -246,6 +246,22 @@ pub struct HeaderRecord {
     pub receipts_root: [u8; 32],
 }
 
+/// Complete cryptographic proof binding a historical header's beacon block root
+/// and its execution roots to the light client's authenticated `current_state_root`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HistoricalHeaderProof {
+    /// Proof branch anchoring historical beacon block root into instance.current_state_root (block_roots ring buffer)
+    pub block_roots_branch: Vec<[u8; 32]>,
+    /// The full historical beacon block header
+    pub beacon_header: BeaconBlockHeader,
+    /// Execution payload header for the historical block
+    pub execution_payload_header: ExecutionPayloadHeader,
+    /// SSZ branch binding execution payload header into beacon_header.body_root
+    pub execution_branch: Vec<[u8; 32]>,
+    /// Optional execution block RLP header (required for Gloas ePBS)
+    pub execution_rlp: Option<Vec<u8>>,
+}
+
 /// Arguments to bootstrap / initialize a Mosoo instance account.
 ///
 /// Cryptographically binds the initial 512-validator sync committee

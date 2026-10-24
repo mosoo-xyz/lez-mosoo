@@ -12,7 +12,10 @@ use erc20_receiver::{claim, NullifierSet};
 use ether_receiver::{claim_ether, EtherNullifierSet};
 use mosoo_core::{
     crypto::*,
-    predicate::{derive_receipt_log_subject_key, evaluate},
+    predicate::{
+        derive_erc20_transfer_subject_key, derive_receipt_log_subject_key, evaluate,
+        evaluate_with_binding,
+    },
     types::*,
 };
 use sha2::{Digest, Sha256};
@@ -251,26 +254,38 @@ fn test_sequencer_full_lifecycle_e2e() {
 
     // Build real event log subject key with block context
     let emitter = [0xcc; 20];
-    let topic0 = [0xdd; 32];
-    let subject_key = derive_receipt_log_subject_key(
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let subject_key = derive_erc20_transfer_subject_key(
         &header_record.execution_block_hash,
         header_record.slot,
         42, // tx_index
         1,  // log_index
         &emitter,
-        &topic0,
+        &sender,
+        &recipient,
     );
 
     let pred = Predicate::AtLeast { min: [0; 32] };
     let mut val_bytes = [0u8; 32];
     val_bytes[24..32].copy_from_slice(&10_000u64.to_be_bytes());
     let verified_val = mosoo_core::inclusion::VerifiedValue::StorageValue(val_bytes);
-    let statement = evaluate(
+    let binding = StatementBinding::Erc20Transfer {
+        execution_block_hash: header_record.execution_block_hash,
+        slot: header_record.slot,
+        tx_index: 42,
+        log_index: 1,
+        token_contract: emitter,
+        sender,
+        recipient,
+    };
+    let statement = evaluate_with_binding(
         &pred,
         &verified_val,
         ETH_MAINNET_CHAIN_ID,
         subject_key,
-        2, // ProofTypeTag = 2 (ReceiptLog)
+        PROOF_TYPE_ERC20_TRANSFER,
+        binding,
     )
     .unwrap();
     assert!(statement.predicate_holds);
@@ -300,15 +315,17 @@ fn test_sequencer_full_lifecycle_e2e() {
     let mut ether_nullifiers = EtherNullifierSet::new();
     let mut ether_val = [0u8; 32];
     ether_val[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
+    let user_addr = [0x42; 20];
+    let eth_subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
     let ether_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0x55; 32],
         predicate_holds: true,
         verified_value: ether_val,
-        subject_key: [0u8; 32],
-        proof_type_tag: 0,
-        binding: Default::default(),
+        subject_key: eth_subject_key,
+        proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+        binding: StatementBinding::Account { address: user_addr },
     };
     let ether_res = claim_ether(&ether_statement, &mut ether_nullifiers, 1_000_000);
     assert!(ether_res.is_ok(), "Native Ether claim succeeds");

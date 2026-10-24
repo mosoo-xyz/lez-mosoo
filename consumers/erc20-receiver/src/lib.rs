@@ -20,7 +20,7 @@
 //! statement cannot be claimed twice.
 
 use alloy_primitives::{keccak256, U256};
-use mosoo_core::predicate::derive_erc20_transfer_subject_key;
+pub use mosoo_core::predicate::derive_erc20_transfer_subject_key;
 use mosoo_core::types::{
     StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
     PROOF_TYPE_ERC20_TRANSFER,
@@ -116,22 +116,41 @@ impl NullifierSet {
 /// # Examples
 ///
 /// ```
-/// use erc20_receiver::{claim, NullifierSet};
-/// use mosoo_core::types::{VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID};
+/// use erc20_receiver::{claim, NullifierSet, derive_erc20_transfer_subject_key};
+/// use mosoo_core::types::{VerifiedStatement, StatementBinding, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_TRANSFER};
 ///
 /// let mut nullifiers = NullifierSet::new();
 /// let mut verified_value = [0u8; 32];
 /// verified_value[24..32].copy_from_slice(&100u64.to_be_bytes());
 ///
+/// let token_contract = [0xaa; 20];
+/// let sender = [0x11; 20];
+/// let recipient = [0x22; 32];
+/// let block_hash = [0x33; 32];
+/// let slot = 10_000_000u64;
+/// let tx_index = 0u64;
+/// let log_index = 0usize;
+///
+/// let subject_key = derive_erc20_transfer_subject_key(
+///     &block_hash, slot, tx_index, log_index, &token_contract, &sender, &recipient,
+/// );
 /// let statement = VerifiedStatement {
 ///     chain_id: ETH_MAINNET_CHAIN_ID,
 ///     attester_program_id: MOSOO_PROGRAM_ID,
 ///     statement_id: [0x42; 32],
 ///     predicate_holds: true,
 ///     verified_value,
-///     subject_key: [0u8; 32],
-///     proof_type_tag: 0,
-///     binding: Default::default(),
+///     subject_key,
+///     proof_type_tag: PROOF_TYPE_ERC20_TRANSFER,
+///     binding: StatementBinding::Erc20Transfer {
+///         execution_block_hash: block_hash,
+///         slot,
+///         tx_index,
+///         log_index,
+///         token_contract,
+///         sender,
+///         recipient,
+///     },
 /// };
 ///
 /// let minted = claim(&statement, &mut nullifiers, 100).expect("first claim succeeds");
@@ -155,6 +174,61 @@ pub fn claim(
         return Err(ReceiverError::PredicateFailed);
     }
 
+    // Strict statement proof type verification: MUST be authentic ERC-20 transfer
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+        return Err(ReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    // Strict statement binding validation: token, recipient, sender
+    let (block_hash, slot, tx_index, log_index, token_contract, sender, recipient) =
+        match &statement.binding {
+            StatementBinding::Erc20Transfer {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                token_contract,
+                sender,
+                recipient,
+            } => {
+                if *token_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                    return Err(ReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                (
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index,
+                    *token_contract,
+                    *sender,
+                    *recipient,
+                )
+            }
+            _ => {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    // Canonical subject key cryptographic verification
+    let expected_subject_key = derive_erc20_transfer_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
     // Derive credited amount strictly from the verified statement value (with overflow check)
     let verified_amount = statement
         .value_as_u64_checked()
@@ -166,15 +240,11 @@ pub fn claim(
         });
     }
 
-    if nullifiers.is_used(&statement.statement_id)
-        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
-    {
+    if nullifiers.is_used(&statement.statement_id) || nullifiers.is_used(&statement.subject_key) {
         return Err(ReceiverError::AlreadyClaimed);
     }
     nullifiers.mark_used(statement.statement_id);
-    if statement.subject_key != [0u8; 32] {
-        nullifiers.mark_used(statement.subject_key);
-    }
+    nullifiers.mark_used(statement.subject_key);
 
     // Tokens credited 1:1 on LEZ matching the verified on-chain Ethereum value
     let minted_amount = verified_amount;
@@ -315,6 +385,8 @@ pub struct AtomicErc20ClaimArgs {
     pub header: mosoo_core::types::HeaderRecord,
     /// Optional historical branch if proving against past block in weak-subjectivity window
     pub header_history_branch: Option<Vec<[u8; 32]>>,
+    /// Complete cryptographic proof binding historical execution roots to beacon state
+    pub historical_execution_proof: Option<mosoo_core::types::HistoricalHeaderProof>,
     /// State inclusion proof (receipt log proof or storage proof)
     pub proof: mosoo_core::inclusion::StateProof,
     /// Predicate evaluated against verified state
@@ -346,6 +418,7 @@ pub fn claim_atomic(
         instance: args.instance,
         header: args.header,
         header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
     };
@@ -710,18 +783,9 @@ mod tests {
         amount: u64,
         attester: [u8; 32],
     ) -> VerifiedStatement {
-        let mut verified_value = [0u8; 32];
-        verified_value[24..32].copy_from_slice(&amount.to_be_bytes());
-        VerifiedStatement {
-            chain_id,
-            attester_program_id: attester,
-            statement_id: [id_seed; 32],
-            predicate_holds: holds,
-            verified_value,
-            subject_key: [0u8; 32],
-            proof_type_tag: 0,
-            binding: StatementBinding::Account { address: [0u8; 20] },
-        }
+        make_erc20_statement(
+            chain_id, holds, id_seed, amount, attester, [0xaa; 20], [0x11; 20], [0x22; 32],
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -946,7 +1010,12 @@ mod tests {
     fn test_erc20_transfer_wrong_statement_type_rejected() {
         let mut nullifiers = NullifierSet::new();
         // Raw account balance statement instead of Erc20Transfer
-        let statement = make_statement(ETH_MAINNET_CHAIN_ID, true, 0x0b, 500_000, MOSOO_PROGRAM_ID);
+        let mut statement =
+            make_statement(ETH_MAINNET_CHAIN_ID, true, 0x0b, 500_000, MOSOO_PROGRAM_ID);
+        statement.proof_type_tag = 0;
+        statement.binding = StatementBinding::Account {
+            address: [0x11; 20],
+        };
         let claim = Erc20TransferClaim {
             statement,
             token_contract: [0x11; 20],
@@ -1160,6 +1229,7 @@ mod tests {
             instance: instance.clone(),
             header: header.clone(),
             header_history_branch: None,
+            historical_execution_proof: None,
             proof: proof.clone(),
             predicate: Predicate::AtLeast {
                 min: min_32(1_000_000),
@@ -1247,6 +1317,7 @@ mod tests {
             instance,
             header: forged_header,
             header_history_branch: None,
+            historical_execution_proof: None,
             proof,
             predicate: Predicate::AtLeast {
                 min: min_32(1_000_000),
@@ -1328,6 +1399,7 @@ mod tests {
             instance,
             header,
             header_history_branch: None,
+            historical_execution_proof: None,
             proof,
             predicate: Predicate::AtLeast {
                 min: min_32(1_000_000),

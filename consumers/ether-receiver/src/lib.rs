@@ -1,8 +1,8 @@
 use alloy_primitives::{keccak256, U256};
-use mosoo_core::predicate::derive_eth_deposit_subject_key;
+pub use mosoo_core::predicate::derive_eth_deposit_subject_key;
 use mosoo_core::types::{
     StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ETH_DEPOSIT,
+    PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -95,11 +95,15 @@ impl EtherNullifierSet {
 ///
 /// ```
 /// use ether_receiver::{claim_ether, EtherNullifierSet};
-/// use mosoo_core::types::{VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID};
+/// use mosoo_core::types::{VerifiedStatement, StatementBinding, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE};
+/// use sha2::Digest;
 ///
 /// let mut nullifiers = EtherNullifierSet::new();
 /// let mut verified_value = [0u8; 32];
 /// verified_value[24..32].copy_from_slice(&1_000_000_000_000_000_000u64.to_be_bytes());
+///
+/// let user_addr = [0x42; 20];
+/// let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
 ///
 /// let statement = VerifiedStatement {
 ///     chain_id: ETH_MAINNET_CHAIN_ID,
@@ -107,9 +111,9 @@ impl EtherNullifierSet {
 ///     statement_id: [0x55; 32],
 ///     predicate_holds: true,
 ///     verified_value,
-///     subject_key: [0u8; 32],
-///     proof_type_tag: 0,
-///     binding: Default::default(),
+///     subject_key,
+///     proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+///     binding: StatementBinding::Account { address: user_addr },
 /// };
 ///
 /// let wei = claim_ether(&statement, &mut nullifiers, 1_000_000_000_000_000_000)
@@ -134,6 +138,89 @@ pub fn claim_ether(
         return Err(EtherReceiverError::PredicateFailed);
     }
 
+    // Strict statement proof type and binding validation
+    let (block_hash, slot, tx_index, log_index, deposit_contract, sender, recipient) =
+        match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                if *deposit_contract == [0u8; 20] || *recipient == [0u8; 32] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                (
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index,
+                    *deposit_contract,
+                    *sender,
+                    *recipient,
+                )
+            }
+            StatementBinding::Account { address } => {
+                if statement.proof_type_tag != PROOF_TYPE_ACCOUNT_BALANCE || *address == [0u8; 20] {
+                    return Err(EtherReceiverError::InvalidStatementType(
+                        statement.proof_type_tag,
+                    ));
+                }
+                use sha2::Digest;
+                let expected_key: [u8; 32] = sha2::Sha256::digest(address.as_slice()).into();
+                if statement.subject_key != expected_key || statement.subject_key == [0u8; 32] {
+                    return Err(EtherReceiverError::SubjectKeyMismatch);
+                }
+                // Valid account balance claim
+                let verified_wei = statement.value_as_u64_checked().map_err(|e| {
+                    EtherReceiverError::AttestationFailed(format!("value overflow: {e}"))
+                })?;
+                if verified_wei < min_wei {
+                    return Err(EtherReceiverError::BalanceTooLow {
+                        actual: verified_wei,
+                        required: min_wei,
+                    });
+                }
+                if nullifiers.is_used(&statement.statement_id)
+                    || nullifiers.is_used(&statement.subject_key)
+                {
+                    return Err(EtherReceiverError::AlreadyClaimed);
+                }
+                nullifiers.mark_used(statement.statement_id);
+                nullifiers.mark_used(statement.subject_key);
+                return Ok(verified_wei);
+            }
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    if statement.proof_type_tag != PROOF_TYPE_ETH_DEPOSIT {
+        return Err(EtherReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let expected_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+    if statement.subject_key != expected_subject_key || statement.subject_key == [0u8; 32] {
+        return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
     // Derive credited amount strictly from verified statement value (with overflow check)
     let verified_wei = statement
         .value_as_u64_checked()
@@ -145,15 +232,11 @@ pub fn claim_ether(
         });
     }
 
-    if nullifiers.is_used(&statement.statement_id)
-        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
-    {
+    if nullifiers.is_used(&statement.statement_id) || nullifiers.is_used(&statement.subject_key) {
         return Err(EtherReceiverError::AlreadyClaimed);
     }
     nullifiers.mark_used(statement.statement_id);
-    if statement.subject_key != [0u8; 32] {
-        nullifiers.mark_used(statement.subject_key);
-    }
+    nullifiers.mark_used(statement.subject_key);
 
     Ok(verified_wei)
 }
@@ -293,6 +376,8 @@ pub struct AtomicEtherClaimArgs {
     pub header: mosoo_core::types::HeaderRecord,
     /// Optional historical branch if proving against past block in weak-subjectivity window
     pub header_history_branch: Option<Vec<[u8; 32]>>,
+    /// Complete cryptographic proof binding historical execution roots to beacon state
+    pub historical_execution_proof: Option<mosoo_core::types::HistoricalHeaderProof>,
     /// State inclusion proof (MPT proof for account balance or deposit contract)
     pub proof: mosoo_core::inclusion::StateProof,
     /// Predicate evaluated against verified state
@@ -322,6 +407,7 @@ pub fn claim_ether_atomic(
         instance: args.instance,
         header: args.header,
         header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
     };
@@ -669,6 +755,9 @@ mod tests {
         wei: u64,
         attester: [u8; 32],
     ) -> VerifiedStatement {
+        let user_addr = [0x42; 20];
+        use sha2::Digest;
+        let subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
         let mut verified_value = [0u8; 32];
         verified_value[24..32].copy_from_slice(&wei.to_be_bytes());
         VerifiedStatement {
@@ -677,9 +766,9 @@ mod tests {
             statement_id: [id_seed; 32],
             predicate_holds: holds,
             verified_value,
-            subject_key: [0u8; 32],
-            proof_type_tag: 0,
-            binding: StatementBinding::Account { address: [0u8; 20] },
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ACCOUNT_BALANCE,
+            binding: StatementBinding::Account { address: user_addr },
         }
     }
 
@@ -1117,6 +1206,7 @@ mod tests {
             instance,
             header,
             header_history_branch: None,
+            historical_execution_proof: None,
             proof,
             predicate: Predicate::AtLeast {
                 min: min_32(1_000_000_000_000_000_000),
@@ -1193,6 +1283,7 @@ mod tests {
             instance,
             header: forged_header,
             header_history_branch: None,
+            historical_execution_proof: None,
             proof,
             predicate: Predicate::AtLeast {
                 min: min_32(1_000_000_000_000_000_000),
@@ -1263,6 +1354,7 @@ mod tests {
             instance,
             header,
             header_history_branch: None,
+            historical_execution_proof: None,
             proof,
             predicate: Predicate::AtLeast {
                 min: min_32(1_000_000_000_000_000_000),

@@ -55,6 +55,7 @@ let args = AtomicErc20ClaimArgs {
     instance: light_client_instance,
     header: authenticated_header_record,
     header_history_branch: None, // Or historical block roots branch
+    historical_execution_proof: None, // Or historical execution header + payload proof
     proof: state_inclusion_proof, // MPT proof for receipt log or storage slot
     predicate: Predicate::AtLeast { min: min_amount_32 },
     expected_token_contract: [0xaa; 20], // ERC-20 token contract on Ethereum
@@ -108,6 +109,7 @@ let args = AtomicEtherClaimArgs {
     instance: light_client_instance,
     header: authenticated_header_record,
     header_history_branch: None,
+    historical_execution_proof: None,
     proof: account_balance_proof, // MPT proof from eth_getProof
     predicate: Predicate::AtLeast { min: min_wei_32 },
     expected_address: [0x42; 20], // Ethereum account / vault

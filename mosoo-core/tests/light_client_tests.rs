@@ -536,8 +536,40 @@ fn test_full_receipt_log_attestation_to_erc20_claim() {
     let pred = Predicate::AtLeast { min: min_bytes };
 
     let verified_val = mosoo_core::inclusion::VerifiedValue::LogData(verified_log.data);
-    let statement = predicate::evaluate(&pred, &verified_val, header.chain_id, [0xaa; 32], 2)
-        .expect("Predicate must hold");
+    let token_contract: [u8; 20] = token_emitter.0 .0;
+    let sender: [u8; 20] = depositor.0 .0;
+    let mut recipient = [0u8; 32];
+    recipient[12..32].copy_from_slice(&recipient_on_lez.0 .0);
+
+    let subject_key = mosoo_core::predicate::derive_erc20_transfer_subject_key(
+        &header.execution_block_hash,
+        header.slot,
+        tx_index,
+        0,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+
+    let binding = StatementBinding::Erc20Transfer {
+        execution_block_hash: header.execution_block_hash,
+        slot: header.slot,
+        tx_index,
+        log_index: 0,
+        token_contract,
+        sender,
+        recipient,
+    };
+
+    let statement = predicate::evaluate_with_binding(
+        &pred,
+        &verified_val,
+        header.chain_id,
+        subject_key,
+        PROOF_TYPE_ERC20_TRANSFER,
+        binding,
+    )
+    .expect("Predicate must hold");
 
     // 3. Consumer mint on LEZ
     let mut nullifiers = NullifierSet::new();
@@ -1122,6 +1154,7 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
         instance,
         header: header.clone(),
         header_history_branch: None,
+        historical_execution_proof: None,
         proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
     })
