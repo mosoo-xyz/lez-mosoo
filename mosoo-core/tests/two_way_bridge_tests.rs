@@ -57,7 +57,7 @@ impl MockEthereumLocker {
             attester_authority: [0xaa; 20],
             pending_attester_authority: None,
             authority_timelock_unlock: 0,
-            token_allowlist_enabled: false,
+            token_allowlist_enabled: true,
             allowed_tokens: HashMap::new(),
         }
     }
@@ -445,6 +445,7 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
 
     // 1. User deposits 1,000 USDC into Ethereum MosooLocker
     let deposit_amount: u128 = 1_000_000_000; // 1,000 USDC (6 decimals)
+    eth_locker.set_token_allowed(usdc_token, true);
     let nonce = eth_locker
         .deposit_erc20(usdc_token, deposit_amount)
         .unwrap();
@@ -630,20 +631,24 @@ fn test_token_allowlist_enforcement() {
     let unapproved_token = [0x66; 20];
     let amount = 1_000_000_000u128;
 
-    // By default, allowlist is disabled: any token can be deposited
-    assert!(locker.deposit_erc20(unapproved_token, amount).is_ok());
+    // By default, allowlist is enabled: unapproved token is strictly rejected
+    let default_err = locker.deposit_erc20(unapproved_token, amount);
+    assert_eq!(default_err.unwrap_err(), "TokenNotAllowed");
 
-    // Enable token allowlist
-    locker.set_token_allowlist_enabled(true);
+    // Allowlist approved token
     locker.set_token_allowed(allowed_token, true);
 
-    // Unapproved token must be strictly rejected
+    // Unapproved token must still be strictly rejected
     let err = locker.deposit_erc20(unapproved_token, amount);
     assert_eq!(err.unwrap_err(), "TokenNotAllowed");
 
     // Approved token succeeds
     let ok = locker.deposit_erc20(allowed_token, amount);
     assert!(ok.is_ok());
+
+    // When allowlist is explicitly toggled off by admin, unapproved token is accepted
+    locker.set_token_allowlist_enabled(false);
+    assert!(locker.deposit_erc20(unapproved_token, amount).is_ok());
 }
 
 #[test]

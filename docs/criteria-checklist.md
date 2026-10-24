@@ -39,7 +39,7 @@ This document provides a technical mapping between the requirements in the [Logo
 
 ## 3. Adversarial Security & Edge Cases Remediated
 
-All 37 adversarial attack scenarios across 18 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
+All 38 adversarial attack scenarios across 18 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
 
 1. **Fabricated Beacon Header**: Rejection of unsigned or forged beacon headers (`MosooError::InvalidSignature`).
 2. **Sub-Threshold Participation**: Rejection of updates with < 342/512 validator quorum (`MosooError::InsufficientParticipation`).
@@ -67,33 +67,34 @@ All 37 adversarial attack scenarios across 18 primary attack classes are covered
 35. **Historical Header Proof Closure**: Complete fail-closed verification of historical proofs across slot mismatches, window expiration (> 8192 slots), cross-chain domain mismatches, corrupted execution branches, and tampered roots (RFP-021 Functionality #6).
 36. **Unbacked Ethereum Balance Bridge Minting Strict Rejection**: Economic isolation ensuring read-only balance attestations cannot be exploited to mint synthetic `mETH` bridge tokens without verified escrow deposit backing (`EtherReceiverError::DepositBackingRequired`).
 37. **Tampered Statement ID Nullifier Bypass Rejection**: Strict runtime recomputation of canonical statement ID by both ERC-20 and Ether consumers, rejecting any altered or decoupled statement IDs (`StatementIdMismatch`).
+38. **Fabricated Instance Account Rejection**: Strict validation of `instance.initialized == true`, non-zero bootstrap slot, non-zero bootstrap header hash, 512-validator sync committee size, and monotonic slot progression in `handle_attest_state`, strictly rejecting uninitialized or forged instance accounts (`NotInitialized`, `InvalidBootstrap`).
 
 Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.rs` and `contracts/MosooLocker.sol`) hardens against:
-- **EIP-712 Cross-Contract Replay Protection (Invariant 13)**: Cryptographic binding of `verifyingContract: address(this)` and `chainId: block.chainid` in EIP-712 structured data hashes for all burn authorizations, guaranteeing signatures cannot be replayed across distinct locker deployments.
-- **Token Allowlist Protection (Invariant 14)**: Optional admin allowlist gating (`isTokenAllowed`) ensuring only vetted non-rebasing, standard ERC-20 tokens can be escrowed in the locker.
-- **Timelocked Authority Upgrades (Invariant 15)**: 24-hour timelock delay (`AUTHORITY_CHANGE_DELAY = 1 days`) on attester authority address changes via `proposeAttesterAuthority` and `executeAttesterAuthority`, eliminating instant centralized signing key takeovers.
+- **EIP-712 Cross-Contract Replay Protection (Invariant 13)**: Cryptographic binding of `verifyingContract: address(this)` and `chainId: block.chainid` in EIP-712 structured data hashes for all burn authorizations, guaranteeing signatures cannot be replayed across distinct locker deployments. Legacy `eth_sign` fallback has been completely removed.
+- **Fail-Closed Token Allowlist (Invariant 14)**: Default-enabled admin allowlist gating (`tokenAllowlistEnabled = true` by default) ensuring only vetted non-rebasing, standard ERC-20 tokens can be escrowed in the locker upon deployment.
+- **Inviolable Timelocked Authority Upgrades (Invariant 15)**: Complete elimination of instant authority setters; all attester authority updates must pass through `proposeAttesterAuthority` with a mandatory 24-hour timelock delay (`AUTHORITY_CHANGE_DELAY = 1 days`) before `executeAttesterAuthority` can be called.
 - Tampered burn receipt IDs, EIP-2 signature malleability, zero-address signers, fee-on-transfer discrepancies, and unauthorized ownership takeovers.
 
 ---
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **185 automated tests** (182 unit/integration + 3 doc tests) passing with 0 warnings:
+The repository test suite consists of **189 automated tests** (186 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
-| **Core Verification & Crypto** | `mosoo-core/src/` | 37 (36 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety |
-| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 37 | 37 explicit attack scenarios tested against guest handlers |
+| **Core Verification & Crypto** | `mosoo-core/src/` | 39 (38 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety, storage slot & deposit proofs |
+| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 38 | 38 explicit attack scenarios tested against guest handlers |
 | **Light Client Suite** | `tests/light_client_tests.rs` | 21 | Canonical Period 1884 vector, bootstrap, multi-network domains |
-| **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 6 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, unlock, EIP-712 cross-contract replay protection, token allowlist, and authority timelock |
+| **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 6 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, unlock, EIP-712 cross-contract replay protection, default-enabled token allowlist, and inviolable authority timelock |
 | **LEZ v0.4 Acceptance Suite** | `tests/lez_v04_acceptance_tests.rs` | 4 | Single-tx gas envelopes (<=10M), PDA seeds, CPI dispatch, Core proxy routing |
 | **Privacy & Zero-Correlation** | `tests/privacy_and_correlation_tests.rs` | 5 | Address shielding, unlinkability, byte-level state-diff inspection |
 | **Sequencer E2E Suite** | `tests/sequencer_e2e_tests.rs` | 2 | Full 3-Tx lifecycle on mock sequencer across Mainnet and Sepolia |
 | **Consumer Integration Suite** | `tests/e2e_consumer_tests.rs` | 2 | Cross-slot nullifier uniqueness, duplicate mint prevention |
 | **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 28 (27 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, PDA nullifier export/restore, burn & unlock |
 | **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 31 (30 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, PDA nullifier export/restore, BurnReceipt generation, typed balance & deposit receipts |
-| **Daemon Operational Suite** | `daemon/src/main.rs` | 11 | Beacon parsing, randomized jitter, competing-update recovery, proxy URL derivations, next sync committee parsing, fail-closed slot validation |
-| **CLI Suite** | `cli/src/main.rs` | 1 | CLI argument parser and test vector loading |
+| **Daemon Operational Suite** | `daemon/src/main.rs` | 12 | Beacon parsing, randomized jitter, competing-update recovery, proxy URL derivations, next sync committee parsing, period boundary sync, fail-closed slot validation |
+| **CLI Suite** | `cli/src/main.rs` | 3 | CLI argument parser, test vector loading, multi-target MPT generation (balance, storage, deposit), and dry-run pipeline |
 | **Two-Way Bridge Testnet Pipeline** | `scripts/testnet-two-way-bridge.py` | 1 script (5 phases) | Live testnet sequencer connectivity, deposit, 3-tx split, mint, burn, unlock |
 | **Evidence Verification Script** | `scripts/verify-evidence.py` | 1 script (12 checks) | Verifies committed sequencer harness execution manifests and tx receipts |
 | **Live Testnet Verifier Script** | `scripts/verify-onchain.py` | 1 script (3 checks) | Verifies live testnet sequencer blocks, gas engine, and 10M limit |
@@ -102,7 +103,7 @@ The repository test suite consists of **185 automated tests** (182 unit/integrat
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 185 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 189 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.

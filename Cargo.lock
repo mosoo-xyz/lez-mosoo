@@ -3001,6 +3001,7 @@ dependencies = [
  "ether-receiver",
  "hex",
  "mosoo-core",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

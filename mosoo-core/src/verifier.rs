@@ -492,6 +492,28 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
 }
 
 pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, MosooError> {
+    // 0. Instance Authentication & Authenticated Account Binding:
+    // A caller cannot supply an unauthenticated, uninitialized, or fabricated InstanceAccount.
+    if !args.instance.initialized {
+        return Err(MosooError::NotInitialized);
+    }
+    if args.instance.bootstrap_slot == 0 || args.instance.bootstrap_header_hash == [0u8; 32] {
+        return Err(MosooError::InvalidBootstrap(
+            "instance contains unauthenticated bootstrap parameters".into(),
+        ));
+    }
+    if args.instance.current_sync_committee.pubkeys.len() != 512 {
+        return Err(MosooError::Internal(
+            "instance sync committee must contain exactly 512 validator keys".into(),
+        ));
+    }
+    if args.instance.current_slot < args.instance.bootstrap_slot {
+        return Err(MosooError::StaleUpdate {
+            update_slot: args.instance.current_slot,
+            current_slot: args.instance.bootstrap_slot,
+        });
+    }
+
     // 1. Assert chain binding between the active instance and the requested header
     if args.header.chain_id != args.instance.chain_id {
         return Err(MosooError::DomainSeparationFailed);

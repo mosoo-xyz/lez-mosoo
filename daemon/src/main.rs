@@ -353,12 +353,28 @@ struct BeaconHeaderMessage {
 }
 
 #[derive(Deserialize, Debug)]
-struct FinalityUpdateResponse {
-    data: FinalityUpdateData,
+pub struct FinalityUpdateResponse {
+    pub data: FinalityUpdateData,
 }
 
 #[derive(Deserialize, Debug)]
-struct FinalityUpdateData {
+#[serde(untagged)]
+pub enum UpdateItemWrapper {
+    Versioned {
+        #[serde(default)]
+        version: Option<String>,
+        data: FinalityUpdateData,
+    },
+    Direct(FinalityUpdateData),
+}
+
+#[derive(Deserialize, Debug)]
+pub struct LightClientUpdatesResponse {
+    pub data: Vec<UpdateItemWrapper>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct FinalityUpdateData {
     attested_header: BeaconHeaderObj,
     finalized_header: BeaconHeaderObj,
     finality_branch: Vec<String>,
@@ -524,12 +540,41 @@ pub async fn fetch_eth_finalized_slot(cli: &Cli, client: &reqwest::Client) -> an
 }
 
 /// Fetch real LightClientUpdate from Ethereum Beacon API or Logos Ethereum Core proxy.
+/// In accordance with Ethereum light client specifications:
+/// - When staying within the current sync committee period (`to_period == from_period`), queries `/light_client/finality_update`.
+/// - When crossing a sync committee period boundary (`to_period > from_period`), queries `/light_client/updates?start_period={from_period}&count=1`
+///   to obtain `next_sync_committee` and its Merkle authentication branch.
 pub async fn fetch_light_client_update(
     cli: &Cli,
     client: &reqwest::Client,
-    _from_slot: u64,
-    _to_slot: u64,
+    from_slot: u64,
+    to_slot: u64,
 ) -> anyhow::Result<LightClientUpdate> {
+    let from_period = mosoo_core::types::compute_sync_committee_period(from_slot);
+    let to_period = mosoo_core::types::compute_sync_committee_period(to_slot);
+
+    if to_period > from_period {
+        info!(
+            from_period = from_period,
+            to_period = to_period,
+            "Sync committee period boundary transition detected; querying /light_client/updates for next_sync_committee"
+        );
+        let url = derive_consensus_url(
+            cli,
+            &format!("light_client/updates?start_period={}&count=1", from_period),
+        );
+        match fetch_updates_from_url(client, &url).await {
+            Ok(update) => return Ok(update),
+            Err(e) => {
+                warn!(
+                    error = %e,
+                    "Failed to fetch period update from {}; falling back to finality_update",
+                    url
+                );
+            }
+        }
+    }
+
     let url = derive_consensus_url(cli, "light_client/finality_update");
     let resp = client.get(&url).send().await.map_err(|e| {
         anyhow::anyhow!(
@@ -557,9 +602,56 @@ pub async fn fetch_light_client_update(
     parse_beacon_update(body)
 }
 
+async fn fetch_updates_from_url(
+    client: &reqwest::Client,
+    url: &str,
+) -> anyhow::Result<LightClientUpdate> {
+    let resp = client.get(url).send().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Light client updates endpoint unreachable at {}: {}",
+            url,
+            e
+        )
+    })?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "Light client updates endpoint returned HTTP {} at {}",
+            resp.status(),
+            url
+        );
+    }
+
+    let body: LightClientUpdatesResponse = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse light client updates from {}: {}", url, e))?;
+    parse_beacon_updates_response(body)
+}
+
+/// Parse Beacon API updates list response into a native Mosoo `LightClientUpdate`.
+pub fn parse_beacon_updates_response(
+    res: LightClientUpdatesResponse,
+) -> anyhow::Result<LightClientUpdate> {
+    let first = res
+        .data
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("Empty updates array returned by beacon node"))?;
+    let data = match first {
+        UpdateItemWrapper::Versioned { data, .. } => data,
+        UpdateItemWrapper::Direct(data) => data,
+    };
+    parse_beacon_update_data(data)
+}
+
 /// Parse standard Beacon API finality update response into native Mosoo types.
-fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClientUpdate> {
-    let d = res.data;
+pub fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClientUpdate> {
+    parse_beacon_update_data(res.data)
+}
+
+/// Parse raw Beacon update data into native Mosoo types.
+pub fn parse_beacon_update_data(d: FinalityUpdateData) -> anyhow::Result<LightClientUpdate> {
     let attested = parse_header(&d.attested_header.beacon)?;
     let finalized = parse_header(&d.finalized_header.beacon)?;
 
@@ -1348,5 +1440,70 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("Failed to parse signature_slot"));
+    }
+
+    #[test]
+    fn test_daemon_beacon_updates_period_boundary_parsing() {
+        let dummy_pubkey = "0x".to_string() + &hex::encode([0x33u8; 48]);
+        let json_updates = format!(
+            r#"{{
+            "data": [
+                {{
+                    "version": "deneb",
+                    "data": {{
+                        "attested_header": {{
+                            "beacon": {{
+                                "slot": "15433761",
+                                "proposer_index": "123",
+                                "parent_root": "0x1111111111111111111111111111111111111111111111111111111111111111",
+                                "state_root": "0x2222222222222222222222222222222222222222222222222222222222222222",
+                                "body_root": "0x3333333333333333333333333333333333333333333333333333333333333333"
+                            }}
+                        }},
+                        "finalized_header": {{
+                            "beacon": {{
+                                "slot": "15433760",
+                                "proposer_index": "120",
+                                "parent_root": "0x4444444444444444444444444444444444444444444444444444444444444444",
+                                "state_root": "0x5555555555555555555555555555555555555555555555555555555555555555",
+                                "body_root": "0x6666666666666666666666666666666666666666666666666666666666666666"
+                            }}
+                        }},
+                        "finality_branch": [
+                            "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        ],
+                        "sync_aggregate": {{
+                            "sync_committee_bits": "0xff00",
+                            "sync_committee_signature": "0xc000"
+                        }},
+                        "signature_slot": "15433761",
+                        "next_sync_committee": {{
+                            "pubkeys": ["{dummy_pubkey}"],
+                            "aggregate_pubkey": "{dummy_pubkey}"
+                        }},
+                        "next_sync_committee_branch": [
+                            "0x9999999999999999999999999999999999999999999999999999999999999999"
+                        ]
+                    }}
+                }}
+            ]
+        }}"#
+        );
+
+        let res: LightClientUpdatesResponse = serde_json::from_str(&json_updates).unwrap();
+        let update = parse_beacon_updates_response(res).expect("Period boundary update must parse");
+
+        assert_eq!(update.finalized_header.slot, 15_433_760);
+        let nsc = update
+            .next_sync_committee
+            .expect("next_sync_committee must be present");
+        assert_eq!(nsc.pubkeys.len(), 1);
+        assert_eq!(nsc.pubkeys[0], vec![0x33u8; 48]);
+        assert_eq!(nsc.aggregate_pubkey, vec![0x33u8; 48]);
+
+        let branch = update
+            .next_sync_committee_branch
+            .expect("branch must be present");
+        assert_eq!(branch[0], [0x99; 32]);
     }
 }

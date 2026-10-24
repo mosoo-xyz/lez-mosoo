@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Audit Boundary & Milestones:**
-> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 37 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
+> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 38 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
 > - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
 
 ---
@@ -152,7 +152,7 @@ Any mismatch triggers an immediate fail-closed `StatementIdMismatch` error.
 
 ## 3. Automated Adversarial Test Harness
 
-All 37 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
+All 38 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
 
 | Test Name | Attack Scenario Tested | Expected Rejection |
 | :--- | :--- | :--- |
@@ -193,16 +193,18 @@ All 37 attack vectors are implemented as automated regression tests in `tests/ad
 | `test_security_audit_attack_35` | Historical header proof closure & branch tampering (RFP-021 #6) | Fail-closed rejection across slot mismatches, window expiration, domain mismatch, and corrupted branches |
 | `test_security_audit_attack_36` | Unbacked Ethereum account balance bridge minting attempt | Rejected with `EtherReceiverError::DepositBackingRequired`; zero unbacked synthetic mETH minted |
 | `test_security_audit_attack_37` | Tampered statement ID nullifier bypass attempt | Consumers recalculate canonical statement ID; strictly rejected with `StatementIdMismatch` |
+| `test_security_audit_attack_38` | Fabricated / uninitialized InstanceAccount attestation attempt | Rejected with `MosooError::NotInitialized` or `MosooError::InvalidBootstrap` |
 
 ### 3.1 Two-Way Bridge Security & Escrow Defense Harness
 
 Tested in `tests/two_way_bridge_tests.rs`:
 - **Tampered Burn Receipt Defense (`test_two_way_bridge_adversarial_tampered_burn_id_rejected`):** Rejects forged burn identifiers or tampered recipients.
-- **EIP-712 Cross-Contract Replay Protection (Invariant 13) (`test_eip712_cross_contract_replay_protection`):**
-  Binds `verifyingContract: address(this)` and `chainId: block.chainid` into EIP-712 structured data hashes (`BurnETH` / `BurnERC20`). An attester authority signature crafted for Locker contract A is cryptographically rejected if submitted to Locker contract B, preventing cross-deployment signature replay.
-- **Token Allowlist Protection (Invariant 14) (`test_token_allowlist_enforcement`):**
-  Optional admin allowlist (`tokenAllowlistEnabled`, `isTokenAllowed`) prevents escrowing unvetted rebasing, fee-on-transfer, or adversarial ERC-20 tokens into the vault.
-- **Timelocked Authority Upgrades (Invariant 15) (`test_attester_authority_timelock_pipeline`):**
+- **Strict EIP-712 Cross-Contract Replay Protection (Invariant 13) (`test_eip712_cross_contract_replay_protection`):**
+  Binds `verifyingContract: address(this)` and `chainId: block.chainid` into EIP-712 structured data hashes (`BurnETH` / `BurnERC20`). An attester authority signature crafted for Locker contract A is cryptographically rejected if submitted to Locker contract B, preventing cross-deployment signature replay. Legacy un-namespaced `eth_sign` fallback has been completely removed.
+- **Fail-Closed Token Allowlist (Invariant 14) (`test_token_allowlist_enforcement`):**
+  The token allowlist is enabled by default (`tokenAllowlistEnabled = true`), preventing unvetted rebasing, fee-on-transfer, or adversarial ERC-20 tokens from being escrowed into the vault on initial deployment.
+- **Inviolable Timelocked Authority Upgrades (Invariant 15) (`test_attester_authority_timelock_pipeline`):**
+  Direct setters have been eliminated; all attester authority updates must pass through `proposeAttesterAuthority` with a mandatory 24-hour timelock delay before execution via `executeAttesterAuthority`.
   Enforces a mandatory 24-hour delay (`AUTHORITY_CHANGE_DELAY = 1 days`) between proposing a new `attesterAuthority` and executing the upgrade (`proposeAttesterAuthority` / `executeAttesterAuthority`), preventing instant unilateral authority key takeovers.
 - **Ethereum Escrow Contract Security (`contracts/MosooLocker.sol`):**
   - Strict EIP-2 upper-bound on $s$-values ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$).

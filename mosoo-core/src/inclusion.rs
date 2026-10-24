@@ -1063,6 +1063,75 @@ pub mod test_helpers {
         let (state_root, proof_nodes) = build_leaf_mpt_proof(key_hash.as_slice(), &account_rlp);
         (state_root, proof_nodes, account_rlp)
     }
+
+    /// Construct a valid RLP-encoded Ethereum account with a custom storage root.
+    pub fn build_test_account_storage_leaf(storage_root: [u8; 32]) -> Vec<u8> {
+        let nonce_rlp = alloy_rlp::encode(0u64);
+        let balance_rlp = alloy_rlp::encode(0u64);
+        let storage_root_rlp = alloy_rlp::encode(storage_root);
+        let code_hash_rlp = alloy_rlp::encode([0u8; 32]);
+
+        let mut account_payload = Vec::new();
+        account_payload.extend_from_slice(&nonce_rlp);
+        account_payload.extend_from_slice(&balance_rlp);
+        account_payload.extend_from_slice(&storage_root_rlp);
+        account_payload.extend_from_slice(&code_hash_rlp);
+
+        let mut account_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: account_payload.len(),
+        }
+        .encode(&mut account_rlp);
+        account_rlp.extend_from_slice(&account_payload);
+        account_rlp
+    }
+
+    /// Construct a complete 2-level MPT proof for a contract account and one of its storage slots.
+    pub fn build_test_storage_proof(
+        contract: Address,
+        slot: B256,
+        value: [u8; 32],
+    ) -> (B256, Vec<Bytes>, Vec<u8>, Vec<Bytes>, Vec<u8>) {
+        // 1. Storage leaf and proof
+        let trimmed = value
+            .iter()
+            .position(|&b| b != 0)
+            .map(|i| &value[i..])
+            .unwrap_or(&[0u8]);
+        let storage_rlp = alloy_rlp::encode(trimmed);
+        let storage_key_hash = keccak256(slot.as_slice());
+        let (storage_root, storage_proof) =
+            build_leaf_mpt_proof(storage_key_hash.as_slice(), &storage_rlp);
+
+        // 2. Account leaf and proof in state trie
+        let account_rlp = build_test_account_storage_leaf(storage_root.0);
+        let account_key_hash = keccak256(contract.as_slice());
+        let (state_root, account_proof) =
+            build_leaf_mpt_proof(account_key_hash.as_slice(), &account_rlp);
+
+        (
+            state_root,
+            account_proof,
+            account_rlp,
+            storage_proof,
+            storage_rlp,
+        )
+    }
+
+    /// Construct a complete MPT receipt proof for an EIP-1559 bridge deposit log.
+    pub fn build_test_deposit_receipt_proof(
+        deposit_contract: Address,
+        sender: Address,
+        recipient: [u8; 32],
+        amount: U256,
+    ) -> (B256, Vec<Bytes>, Vec<u8>) {
+        let receipt_rlp =
+            build_test_eip1559_deposit_receipt(deposit_contract, sender, recipient, amount);
+        let key_bytes = alloy_rlp::encode(0u64);
+        let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
+        (receipts_root, proof_nodes, receipt_rlp)
+    }
 }
 
 #[cfg(test)]
@@ -1400,5 +1469,83 @@ mod tests {
         let empty_buf = [];
         let res = rlp_decode_list_items(&empty_buf);
         assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_storage_mpt_inclusion_verification_success() {
+        let contract = Address::repeat_byte(0xbb);
+        let slot = B256::repeat_byte(0x05);
+        let mut expected_val = [0u8; 32];
+        expected_val[31] = 42;
+
+        let (state_root, account_proof, account_rlp, storage_proof, storage_rlp) =
+            build_test_storage_proof(contract, slot, expected_val);
+
+        let header = HeaderRecord {
+            chain_id: 1,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x66; 32],
+            execution_state_root: state_root.0,
+            receipts_root: [0x88; 32],
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::StorageSlot { contract, slot },
+            account_proof,
+            storage_proof: Some(storage_proof),
+            receipt_proof: None,
+            account_value: Some(account_rlp),
+            storage_value: Some(storage_rlp),
+            receipt_value: None,
+        };
+
+        let verified = verify_state_proof(&proof, &header).expect("Storage slot proof must verify");
+        assert_eq!(verified, VerifiedValue::StorageValue(expected_val));
+    }
+
+    #[test]
+    fn test_deposit_receipt_mpt_inclusion_verification_success() {
+        let deposit_contract = Address::repeat_byte(0x42);
+        let sender = Address::repeat_byte(0x11);
+        let recipient = [0x22u8; 32];
+        let amount = U256::from(10_000_000_000u64);
+
+        let (receipts_root, proof_nodes, receipt_rlp) =
+            build_test_deposit_receipt_proof(deposit_contract, sender, recipient, amount);
+
+        let header = HeaderRecord {
+            chain_id: 1,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x66; 32],
+            execution_state_root: [0x77; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::NativeEthDeposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract,
+                sender,
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let verified =
+            verify_state_proof(&proof, &header).expect("Deposit receipt proof must verify");
+        match verified {
+            VerifiedValue::LogData(data) => {
+                assert_eq!(data, amount.to_be_bytes::<32>());
+            }
+            _ => panic!("Expected LogData"),
+        }
     }
 }

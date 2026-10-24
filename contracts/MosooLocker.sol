@@ -158,9 +158,11 @@ contract MosooLocker {
         if (_attesterAuthority == address(0)) revert ZeroAddress();
         owner = msg.sender;
         attesterAuthority = _attesterAuthority;
+        tokenAllowlistEnabled = true; // Enabled by default for strict production safety
         _status = _NOT_ENTERED;
         emit OwnershipTransferred(address(0), msg.sender);
         emit AttesterAuthorityUpdated(address(0), _attesterAuthority);
+        emit TokenAllowlistToggled(true);
     }
 
     // --- Deposit Functions (ETH -> LEZ) ---
@@ -258,8 +260,7 @@ contract MosooLocker {
         );
         if (burnId != expectedBurnId) revert InvalidBurnProof();
 
-        // 2. Verify signature using EIP-712 structured data (binding verifyingContract address(this))
-        // or standard eth_sign over burnId
+        // 2. Verify signature using EIP-712 structured data (strictly binding verifyingContract address(this))
         bytes32 structHash = keccak256(
             abi.encode(
                 BURN_ETH_TYPEHASH,
@@ -271,7 +272,7 @@ contract MosooLocker {
                 lezSlot
             )
         );
-        if (!_verifyBurnSignature(structHash, burnId, attestationSignature)) {
+        if (!_verifyBurnSignature(structHash, attestationSignature)) {
             revert InvalidBurnProof();
         }
 
@@ -329,8 +330,7 @@ contract MosooLocker {
         );
         if (burnId != expectedBurnId) revert InvalidBurnProof();
 
-        // 2. Verify signature using EIP-712 structured data (binding verifyingContract address(this))
-        // or standard eth_sign over burnId
+        // 2. Verify signature using EIP-712 structured data (strictly binding verifyingContract address(this))
         bytes32 structHash = keccak256(
             abi.encode(
                 BURN_ERC20_TYPEHASH,
@@ -343,7 +343,7 @@ contract MosooLocker {
                 lezSlot
             )
         );
-        if (!_verifyBurnSignature(structHash, burnId, attestationSignature)) {
+        if (!_verifyBurnSignature(structHash, attestationSignature)) {
             revert InvalidBurnProof();
         }
 
@@ -361,22 +361,13 @@ contract MosooLocker {
 
     function _verifyBurnSignature(
         bytes32 structHash,
-        bytes32 burnId,
         bytes calldata signature
     ) internal view returns (bool) {
-        // Priority 1: EIP-712 structured data signing strictly binding verifyingContract address(this)
+        // EIP-712 structured data signing strictly binding verifyingContract address(this)
         bytes32 eip712Digest = keccak256(
             abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
         );
-        if (_verifySignature(eip712Digest, signature, attesterAuthority)) {
-            return true;
-        }
-
-        // Priority 2: Standard eth_sign over burnId (for backwards compatibility)
-        bytes32 ethSignedMessageHash = keccak256(
-            abi.encodePacked("\x19Ethereum Signed Message:\n32", burnId)
-        );
-        return _verifySignature(ethSignedMessageHash, signature, attesterAuthority);
+        return _verifySignature(eip712Digest, signature, attesterAuthority);
     }
 
     function _verifySignature(
@@ -450,12 +441,6 @@ contract MosooLocker {
         attesterAuthority = pendingAttesterAuthority;
         pendingAttesterAuthority = address(0);
         authorityTimelockUnlock = 0;
-    }
-
-    function setAttesterAuthority(address _newAuthority) external onlyOwner {
-        if (_newAuthority == address(0)) revert ZeroAddress();
-        emit AttesterAuthorityUpdated(attesterAuthority, _newAuthority);
-        attesterAuthority = _newAuthority;
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {

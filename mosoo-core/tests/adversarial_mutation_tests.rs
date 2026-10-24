@@ -3487,3 +3487,89 @@ fn test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected
         Err(EtherReceiverError::AlreadyClaimed)
     ));
 }
+
+/// Attack 38: Fabricated unauthenticated InstanceAccount injection attempt.
+/// Attacker constructs a custom fake InstanceAccount with arbitrary roots and passes it to
+/// handle_attest_state to attest fabricated state without authentic LEZ instance initialization.
+#[test]
+fn test_security_audit_attack_38_fabricated_instance_rejected() {
+    let fake_instance_uninitialized = InstanceAccount {
+        instance_id: [0xfe; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0xaa; 32],
+        current_state_root: [0xbb; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0xcc; 32],
+        initialized: false, // Fabricated uninitialized instance!
+        current_execution_block_hash: [0xdd; 32],
+        current_execution_state_root: [0xee; 32],
+        current_receipts_root: [0xff; 32],
+    };
+
+    let header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0xaa; 32],
+        execution_block_hash: [0xdd; 32],
+        execution_state_root: [0xee; 32],
+        receipts_root: [0xff; 32],
+    };
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x42),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    let args = AttestStateArgs {
+        instance: fake_instance_uninitialized,
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    };
+
+    let err = handle_attest_state(args).expect_err("Uninitialized instance must be rejected");
+    assert!(matches!(err, MosooError::NotInitialized));
+
+    // Attacker fabricates an instance with zero bootstrap roots
+    let fake_instance_zero_bootstrap = InstanceAccount {
+        instance_id: [0xfe; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0xaa; 32],
+        current_state_root: [0xbb; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 0, // Invalid bootstrap slot!
+        bootstrap_header_hash: [0u8; 32],
+        initialized: true,
+        current_execution_block_hash: [0xdd; 32],
+        current_execution_state_root: [0xee; 32],
+        current_receipts_root: [0xff; 32],
+    };
+
+    let args2 = AttestStateArgs {
+        instance: fake_instance_zero_bootstrap,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    };
+
+    let err2 = handle_attest_state(args2).expect_err("Zero-bootstrap instance must be rejected");
+    assert!(matches!(err2, MosooError::InvalidBootstrap(_)));
+}
