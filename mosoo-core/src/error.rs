@@ -138,6 +138,15 @@ pub enum MosooError {
     )]
     MissingCommitteeBranch,
 
+    #[error("sync committee period jump / skip not permitted: signature period {sig_period}, current period {current_period}")]
+    SyncCommitteePeriodSkip {
+        sig_period: u64,
+        current_period: u64,
+    },
+
+    #[error("Gloas execution RLP header missing or keccak256 hash does not match block hash")]
+    GloasExecutionRlpMismatch,
+
     // Cryptographic state & provenance binding
     #[error("header record is unauthenticated or does not match active instance finalized state")]
     UnauthenticatedHeaderRecord,

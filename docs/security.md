@@ -33,7 +33,7 @@ This document details the threat model, security assumptions, and mitigation str
 * **Attack**: An attacker attempts to submit an outdated finalized header or roll back the LEZ instance's tracked head to a past fork.
 * **Mitigation**:
   - Monotonic head progression: `update.finalized_header.slot > instance.current_slot` is strictly asserted (`StaleUpdate`).
-  - Stale instances that fall outside the weak-subjectivity window (1,728,000 slots) require recovery via `handle_recover_instance` rather than incremental mutation from historical state.
+  - Stale instances that fall outside the weak-subjectivity window (1,728,000 slots) cannot be mutated in-place (checkpoint immutability per RFP-021 Functionality #13); applications re-anchor by initializing a fresh instance via `handle_initialize` per Functionality #10.
 
 ### 2.4 State Inclusion & Fake Execution Root Injection
 * **Attack**: A consumer dApp caller supplies an arbitrary execution state root to falsely prove an account balance or storage slot.
@@ -81,7 +81,7 @@ This document details the threat model, security assumptions, and mitigation str
 * **Mitigation**:
   - `handle_initialize` checks `trusted_head_slot - bootstrap_header.slot <= 1,728,000` (~240 days max bound, with ~14-30 day operational recommendation).
   - `handle_begin_update` enforces: `update.finalized_header.slot <= instance.current_slot + 1,728,000`, rejecting stale updates with `WeakSubjectivityExpired`.
-  - Stale instances stalled past this window can be safely re-anchored using `handle_recover_instance`.
+  - Stale instances stalled past this window cannot be mutated in place; they are safely re-anchored by initializing a fresh instance via `handle_initialize` (RFP-021 Functionality #10 and #13).
   - Public Ethereum checkpoint sync services (e.g., Lodestar Checkpoint Sync) provide verifiable checkpoint sources.
 
 ### 2.10 Competing-Update Race Condition (Liveness Under Concurrent Operators)

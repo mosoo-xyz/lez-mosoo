@@ -147,6 +147,9 @@ fn test_sequencer_full_lifecycle_e2e() {
         next_sync_committee: None,
         bootstrap_slot: canonical_slot,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let tx1_hash = sequencer.record_tx(b"initialize_instance", 1_420_000);
@@ -405,6 +408,9 @@ fn test_sequencer_sepolia_gloas_lifecycle_e2e() {
         next_sync_committee: None,
         bootstrap_slot: gloas_slot,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let tx1_hash = sequencer.record_tx(b"init_sepolia_instance", 1_420_000);

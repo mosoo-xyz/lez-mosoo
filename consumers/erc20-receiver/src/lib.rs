@@ -1110,6 +1110,9 @@ mod tests {
             next_sync_committee: None,
             bootstrap_slot: 10_000_000,
             initialized: true,
+            current_execution_block_hash: [0u8; 32],
+            current_execution_state_root: [0u8; 32],
+            current_receipts_root: [0u8; 32],
         };
 
         let header = HeaderRecord {
@@ -1192,6 +1195,9 @@ mod tests {
             next_sync_committee: None,
             bootstrap_slot: 10_000_000,
             initialized: true,
+            current_execution_block_hash: [0u8; 32],
+            current_execution_state_root: [0u8; 32],
+            current_receipts_root: [0u8; 32],
         };
 
         // Forged beacon block root
@@ -1270,6 +1276,9 @@ mod tests {
             next_sync_committee: None,
             bootstrap_slot: 10_000_000,
             initialized: true,
+            current_execution_block_hash: [0u8; 32],
+            current_execution_state_root: [0u8; 32],
+            current_receipts_root: [0u8; 32],
         };
 
         let header = HeaderRecord {

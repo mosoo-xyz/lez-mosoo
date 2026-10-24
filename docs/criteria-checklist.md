@@ -38,7 +38,7 @@ This document provides a technical mapping between the requirements in the [Logo
 
 ## 3. Adversarial Security & Edge Cases Remediated
 
-All 24 adversarial attack scenarios across 12 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
+All 32 adversarial attack scenarios across 16 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
 
 1. **Fabricated Beacon Header**: Rejection of unsigned or forged beacon headers (`MosooError::InvalidSignature`).
 2. **Sub-Threshold Participation**: Rejection of updates with < 342/512 validator quorum (`MosooError::InsufficientParticipation`).
@@ -52,7 +52,15 @@ All 24 adversarial attack scenarios across 12 primary attack classes are covered
 10. **Cross-Block Nullifier Collisions**: Derivation of unique receipt log subject keys incorporating block hash, slot, tx index, and log index.
 11. **Cross-Stage Job Tampering**: Cryptographic `update_digest` binding between `begin`, `miller`, and `finish` stages (`MosooError::JobDigestMismatch`).
 12. **Historical Block Root Forgery**: Authentication of historical blocks against the `BeaconState.block_roots` accumulator vector at generalized index 37.
-13-24. **Extended Protocol & Security Invariants**: Repeat transfer nullifier isolation (13), high-bit u64 overflow prevention (14), malformed RLP panic bounds (15), circular buffer aliasing beyond 8,192 slots (16), terminal job state replay rejection (17), statement ID nullifier tampering defense (18), recovery checkpoint backward rollback rejection (19), reverted receipt rejection (20), out-of-order update slot rejection (21), recursion DOS prevention (22), mandatory weak-subjectivity freshness bounds (23), and false predicate fail-closed behavior (24).
+13-24. **Extended Protocol & Security Invariants**: Repeat transfer nullifier isolation (13), high-bit u64 overflow prevention (14), malformed RLP panic bounds (15), circular buffer aliasing beyond 8,192 slots (16), terminal job state replay rejection (17), statement ID nullifier tampering defense (18), instance immutability & stale checkpoint recovery rejection (19), reverted receipt rejection (20), out-of-order update slot rejection (21), recursion DOS prevention (22), mandatory weak-subjectivity freshness bounds (23), and false predicate fail-closed behavior (24).
+25. **Altair Period Skip Rejection**: Immediate fail-closed rejection of updates jumping $> 1$ sync committee period ($P_{sig} > P_{store} + 1$) without sequential authenticated rotation (`MosooError::SyncCommitteePeriodSkip`).
+26. **Next-Period Missing Authenticated Committee Rejection**: Strict rejection of period $P+1$ signatures when `next_sync_committee` has not been authenticated (`MosooError::MissingCommitteeBranch`).
+27. **Previous-Committee Key Invalidation for Future Periods**: Rejection of signatures created by old (period $P$) committee private keys for future period updates due to active committee binding (`MosooError::InvalidSignature`).
+28. **Dynamic Committee Handoff & Rotation**: Verified promotion of `next_sync_committee` to `current_sync_committee` upon crossing the 8,192-slot period boundary.
+29. **Gloas Execution Roots Tampering Rejection**: Cryptographic derivation of `state_root` and `receipts_root` from the RLP execution block header at gindex 2856, strictly rejecting forged payload roots (`MosooError::ExecutionPayloadBranchInvalid`).
+30. **Gloas Execution RLP Header Hash Mismatch Rejection**: Strict enforcement that $\text{keccak256}(\text{execution\_rlp}) == \text{payload\_header.block\_hash}$ (`MosooError::GloasExecutionRlpMismatch`).
+31. **Authentic Beacon Root with Tampered Execution Roots Rejection**: Cryptographic assertion that caller-supplied `HeaderRecord` execution roots match authenticated instance roots, strictly rejecting fabricated execution roots under genuine beacon roots (`MosooError::UnauthenticatedHeaderRecord`).
+32. **Sequential Multi-Update Rotation Invariant**: Verified sequential execution across period boundary transitions combining next-period signatures with previous-period finalized headers without committee desynchronization.
 
 Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.rs` and `contracts/MosooLocker.sol`) hardens against tampered burn receipt IDs, EIP-2 signature malleability, zero-address signers, fee-on-transfer discrepancies, and unauthorized ownership takeovers.
 
@@ -60,12 +68,12 @@ Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **154 automated tests** (151 unit/integration + 3 doc tests) passing with 0 warnings:
+The repository test suite consists of **162 automated tests** (159 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
 | **Core Verification & Crypto** | `mosoo-core/src/` | 33 (32 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding |
-| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 24 | 24 explicit attack scenarios tested against guest handlers |
+| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 32 | 32 explicit attack scenarios tested against guest handlers |
 | **Light Client Suite** | `tests/light_client_tests.rs` | 21 | Canonical Period 1884 vector, bootstrap, multi-network domains |
 | **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 3 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, and unlock |
 | **LEZ v0.4 Acceptance Suite** | `tests/lez_v04_acceptance_tests.rs` | 4 | Single-tx gas envelopes (<=10M), PDA seeds, CPI dispatch, Core proxy routing |
@@ -84,7 +92,7 @@ The repository test suite consists of **154 automated tests** (151 unit/integrat
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 154 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 162 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.

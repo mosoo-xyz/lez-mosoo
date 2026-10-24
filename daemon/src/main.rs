@@ -371,6 +371,7 @@ fn parse_beacon_update(res: FinalityUpdateResponse) -> anyhow::Result<LightClien
         signature_slot: d.signature_slot.parse().unwrap_or(0),
         execution_payload_header: None,
         execution_branch: None,
+        execution_rlp: None,
     })
 }
 
@@ -417,6 +418,7 @@ fn synthesize_canonical_update() -> LightClientUpdate {
         signature_slot: 15_433_761,
         execution_payload_header: None,
         execution_branch: None,
+        execution_rlp: None,
     }
 }
 

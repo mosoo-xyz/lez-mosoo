@@ -694,8 +694,106 @@ fn decode_be_usize(bytes: &[u8]) -> usize {
     bytes.iter().fold(0usize, |acc, &b| (acc << 8) | b as usize)
 }
 
+/// Extracts `(state_root, receipts_root, block_number)` from an RLP execution block header
+/// and verifies that `keccak256(execution_rlp) == expected_block_hash`.
+/// This cryptographically binds the state and receipts roots to the authenticated block hash
+/// in forks where the beacon body only commits to the block hash (such as Gloas ePBS).
+pub fn execution_header_roots(
+    expected_block_hash: &[u8; 32],
+    execution_rlp: &[u8],
+) -> Result<([u8; 32], [u8; 32], u64), MosooError> {
+    let hash = keccak256(execution_rlp);
+    if &hash.0 != expected_block_hash {
+        return Err(MosooError::GloasExecutionRlpMismatch);
+    }
+    let items = rlp_decode_list_items(execution_rlp)?;
+    if items.len() < 15 {
+        return Err(MosooError::RlpDecodeFailed(
+            "execution block header RLP has fewer than 15 fields".into(),
+        ));
+    }
+    let state_bytes = rlp_strip_prefix(items[3]);
+    if state_bytes.len() != 32 {
+        return Err(MosooError::RlpDecodeFailed(
+            "invalid state_root length in execution block header RLP".into(),
+        ));
+    }
+    let mut state_root = [0u8; 32];
+    state_root.copy_from_slice(state_bytes);
+
+    let receipts_bytes = rlp_strip_prefix(items[5]);
+    if receipts_bytes.len() != 32 {
+        return Err(MosooError::RlpDecodeFailed(
+            "invalid receipts_root length in execution block header RLP".into(),
+        ));
+    }
+    let mut receipts_root = [0u8; 32];
+    receipts_root.copy_from_slice(receipts_bytes);
+
+    let num_bytes = rlp_strip_prefix(items[8]);
+    if num_bytes.len() > 8 {
+        return Err(MosooError::RlpDecodeFailed(
+            "block number in execution block header RLP exceeds u64".into(),
+        ));
+    }
+    let mut block_number = 0u64;
+    for &b in num_bytes {
+        block_number = (block_number << 8) | (b as u64);
+    }
+
+    Ok((state_root, receipts_root, block_number))
+}
+
 pub mod test_helpers {
     use super::*;
+
+    /// Construct a valid 15-field RLP execution block header for tests.
+    pub fn build_test_execution_header_rlp(
+        state_root: [u8; 32],
+        receipts_root: [u8; 32],
+        number: u64,
+    ) -> Vec<u8> {
+        let mut fields_payload = Vec::new();
+        // 0: parent_hash
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 32]));
+        // 1: ommers_hash
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 32]));
+        // 2: beneficiary
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 20]));
+        // 3: state_root
+        fields_payload.extend_from_slice(&alloy_rlp::encode(state_root));
+        // 4: transactions_root
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 32]));
+        // 5: receipts_root
+        fields_payload.extend_from_slice(&alloy_rlp::encode(receipts_root));
+        // 6: logs_bloom
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 256]));
+        // 7: difficulty
+        fields_payload.extend_from_slice(&alloy_rlp::encode(0u64));
+        // 8: number
+        fields_payload.extend_from_slice(&alloy_rlp::encode(number));
+        // 9: gas_limit
+        fields_payload.extend_from_slice(&alloy_rlp::encode(30_000_000u64));
+        // 10: gas_used
+        fields_payload.extend_from_slice(&alloy_rlp::encode(21_000u64));
+        // 11: timestamp
+        fields_payload.extend_from_slice(&alloy_rlp::encode(1_700_000_000u64));
+        // 12: extra_data
+        fields_payload.extend_from_slice(&alloy_rlp::encode(&[][..]));
+        // 13: mix_hash
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 32]));
+        // 14: nonce
+        fields_payload.extend_from_slice(&alloy_rlp::encode([0u8; 8]));
+
+        let mut out = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: fields_payload.len(),
+        }
+        .encode(&mut out);
+        out.extend_from_slice(&fields_payload);
+        out
+    }
 
     /// Helper to construct a single-leaf Merkle Patricia Trie proof for tests.
     pub fn build_leaf_mpt_proof(raw_key: &[u8], value: &[u8]) -> (B256, Vec<Bytes>) {

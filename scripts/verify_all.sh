@@ -10,7 +10,7 @@ echo "[1/12] Checking entire workspace compilation..."
 cargo check --workspace
 
 echo ""
-echo "[2/12] Running all workspace unit & integration tests (154 tests)..."
+echo "[2/12] Running all workspace unit & integration tests (162 tests)..."
 cargo test --workspace
 
 echo ""
@@ -18,7 +18,7 @@ echo "[3/12] Running Two-Way Bridge End-to-End Integration Suite (ETH & ERC-20).
 cargo test --test two_way_bridge_tests
 
 echo ""
-echo "[4/12] Running 24/24 Adversarial & Mutation Test Suite..."
+echo "[4/12] Running 32/32 Adversarial & Mutation Test Suite..."
 cargo test --test adversarial_mutation_tests
 
 echo ""

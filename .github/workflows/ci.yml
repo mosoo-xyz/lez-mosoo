@@ -36,14 +36,17 @@ jobs:
       - name: Workspace check
         run: cargo check --workspace
 
-      - name: Run unit & integration tests (120 total — core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
+      - name: Run unit & integration tests (162 total — core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
         run: cargo test --workspace --verbose
 
       - name: Run 4/4 LEZ v0.4 Conformance & Acceptance Tests (RFP-021 Deployment Gate)
         run: cargo test --test lez_v04_acceptance_tests --verbose
 
-      - name: Run 12/12 Adversarial & Mutation Tests (RFP-021 Verification Security)
+      - name: Run 32/32 Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)
         run: cargo test --test adversarial_mutation_tests --verbose
+
+      - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (ETH/mETH & USDC Settlement)
+        run: cargo test --test two_way_bridge_tests --verbose
 
       - name: Run Standalone LEZ Sequencer E2E Suite (State Binding & Settlement)
         run: cargo test --test sequencer_e2e_tests --verbose

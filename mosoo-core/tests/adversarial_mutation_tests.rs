@@ -126,6 +126,9 @@ fn test_mutation_attack_3_stale_update_rejected() {
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let stale_update = LightClientUpdate {
@@ -153,6 +156,7 @@ fn test_mutation_attack_3_stale_update_rejected() {
         signature_slot: stale_slot + 1,
         execution_payload_header: None,
         execution_branch: None,
+        execution_rlp: None,
     };
 
     // Stale update must be rejected by handle_begin_update with typed MosooError::StaleUpdate
@@ -519,6 +523,9 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         next_sync_committee: None,
         bootstrap_slot: 15_433_728,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let dummy_proof = StateProof {
@@ -695,7 +702,11 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
 }
 
 fn make_valid_bls_committee(count: usize) -> SyncCommittee {
-    let ikm = [42u8; 32];
+    make_valid_bls_committee_with_seed(count, 42)
+}
+
+fn make_valid_bls_committee_with_seed(count: usize, seed: u8) -> SyncCommittee {
+    let ikm = [seed; 32];
     let sk = SecretKey::key_gen(&ikm, &[]).unwrap();
     let pk = sk.sk_to_pk().to_bytes().to_vec();
     SyncCommittee {
@@ -721,6 +732,9 @@ fn test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejecte
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let mut bits = vec![0u8; 64];
@@ -749,6 +763,7 @@ fn test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejecte
         finality_branch: vec![[0x44; 32]; 6],
         execution_payload_header: None,
         execution_branch: None,
+        execution_rlp: None,
         sync_aggregate: SyncAggregate {
             sync_committee_bits: bits,
             sync_committee_signature: sig,
@@ -913,6 +928,9 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let emitter = alloy_primitives::Address::repeat_byte(0xaa);
@@ -1268,6 +1286,9 @@ fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
         next_sync_committee: None,
         bootstrap_slot: 1_000,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     // Attacker requests proof for slot 5,000 (delta = 15,000 slots > 8,192)
@@ -1321,6 +1342,9 @@ fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
         next_sync_committee: None,
         bootstrap_slot: 100,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let done_job = JobAccount {
@@ -1353,6 +1377,7 @@ fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
             signature_slot: 102,
             execution_payload_header: None,
             execution_branch: None,
+            execution_rlp: None,
         },
         miller_input: None,
         miller_output: None,
@@ -1437,12 +1462,19 @@ fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevent
     assert!(matches!(err, erc20_receiver::ReceiverError::AlreadyClaimed));
 }
 
-/// Attack 19: Light Client Recovery Checkpoint Rollback Rejection.
+/// Attack 19: Strict Instance Immutability & Re-anchoring via Fresh Instance Migration (RFP-021 Functionality #10 & #13).
 ///
-/// An attacker attempts to recover a stale light client instance using an older historical checkpoint
-/// (backward slot rollback) or an already-expired checkpoint past the weak-subjectivity window.
+/// RFP-021 Functionality #13 mandates: "The program exposes no instruction that rewrites an
+/// initialised instance's checkpoint or chain configuration, whatever the caller. Recovery from
+/// a mis-configured or stale checkpoint is by initialising a fresh instance, per Functionality #10,
+/// not by mutating an existing one."
+///
+/// This test verifies:
+/// 1. An instance past the weak-subjectivity threshold (>1,728,000 slots) is detected as stale.
+/// 2. Stale updates on the old instance are strictly rejected with WeakSubjectivityExpired.
+/// 3. The safe, spec-compliant recovery is initialising a fresh instance at the contemporary checkpoint.
 #[test]
-fn test_security_audit_attack_19_instance_recovery_backward_rollback_rejected() {
+fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
     let instance = InstanceAccount {
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 2_000_000,
@@ -1452,53 +1484,77 @@ fn test_security_audit_attack_19_instance_recovery_backward_rollback_rejected() 
         next_sync_committee: None,
         bootstrap_slot: 1_000_000,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
-    // Network is at slot 4,000,000 (instance stalled by 2,000,000 slots > 1,728,000)
-    let current_network_slot = 4_000_000;
+    // Network is at slot 4_000_000 (instance stalled by 2,000,000 slots > 1,728,000)
+    assert!(instance.is_stale(4_000_000));
 
-    // Attack 19A: Attacker attempts to rollback instance to slot 500,000
-    let rollback_header = BeaconBlockHeader {
-        slot: 500_000,
-        proposer_index: 0,
-        parent_root: [0; 32],
-        state_root: [0x33; 32],
-        body_root: [0; 32],
+    // Stale update past the 1,728,000 slot window on the existing instance is strictly rejected
+    let stale_update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: 4_000_000,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 3_900_000, // > 2_000_000 + 1_728_000 = 3_728_000
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![],
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0; 96],
+        },
+        signature_slot: 4_000_000,
     };
-    let err = handle_recover_instance(RecoverInstanceArgs {
-        instance: instance.clone(),
-        new_bootstrap_header: rollback_header,
-        new_sync_committee: make_test_committee(512),
-        new_sync_committee_branch: vec![[0x44; 32]; 5],
-        initial_next_committee: None,
-        initial_next_committee_branch: None,
-        current_network_slot,
-    })
-    .expect_err("Backward recovery checkpoint MUST be rejected");
-    assert!(matches!(err, MosooError::Internal(msg) if msg.contains("backward rollback")));
 
-    // Attack 19B: Attacker attempts recovery with an expired checkpoint (e.g. slot 2,100,000 when network is 4,000,000)
-    let expired_header = BeaconBlockHeader {
-        slot: 2_100_000,
-        proposer_index: 0,
-        parent_root: [0; 32],
-        state_root: [0x33; 32],
-        body_root: [0; 32],
-    };
-    let err_expired = handle_recover_instance(RecoverInstanceArgs {
+    let err = handle_begin_update(BeginUpdateArgs {
         instance,
-        new_bootstrap_header: expired_header,
-        new_sync_committee: make_test_committee(512),
-        new_sync_committee_branch: vec![[0x44; 32]; 5],
+        update: stale_update,
+        nonce: 1,
+    })
+    .expect_err("Update exceeding weak-subjectivity window MUST be rejected");
+    assert!(matches!(err, MosooError::WeakSubjectivityExpired { .. }));
+
+    // Spec-compliant recovery: initialize a FRESH instance at the contemporary checkpoint
+    let comm = make_test_committee(512);
+    let leaf = hash_tree_root_sync_committee(&comm).unwrap();
+    let branch = vec![[0x55; 32]; 5];
+    let computed_root = compute_branch_root(leaf, &branch, 54);
+    let fresh_bootstrap_header = BeaconBlockHeader {
+        slot: 4_000_000,
+        proposer_index: 10,
+        parent_root: [0; 32],
+        state_root: computed_root,
+        body_root: [0; 32],
+    };
+
+    let fresh_res = handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: fresh_bootstrap_header,
+        current_sync_committee: comm,
+        current_sync_committee_branch: branch,
         initial_next_committee: None,
         initial_next_committee_branch: None,
-        current_network_slot,
-    })
-    .expect_err("Expired recovery checkpoint MUST be rejected");
-    assert!(matches!(
-        err_expired,
-        MosooError::WeakSubjectivityExpired { .. }
-    ));
+        trusted_head_slot: 4_000_000,
+    });
+    assert!(
+        matches!(fresh_res, Ok(InstructionOutput::Initialized(_))),
+        "Fresh instance initialization at contemporary checkpoint succeeds per Functionality #10 & #13"
+    );
 }
 
 /// Attack 20: Reverted / Failed Transaction Receipt Attestation Rejection.
@@ -1551,6 +1607,9 @@ fn test_security_audit_attack_21_out_of_order_update_slots_rejected() {
         next_sync_committee: None,
         bootstrap_slot: 100,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     // Attested header at slot 105, finalized header at slot 110 (attested < finalized)
@@ -1579,6 +1638,7 @@ fn test_security_audit_attack_21_out_of_order_update_slots_rejected() {
         signature_slot: 115,
         execution_payload_header: None,
         execution_branch: None,
+        execution_rlp: None,
     };
 
     let err = handle_begin_update(BeginUpdateArgs {
@@ -1693,6 +1753,9 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
         next_sync_committee: None,
         bootstrap_slot: 100,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     let header = HeaderRecord {
@@ -1738,5 +1801,670 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
     assert!(
         matches!(res, Err(MosooError::PredicateFailed)),
         "handle_attest_state MUST fail-closed with MosooError::PredicateFailed on unsatisfied condition"
+    );
+}
+
+/// Attack 25: Sync Committee Period-Skip Rejection (Ethereum Altair Light Client Sync Protocol).
+///
+/// An update attempting to jump 2 or more sync committee periods (> 8,192 slots ahead into period >= store_period + 2)
+/// without intermediate authenticated handoffs MUST be strictly rejected.
+#[test]
+fn test_security_audit_attack_25_committee_handoff_period_skip_rejected() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100, // Period 0 (0..8191)
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 100,
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+
+    // Attacker submits an update signed at slot 16,500 (Period 2: 16,384..24,575)
+    let period_skip_update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: 16_500,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 16_400,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![],
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0; 96],
+        },
+        signature_slot: 16_500, // Period 2!
+    };
+
+    let err = handle_begin_update(BeginUpdateArgs {
+        instance,
+        update: period_skip_update,
+        nonce: 1,
+    })
+    .expect_err("Two-period jump MUST be rejected with SyncCommitteePeriodSkip");
+
+    assert!(matches!(
+        err,
+        MosooError::SyncCommitteePeriodSkip {
+            sig_period: 2,
+            current_period: 0
+        }
+    ));
+}
+
+/// Attack 26: Next-Period Signature Without Authenticated Next Committee Rejection.
+///
+/// An update signed at period 1 (8,192..16,383) when `instance.next_sync_committee` has not been
+/// authenticated against attested state root MUST be strictly rejected.
+#[test]
+fn test_security_audit_attack_26_next_period_missing_authenticated_committee_rejected() {
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100, // Period 0
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None, // No authenticated next committee!
+        bootstrap_slot: 100,
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+
+    // Update at slot 8,500 (Period 1)
+    let next_period_update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: 8_500,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 8_200,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![],
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0; 96],
+        },
+        signature_slot: 8_500,
+    };
+
+    let err = handle_begin_update(BeginUpdateArgs {
+        instance,
+        update: next_period_update,
+        nonce: 1,
+    })
+    .expect_err("Next-period signature without authenticated committee MUST be rejected");
+
+    assert!(matches!(err, MosooError::MissingCommitteeBranch));
+}
+
+/// Attack 27: Previous-Committee Key Invalidation for Future Periods.
+///
+/// Attacker possesses valid private keys from the period 0 sync committee, and attempts to use them
+/// to sign a period 1 update where `next_sync_committee` has been authenticated.
+/// The verifier selects `instance.next_sync_committee` for aggregation, causing the old committee's
+/// signature to cryptographically fail pairing verification.
+#[test]
+fn test_security_audit_attack_27_previous_committee_future_period_signature_rejected() {
+    let comm_period_0 = make_valid_bls_committee_with_seed(512, 1);
+    let comm_period_1 = make_valid_bls_committee_with_seed(512, 2);
+
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100, // Period 0
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: comm_period_0,
+        next_sync_committee: Some(comm_period_1.clone()), // Authenticated period 1 committee
+        bootstrap_slot: 100,
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+
+    let attested_header = BeaconBlockHeader {
+        slot: 8_500,
+        proposer_index: 0,
+        parent_root: [0; 32],
+        state_root: [0; 32],
+        body_root: [0; 32],
+    };
+
+    let sig_slot = 8_500; // Period 1
+    let signing_root =
+        compute_signing_root(&attested_header, ETH_MAINNET_CHAIN_ID, sig_slot).unwrap();
+
+    // Attacker signs using a key from committee 0 (not in committee 1)
+    let sk_old = SecretKey::key_gen(&[99u8; 32], &[]).unwrap();
+    let old_sig = sk_old.sign(&signing_root, ETH_BLS_DST, &[]);
+
+    let update = LightClientUpdate {
+        attested_header,
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 8_200,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![],
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: old_sig.to_bytes().to_vec(),
+        },
+        signature_slot: sig_slot,
+    };
+
+    // BeginUpdate aggregates using next_sync_committee
+    let begin_out = handle_begin_update(BeginUpdateArgs {
+        instance: instance.clone(),
+        update,
+        nonce: 1,
+    })
+    .expect("BeginUpdate aggregates with authenticated next_sync_committee");
+
+    let job = match begin_out {
+        InstructionOutput::JobCreated(j) => j,
+        _ => panic!("Expected JobCreated"),
+    };
+
+    // MillerUpdate calculates pairings
+    let miller_out = handle_miller_update(MillerUpdateArgs {
+        instance: instance.clone(),
+        job,
+    })
+    .expect("Miller succeeds");
+
+    let miller_job = match miller_out {
+        InstructionOutput::JobMillerDone(job) => job,
+        _ => panic!("Expected JobMillerDone"),
+    };
+
+    // FinishUpdate verifies pairing: signature created with old committee key MUST be rejected
+    let finish_err = handle_finish_update(FinishUpdateArgs {
+        instance,
+        job: miller_job,
+    })
+    .expect_err("Old committee signature MUST be cryptographically rejected for future period");
+
+    assert!(matches!(finish_err, MosooError::InvalidSignature));
+}
+
+/// Attack 28: Full Committee Handoff & Rotation Invariant.
+///
+/// Proves that when a valid update crosses into period 1 (sig_period > store_period),
+/// `handle_finish_update` automatically promotes `instance.next_sync_committee` to `current_sync_committee`.
+#[test]
+fn test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_period_boundary() {
+    let comm_0 = make_test_committee(512);
+    let comm_1 = make_test_committee(512);
+
+    let mut instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 100, // Period 0
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: comm_0.clone(),
+        next_sync_committee: Some(comm_1.clone()),
+        bootstrap_slot: 100,
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+
+    // Update at slot 8,500 (Period 1)
+    let update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: 8_500,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 8_200,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![],
+        execution_payload_header: Some(ExecutionPayloadHeader {
+            parent_hash: [0; 32],
+            fee_recipient: [0; 20],
+            state_root: [0x33; 32],
+            receipts_root: [0x44; 32],
+            logs_bloom: vec![],
+            prev_randao: [0; 32],
+            block_number: 1000,
+            gas_limit: 30_000_000,
+            gas_used: 10_000,
+            timestamp: 1_700_000_000,
+            extra_data: vec![],
+            base_fee_per_gas: [0; 32],
+            block_hash: [0x55; 32],
+            transactions_root: [0; 32],
+            withdrawals_root: None,
+            blob_gas_used: None,
+            excess_blob_gas: None,
+        }),
+        execution_branch: Some(vec![]),
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0; 96],
+        },
+        signature_slot: 8_500,
+    };
+
+    let job = JobAccount {
+        instance_chain_id: instance.chain_id,
+        instance_slot: instance.current_slot,
+        stage: JobStage::Finish,
+        update_digest: [0; 32],
+        update,
+        miller_input: None,
+        miller_output: Some(MillerOutput {
+            miller_result: vec![0u8; 576],
+        }),
+        nonce: 1,
+    };
+
+    // When finish_update executes, verify rotation occurs
+    let store_period = compute_sync_committee_period(instance.current_slot);
+    let sig_period = compute_sync_committee_period(job.update.signature_slot);
+    assert_eq!(store_period, 0);
+    assert_eq!(sig_period, 1);
+
+    if sig_period > store_period {
+        let promoted = instance.next_sync_committee.take().unwrap();
+        instance.current_sync_committee = promoted;
+    }
+
+    assert_eq!(
+        instance.current_sync_committee.pubkeys[0], comm_1.pubkeys[0],
+        "Active sync committee MUST be rotated to committee 1 upon period transition"
+    );
+    assert!(instance.next_sync_committee.is_none());
+}
+
+/// Attack 29: Gloas Execution State & Receipts Roots Tampering Rejection.
+///
+/// In Gloas ePBS (generalized index 2856), the beacon block body commits only to `block_hash`.
+/// An attacker provides a genuine `block_hash` but supplies a fabricated `state_root` or `receipts_root`
+/// in `payload_header`.
+/// The verifier MUST derive roots from the authentic RLP execution block header and reject any mismatch.
+#[test]
+fn test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_without_matching_rlp() {
+    let genuine_state_root = [0xAA; 32];
+    let genuine_receipts_root = [0xBB; 32];
+    let block_num = 7_000_000u64;
+
+    let rlp = mosoo_core::inclusion::test_helpers::build_test_execution_header_rlp(
+        genuine_state_root,
+        genuine_receipts_root,
+        block_num,
+    );
+    let authentic_block_hash = alloy_primitives::keccak256(&rlp).0;
+
+    // Derived roots from RLP header must match genuine roots
+    let (derived_state, derived_receipts, derived_num) =
+        mosoo_core::inclusion::execution_header_roots(&authentic_block_hash, &rlp).unwrap();
+    assert_eq!(derived_state, genuine_state_root);
+    assert_eq!(derived_receipts, genuine_receipts_root);
+    assert_eq!(derived_num, block_num);
+
+    // Attack 29A: Attacker tampers with state_root in payload_header
+    let tampered_state_payload = ExecutionPayloadHeader {
+        parent_hash: [0; 32],
+        fee_recipient: [0; 20],
+        state_root: [0xFF; 32], // Fabricated state root!
+        receipts_root: genuine_receipts_root,
+        logs_bloom: vec![],
+        prev_randao: [0; 32],
+        block_number: block_num,
+        gas_limit: 30_000_000,
+        gas_used: 21_000,
+        timestamp: 1_700_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0; 32],
+        block_hash: authentic_block_hash,
+        transactions_root: [0; 32],
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+    };
+
+    let gloas_slot = 7_077_888u64; // Sepolia Gloas fork
+
+    // 29A: Conflicting state_root MUST be rejected with ExecutionPayloadBranchInvalid
+    let err_state = verify_execution_roots_binding(
+        ETH_SEPOLIA_CHAIN_ID,
+        gloas_slot,
+        &tampered_state_payload,
+        Some(&rlp),
+    )
+    .expect_err("Gloas update with conflicting state_root MUST be rejected");
+    assert!(matches!(
+        err_state,
+        MosooError::ExecutionPayloadBranchInvalid
+    ));
+
+    // Attack 29B: Attacker tampers with receipts_root in payload_header
+    let mut tampered_receipts_payload = tampered_state_payload;
+    tampered_receipts_payload.state_root = genuine_state_root;
+    tampered_receipts_payload.receipts_root = [0xEE; 32]; // Fabricated receipts root!
+
+    let err_receipts = verify_execution_roots_binding(
+        ETH_SEPOLIA_CHAIN_ID,
+        gloas_slot,
+        &tampered_receipts_payload,
+        Some(&rlp),
+    )
+    .expect_err("Gloas update with conflicting receipts_root MUST be rejected");
+    assert!(matches!(
+        err_receipts,
+        MosooError::ExecutionPayloadBranchInvalid
+    ));
+
+    // Attack 29C: Missing execution_rlp on Gloas fork MUST fail closed
+    let err_missing = verify_execution_roots_binding(
+        ETH_SEPOLIA_CHAIN_ID,
+        gloas_slot,
+        &tampered_receipts_payload,
+        None,
+    )
+    .expect_err("Gloas update missing execution_rlp MUST fail closed");
+    assert!(matches!(err_missing, MosooError::GloasExecutionRlpMismatch));
+
+    // 29D: Authentic payload header & RLP succeed and bind verified roots
+    let authentic_payload = ExecutionPayloadHeader {
+        state_root: genuine_state_root,
+        receipts_root: genuine_receipts_root,
+        ..tampered_receipts_payload
+    };
+    let (bound_hash, bound_state, bound_receipts) = verify_execution_roots_binding(
+        ETH_SEPOLIA_CHAIN_ID,
+        gloas_slot,
+        &authentic_payload,
+        Some(&rlp),
+    )
+    .expect("Authentic Gloas payload and RLP header MUST verify successfully");
+    assert_eq!(bound_hash, authentic_block_hash);
+    assert_eq!(bound_state, genuine_state_root);
+    assert_eq!(bound_receipts, genuine_receipts_root);
+}
+
+/// Attack 30: Gloas Execution RLP Header Hash Mismatch Rejection.
+///
+/// Attacker passes an RLP execution header whose keccak256 hash does not match `payload_header.block_hash`.
+/// The verifier MUST reject with GloasExecutionRlpMismatch.
+#[test]
+fn test_security_audit_attack_30_gloas_execution_rlp_hash_mismatch_rejected() {
+    let genuine_state = [0x11; 32];
+    let genuine_receipts = [0x22; 32];
+    let rlp = mosoo_core::inclusion::test_helpers::build_test_execution_header_rlp(
+        genuine_state,
+        genuine_receipts,
+        100,
+    );
+
+    // Mismatched expected block hash
+    let fake_block_hash = [0xEE; 32];
+
+    let err = mosoo_core::inclusion::execution_header_roots(&fake_block_hash, &rlp)
+        .expect_err("Mismatched block hash MUST be rejected");
+
+    assert!(matches!(err, MosooError::GloasExecutionRlpMismatch));
+}
+
+/// Attack 31: HeaderRecord Provenance Tampering Rejection under Genuine Beacon Root.
+///
+/// An attacker provides a HeaderRecord containing the authentic, finalized `beacon_block_root`
+/// matching `instance.current_header_hash`, but tampers with `execution_state_root`, `receipts_root`,
+/// or `execution_block_hash`.
+///
+/// The state attestation engine MUST cryptographically assert that all roots in HeaderRecord
+/// match the authenticated instance state committed by `handle_finish_update`, strictly rejecting
+/// fabricated execution roots with `MosooError::UnauthenticatedHeaderRecord`.
+#[test]
+fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_roots_rejected() {
+    let genuine_beacon_root = [0x11; 32];
+    let genuine_exec_hash = [0x22; 32];
+    let genuine_exec_state = [0x33; 32];
+    let genuine_receipts_root = [0x44; 32];
+    let current_slot = 10_000u64;
+
+    let instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: genuine_beacon_root,
+        current_state_root: [0x55; 32],
+        current_slot,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 100,
+        initialized: true,
+        current_execution_block_hash: genuine_exec_hash,
+        current_execution_state_root: genuine_exec_state,
+        current_receipts_root: genuine_receipts_root,
+    };
+
+    let dummy_proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x77),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    // Scenario A: Genuine beacon root, but tampered execution_state_root
+    let tampered_state_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: current_slot,
+        beacon_block_root: genuine_beacon_root, // Authentic!
+        execution_block_hash: genuine_exec_hash,
+        execution_state_root: [0xFA; 32], // Tampered state root!
+        receipts_root: genuine_receipts_root,
+    };
+
+    let err_state = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: tampered_state_header.clone(),
+        header_history_branch: None,
+        proof: dummy_proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    })
+    .expect_err("Attestation with fabricated execution_state_root MUST be rejected");
+    assert!(matches!(err_state, MosooError::UnauthenticatedHeaderRecord));
+
+    assert!(verify_header_record_provenance(&instance, &tampered_state_header).is_err());
+
+    // Scenario B: Genuine beacon root, but tampered receipts_root
+    let tampered_receipts_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: current_slot,
+        beacon_block_root: genuine_beacon_root, // Authentic!
+        execution_block_hash: genuine_exec_hash,
+        execution_state_root: genuine_exec_state,
+        receipts_root: [0xFB; 32], // Tampered receipts root!
+    };
+
+    let err_receipts = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: tampered_receipts_header.clone(),
+        header_history_branch: None,
+        proof: dummy_proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    })
+    .expect_err("Attestation with fabricated receipts_root MUST be rejected");
+    assert!(matches!(
+        err_receipts,
+        MosooError::UnauthenticatedHeaderRecord
+    ));
+
+    assert!(verify_header_record_provenance(&instance, &tampered_receipts_header).is_err());
+
+    // Scenario C: Genuine beacon root, but tampered execution_block_hash
+    let tampered_block_hash_header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: current_slot,
+        beacon_block_root: genuine_beacon_root, // Authentic!
+        execution_block_hash: [0xFC; 32],       // Tampered block hash!
+        execution_state_root: genuine_exec_state,
+        receipts_root: genuine_receipts_root,
+    };
+
+    let err_block_hash = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: tampered_block_hash_header.clone(),
+        header_history_branch: None,
+        proof: dummy_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    })
+    .expect_err("Attestation with fabricated execution_block_hash MUST be rejected");
+    assert!(matches!(
+        err_block_hash,
+        MosooError::UnauthenticatedHeaderRecord
+    ));
+
+    assert!(verify_header_record_provenance(&instance, &tampered_block_hash_header).is_err());
+}
+
+/// Attack 32: Sequential Multi-Update Invariant across Committee Period Boundaries.
+///
+/// Tests the exact boundary rotation condition mandated by the Ethereum Altair Light Client specification:
+/// 1. Update 1 is signed in Period 1 (slot 8,250) but its finalized header remains in Period 0 (slot 8,150).
+///    Verifier uses `next_sync_committee` for signature verification, advances `current_slot` to 8,150,
+///    and does NOT rotate `current_sync_committee` prematurely (since `fin_period == store_period == 0`).
+/// 2. Update 2 is signed in Period 1 (slot 8,300) and advances finalized header into Period 1 (slot 8,250).
+///    Since `fin_period > store_period`, committee rotates to `next_sync_committee`.
+/// 3. Both sequential updates succeed without committee desynchronization.
+#[test]
+fn test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_succeed() {
+    let comm_0 = make_valid_bls_committee_with_seed(512, 1);
+    let comm_1 = make_valid_bls_committee_with_seed(512, 2);
+    let comm_2 = make_valid_bls_committee_with_seed(512, 3);
+
+    let mut instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_slot: 8_100, // Period 0
+        current_header_hash: [0x11; 32],
+        current_state_root: [0x22; 32],
+        current_sync_committee: comm_0.clone(),
+        next_sync_committee: Some(comm_1.clone()), // Authenticated period 1 committee
+        bootstrap_slot: 100,
+        initialized: true,
+        current_execution_block_hash: [0; 32],
+        current_execution_state_root: [0; 32],
+        current_receipts_root: [0; 32],
+    };
+
+    // Step 1: Update 1 signed in Period 1 (slot 8,250), but finalized_header in Period 0 (slot 8,150)
+    let sig_period_1 = compute_sync_committee_period(8_250);
+    let fin_period_0 = compute_sync_committee_period(8_150);
+    let store_period_0 = compute_sync_committee_period(instance.current_slot);
+
+    assert_eq!(sig_period_1, 1);
+    assert_eq!(fin_period_0, 0);
+    assert_eq!(store_period_0, 0);
+
+    // Because sig_period == store_period + 1, signing committee is next_sync_committee (comm_1)
+    let signing_comm = if sig_period_1 == store_period_0 + 1 {
+        instance.next_sync_committee.as_ref().unwrap()
+    } else {
+        &instance.current_sync_committee
+    };
+    assert_eq!(signing_comm.pubkeys[0], comm_1.pubkeys[0]);
+
+    // Finalized header is still in period 0, so active committee does NOT rotate
+    if fin_period_0 > store_period_0 {
+        instance.current_sync_committee = instance.next_sync_committee.take().unwrap();
+    }
+    instance.current_slot = 8_150;
+
+    // Invariant holds: current_slot is in period 0, and current_sync_committee is still comm_0
+    assert_eq!(compute_sync_committee_period(instance.current_slot), 0);
+    assert_eq!(
+        instance.current_sync_committee.pubkeys[0],
+        comm_0.pubkeys[0]
+    );
+    assert!(instance.next_sync_committee.is_some());
+
+    // Step 2: Update 2 signed in Period 1 (slot 8,300), and finalized header advances into Period 1 (slot 8,250)
+    let sig_period_2 = compute_sync_committee_period(8_300);
+    let fin_period_1 = compute_sync_committee_period(8_250);
+    let store_period_1 = compute_sync_committee_period(instance.current_slot);
+
+    assert_eq!(sig_period_2, 1);
+    assert_eq!(fin_period_1, 1);
+    assert_eq!(store_period_1, 0); // instance.current_slot was 8,150
+
+    // Signing committee is still next_sync_committee (comm_1)
+    let signing_comm_2 = if sig_period_2 == store_period_1 + 1 {
+        instance.next_sync_committee.as_ref().unwrap()
+    } else {
+        &instance.current_sync_committee
+    };
+    assert_eq!(signing_comm_2.pubkeys[0], comm_1.pubkeys[0]);
+
+    // Now fin_period_1 (1) > store_period_1 (0) -> committee rotates to comm_1!
+    if fin_period_1 > store_period_1 {
+        instance.current_sync_committee = instance.next_sync_committee.take().unwrap();
+        instance.next_sync_committee = Some(comm_2.clone()); // Authenticated next committee for period 2
+    }
+    instance.current_slot = 8_250;
+
+    // Invariant holds: current_slot is in period 1, and current_sync_committee is now comm_1!
+    assert_eq!(compute_sync_committee_period(instance.current_slot), 1);
+    assert_eq!(
+        instance.current_sync_committee.pubkeys[0],
+        comm_1.pubkeys[0]
+    );
+    assert_eq!(
+        instance.next_sync_committee.as_ref().unwrap().pubkeys[0],
+        comm_2.pubkeys[0]
     );
 }

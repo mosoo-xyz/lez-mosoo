@@ -28,8 +28,8 @@ use mosoo_core::{
     types::*,
     verifier::{
         handle_attest_state, handle_begin_update, handle_finish_update, handle_initialize,
-        handle_miller_update, handle_recover_instance, AttestStateArgs, BeginUpdateArgs,
-        FinishUpdateArgs, InstructionOutput, MillerUpdateArgs,
+        handle_miller_update, AttestStateArgs, BeginUpdateArgs, FinishUpdateArgs,
+        InstructionOutput, MillerUpdateArgs,
     },
 };
 use risc0_zkvm::guest::env;
@@ -40,7 +40,6 @@ risc0_zkvm::guest::entry!(main);
 #[derive(Serialize, Deserialize)]
 enum Instruction {
     Initialize(InitializeArgs),
-    RecoverInstance(RecoverInstanceArgs),
     BeginUpdate(BeginUpdateArgs),
     MillerUpdate(MillerUpdateArgs),
     FinishUpdate(FinishUpdateArgs),
@@ -53,7 +52,6 @@ fn main() {
 
     let result: Result<InstructionOutput, MosooError> = match instruction {
         Instruction::Initialize(args) => handle_initialize(args),
-        Instruction::RecoverInstance(args) => handle_recover_instance(args),
         Instruction::BeginUpdate(args) => handle_begin_update(args),
         Instruction::MillerUpdate(args) => handle_miller_update(args),
         Instruction::FinishUpdate(args) => handle_finish_update(args),

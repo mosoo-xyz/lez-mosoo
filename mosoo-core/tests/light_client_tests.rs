@@ -405,6 +405,7 @@ fn test_missing_execution_payload_strictly_rejected() {
         next_sync_committee_branch: None,
         execution_payload_header: None, // Missing payload!
         execution_branch: None,
+        execution_rlp: None,
         sync_aggregate: SyncAggregate {
             sync_committee_bits: vec![0xff; 64],
             sync_committee_signature: vec![0; 96],
@@ -461,6 +462,7 @@ fn test_missing_execution_branch_strictly_rejected() {
         next_sync_committee_branch: None,
         execution_payload_header: Some(payload),
         execution_branch: None, // Missing branch!
+        execution_rlp: None,
         sync_aggregate: SyncAggregate {
             sync_committee_bits: vec![0xff; 64],
             sync_committee_signature: vec![0; 96],
@@ -640,6 +642,9 @@ fn test_monotonic_slot_progression_boundary_conditions() {
         next_sync_committee: None,
         bootstrap_slot: 15_000_000,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
 
     fn make_update(slot: u64) -> LightClientUpdate {
@@ -668,6 +673,7 @@ fn test_monotonic_slot_progression_boundary_conditions() {
             signature_slot: slot + 1,
             execution_payload_header: None,
             execution_branch: None,
+            execution_rlp: None,
         }
     }
 
@@ -1018,7 +1024,8 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
     assert!(!instance.is_stale(1_500_000));
     assert!(instance.is_stale(3_000_000));
 
-    // 3. Stale instance recovery: re-anchor to a fresh checkpoint
+    // 3. Stale instance replacement: per RFP-021 Functionality #10 & #13, stale instances
+    // are replaced by a freshly initialized instance rather than mutating in place.
     let new_slot = 3_000_000u64;
     let new_root = compute_branch_root(leaf, &branch, 54);
     let new_bootstrap_header = BeaconBlockHeader {
@@ -1029,23 +1036,24 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         body_root: [0; 32],
     };
 
-    let recover_ok = mosoo_core::verifier::handle_recover_instance(RecoverInstanceArgs {
-        instance: instance.clone(),
-        new_bootstrap_header: new_bootstrap_header.clone(),
-        new_sync_committee: committee.clone(),
-        new_sync_committee_branch: branch,
+    let fresh_init = mosoo_core::verifier::handle_initialize(InitializeArgs {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: new_bootstrap_header,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
         initial_next_committee: None,
         initial_next_committee_branch: None,
-        current_network_slot: 3_000_000,
+        trusted_head_slot: 3_000_000,
     })
     .unwrap();
 
-    let recovered_instance = match recover_ok {
+    let replacement_instance = match fresh_init {
         InstructionOutput::Initialized(inst) => inst,
         _ => panic!("Expected Initialized output"),
     };
-    assert_eq!(recovered_instance.current_slot, new_slot);
-    assert_eq!(recovered_instance.current_state_root, new_root);
+    assert_eq!(replacement_instance.current_slot, new_slot);
+    assert_eq!(replacement_instance.current_state_root, new_root);
+    assert!(!replacement_instance.is_stale(3_000_000));
 }
 
 /// Test 21: End-to-end proof derivation directly feeding reference consumer settlement.
@@ -1086,6 +1094,9 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
         initialized: true,
+        current_execution_block_hash: [0xbb; 32],
+        current_execution_state_root: [0xcc; 32],
+        current_receipts_root: receipts_root.0,
     };
 
     // 1. Submit proof to Mosoo attestation verifier

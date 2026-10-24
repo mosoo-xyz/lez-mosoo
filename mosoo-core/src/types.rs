@@ -115,9 +115,21 @@ pub struct LightClientUpdate {
     pub execution_payload_header: Option<ExecutionPayloadHeader>,
     /// Merkle branch proving execution_payload_header in finalized_header.body_root (gindex 25).
     pub execution_branch: Option<Vec<[u8; 32]>>,
+    /// RLP-encoded execution block header (mandatory for Gloas ePBS to derive state_root and receipts_root from block_hash).
+    #[serde(default)]
+    pub execution_rlp: Option<Vec<u8>>,
     pub sync_aggregate: SyncAggregate,
     /// Slot at which the sync_aggregate was created (for domain computation).
     pub signature_slot: u64,
+}
+
+/// Ethereum Altair sync committee period constant (256 epochs * 32 slots = 8,192 slots, ~27.3 hours).
+pub const SLOTS_PER_SYNC_COMMITTEE_PERIOD: u64 = 8192;
+
+/// Compute the sync committee period for a given slot.
+#[inline]
+pub fn compute_sync_committee_period(slot: u64) -> u64 {
+    slot / SLOTS_PER_SYNC_COMMITTEE_PERIOD
 }
 
 /// **Instance Account** — one per tracked Ethereum network.
@@ -141,6 +153,15 @@ pub struct InstanceAccount {
     pub bootstrap_slot: u64,
     /// Whether this instance has been initialized.
     pub initialized: bool,
+    /// Execution block hash of the last accepted finalized header.
+    #[serde(default)]
+    pub current_execution_block_hash: [u8; 32],
+    /// Execution state root of the last accepted finalized header.
+    #[serde(default)]
+    pub current_execution_state_root: [u8; 32],
+    /// Execution receipts root of the last accepted finalized header.
+    #[serde(default)]
+    pub current_receipts_root: [u8; 32],
 }
 
 impl InstanceAccount {

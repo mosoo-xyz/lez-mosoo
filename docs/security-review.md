@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Audit Boundary & Milestones:**
-> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 24 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
+> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 32 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
 > - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
 
 ---
@@ -17,7 +17,7 @@ Mosoo operates as an on-chain Ethereum consensus verification engine and state p
 - **Safety Threshold (>= 342 / 512 Signers):** The light client enforces Ethereum's 2/3 aggregate participation threshold (>= 342 of 512 sync committee validators). Under the standard Ethereum consensus security model, an adversary cannot forge a valid BLS aggregate signature over an invalid or fabricated block header unless Byzantine actors control at least 342 validators (a >= 2/3 Byzantine supermajority).
 - **Liveness Threshold (<= 170 / 512 Byzantine / Offline Validators):** If more than 170 validators (> 1/3 of the 512 sync committee) fail to participate or are Byzantine, the remaining honest validators (< 342) cannot reach the 2/3 quorum. In this scenario, header updates temporarily stall until validator participation recovers or the committee rotates at the next period boundary (~8,192 slots / ~27.3 hours). This is a liveness halt, not a safety violation (no invalid headers can be accepted).
 - **Sync Committee Rotation Period (8,192 Slots / 256 Epochs):** The 512-validator sync committee rotates every 256 epochs (8,192 slots, ~27.3 hours). The next sync committee is authenticated via Merkle branch against the attested state root at fork-aware generalized indices (55 for Altair/Deneb, 87 for Electra/Fulu, 2946 for Gloas).
-- **Weak-Subjectivity Freshness Window (1,728,000 Slots / 54,000 Epochs):** In Ethereum PoS, weak subjectivity defines the period within which an offline light client must sync or obtain a trusted checkpoint to remain safe against long-range consensus forks. Mosoo enforces a hard safety ceiling of 1,728,000 slots (~240 days) on update leaps and bootstrap checkpoints (`WeakSubjectivityExpired`), with recommended operational checkpoints within 14–30 days. Instances stalled past this window can be re-anchored via `handle_recover_instance`. Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks (`StaleUpdate`).
+- **Weak-Subjectivity Freshness Window (1,728,000 Slots / 54,000 Epochs):** In Ethereum PoS, weak subjectivity defines the period within which an offline light client must sync or obtain a trusted checkpoint to remain safe against long-range consensus forks. Mosoo enforces a hard safety ceiling of 1,728,000 slots (~240 days) on update leaps and bootstrap checkpoints (`WeakSubjectivityExpired`), with recommended operational checkpoints within 14–30 days. Per RFP-021 Functionality #13, verified instances are strictly immutable and cannot be rewritten in-place. Stale instances stalled past this window are replaced by initializing a fresh instance with a current trusted checkpoint per Functionality #10. Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks (`StaleUpdate`).
 
 ### Untrusted Prover & Environment Assumptions
 - **Byzantine Operator / Host VM:** The zkVM guest code makes zero assumptions about the honesty of the transaction submitter or the LEZ host VM. All Merkle branches, signatures, and RLP encodings are validated in-guest.
@@ -122,7 +122,7 @@ Both `handle_miller_update` and `handle_finish_update` recompute and verify this
 
 ## 3. Automated Adversarial Test Harness
 
-All 24 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
+All 32 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
 
 | Test Name | Attack Scenario Tested | Expected Rejection |
 | :--- | :--- | :--- |
@@ -144,12 +144,20 @@ All 24 attack vectors are implemented as automated regression tests in `tests/ad
 | `test_security_audit_attack_16` | Circular ring buffer slot aliasing beyond 8,192 slots | `MosooError::Internal` guard rejection |
 | `test_security_audit_attack_17` | Replay invocation on terminated `Done` job stage | `MosooError::WrongJobStage` rejection |
 | `test_security_audit_attack_18` | Statement ID tampering to bypass nullifier tracking | Catch by expected subject key validation |
-| `test_security_audit_attack_19` | Backward slot rollback or expired recovery checkpoint | `backward rollback` / `WeakSubjectivityExpired` |
+| `test_security_audit_attack_19` | Backward slot rollback or expired checkpoint rewrite | Checkpoint immutability / `WeakSubjectivityExpired` |
 | `test_security_audit_attack_20` | Reverted / failed transaction receipt (status = 0) | Reverted status check rejection |
 | `test_security_audit_attack_21` | Out-of-order header slots (attested < finalized) | Temporal consistency rejection |
 | `test_security_audit_attack_22` | Deeply nested predicate tree stack overflow DOS | Recursion depth limit (16 max) rejection |
 | `test_security_audit_attack_23` | Mandatory weak-subjectivity freshness bounds | Fail-closed rejection on zero or expired slot |
 | `test_security_audit_attack_24` | Unsatisfied condition predicate fail-closed behavior | `MosooError::PredicateFailed` (no statement) |
+| `test_security_audit_attack_25` | Sync committee period jump > 1 period ($P_{sig} > P_{store} + 1$) | `MosooError::SyncCommitteePeriodSkip` |
+| `test_security_audit_attack_26` | Period $P+1$ signature with missing next committee | `MosooError::MissingCommitteeBranch` |
+| `test_security_audit_attack_27` | Previous-committee (period $P$) key used for period $P+1$ | `MosooError::InvalidSignature` |
+| `test_security_audit_attack_28` | Committee rotation across period boundary | Verified rotation to `next_sync_committee` |
+| `test_security_audit_attack_29` | Gloas ePBS tampered state/receipts roots | `MosooError::ExecutionPayloadBranchInvalid` |
+| `test_security_audit_attack_30` | Gloas RLP execution header hash mismatch | `MosooError::GloasExecutionRlpMismatch` |
+| `test_security_audit_attack_31` | Authentic beacon root with tampered execution roots | `MosooError::UnauthenticatedHeaderRecord` |
+| `test_security_audit_attack_32` | Sequential multi-update boundary rotation invariant | Verified multi-update boundary progression |
 
 ### 3.1 Two-Way Bridge Security & Escrow Defense Harness
 

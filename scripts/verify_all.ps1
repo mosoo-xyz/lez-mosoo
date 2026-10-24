@@ -8,13 +8,13 @@ Write-Host "====================================================================
 Write-Host "`n[1/12] Checking entire workspace compilation..." -ForegroundColor Yellow
 cargo check --workspace
 
-Write-Host "`n[2/12] Running all workspace unit & integration tests (154 tests)..." -ForegroundColor Yellow
+Write-Host "`n[2/12] Running all workspace unit & integration tests (162 tests)..." -ForegroundColor Yellow
 cargo test --workspace
 
 Write-Host "`n[3/12] Running Two-Way Bridge End-to-End Integration Suite (ETH & ERC-20)..." -ForegroundColor Yellow
 cargo test --test two_way_bridge_tests
 
-Write-Host "`n[4/12] Running 24/24 Adversarial & Mutation Test Suite..." -ForegroundColor Yellow
+Write-Host "`n[4/12] Running 32/32 Adversarial & Mutation Test Suite..." -ForegroundColor Yellow
 cargo test --test adversarial_mutation_tests
 
 Write-Host "`n[5/12] Running 5/5 Privacy & Zero-Correlation Test Suite..." -ForegroundColor Yellow

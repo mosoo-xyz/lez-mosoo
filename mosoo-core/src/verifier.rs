@@ -137,72 +137,10 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         next_sync_committee: args.initial_next_committee,
         bootstrap_slot: args.bootstrap_header.slot,
         initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
     };
-
-    Ok(InstructionOutput::Initialized(instance))
-}
-
-/// Recovers a light client instance that has stalled beyond the weak-subjectivity window (>1,728,000 slots).
-/// Re-anchors the instance to an authenticated contemporary checkpoint after network recovery.
-pub fn handle_recover_instance(
-    args: crate::types::RecoverInstanceArgs,
-) -> Result<InstructionOutput, MosooError> {
-    let mut instance = args.instance;
-    if !instance.initialized {
-        return Err(MosooError::NotInitialized);
-    }
-    const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
-    // Guard: recovery is only permitted if the instance has stalled past the weak-subjectivity threshold
-    if args.current_network_slot <= instance.current_slot + WEAK_SUBJECTIVITY_SLOTS {
-        return Err(MosooError::Internal(
-            "instance is not stale; normal incremental updates must be used".into(),
-        ));
-    }
-    // Anti-rollback guard: recovery checkpoint must strictly advance the instance slot
-    if args.new_bootstrap_header.slot <= instance.current_slot {
-        return Err(MosooError::Internal(
-            "recovery checkpoint slot must strictly exceed current instance slot (no backward rollback)".into(),
-        ));
-    }
-    // Freshness guard: recovery checkpoint itself must not be expired relative to current network slot
-    if args.current_network_slot > args.new_bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
-        return Err(MosooError::WeakSubjectivityExpired {
-            update_slot: args.new_bootstrap_header.slot,
-            current_slot: args.current_network_slot,
-        });
-    }
-    // Verify the new bootstrap checkpoint
-    let committee_leaf = crypto::hash_tree_root_sync_committee(&args.new_sync_committee)?;
-    let gindex =
-        crypto::current_sync_committee_gindex(instance.chain_id, args.new_bootstrap_header.slot);
-    let computed_root = crypto::compute_branch_root_checked(
-        committee_leaf,
-        &args.new_sync_committee_branch,
-        gindex,
-    )?;
-    if computed_root != args.new_bootstrap_header.state_root {
-        return Err(MosooError::BootstrapCommitteeBranchInvalid);
-    }
-
-    if let Some(ref next_comm) = args.initial_next_committee {
-        let branch = args
-            .initial_next_committee_branch
-            .as_ref()
-            .ok_or(MosooError::BootstrapNextCommitteeBranchInvalid)?;
-        let next_leaf = crypto::hash_tree_root_sync_committee(next_comm)?;
-        let next_gindex =
-            crypto::next_sync_committee_gindex(instance.chain_id, args.new_bootstrap_header.slot);
-        let computed_next = crypto::compute_branch_root_checked(next_leaf, branch, next_gindex)?;
-        if computed_next != args.new_bootstrap_header.state_root {
-            return Err(MosooError::BootstrapNextCommitteeBranchInvalid);
-        }
-    }
-
-    instance.current_header_hash = crypto::hash_tree_root_beacon_header(&args.new_bootstrap_header);
-    instance.current_state_root = args.new_bootstrap_header.state_root;
-    instance.current_slot = args.new_bootstrap_header.slot;
-    instance.current_sync_committee = args.new_sync_committee;
-    instance.next_sync_committee = args.initial_next_committee;
 
     Ok(InstructionOutput::Initialized(instance))
 }
@@ -234,6 +172,42 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
         return Err(MosooError::WeakSubjectivityExpired {
             update_slot: update.finalized_header.slot,
             current_slot: instance.current_slot,
+        });
+    }
+
+    // Period boundary and sync committee selection (Ethereum Altair Light Client Sync Protocol).
+    let store_period = crate::types::compute_sync_committee_period(instance.current_slot);
+    let sig_period = crate::types::compute_sync_committee_period(update.signature_slot);
+    let fin_period = crate::types::compute_sync_committee_period(update.finalized_header.slot);
+
+    // Determine the signing committee that created this aggregate signature.
+    let signing_committee = if sig_period == store_period {
+        &instance.current_sync_committee
+    } else if sig_period == store_period + 1 {
+        instance
+            .next_sync_committee
+            .as_ref()
+            .ok_or(MosooError::MissingCommitteeBranch)?
+    } else if sig_period > store_period + 1 {
+        return Err(MosooError::SyncCommitteePeriodSkip {
+            sig_period,
+            current_period: store_period,
+        });
+    } else {
+        return Err(MosooError::StaleUpdate {
+            update_slot: update.signature_slot,
+            current_slot: instance.current_slot,
+        });
+    };
+
+    // Period consistency: finalized header cannot jump beyond next period without an authenticated handoff.
+    if fin_period == store_period + 1 && instance.next_sync_committee.is_none() {
+        return Err(MosooError::MissingCommitteeBranch);
+    }
+    if fin_period > store_period + 1 {
+        return Err(MosooError::SyncCommitteePeriodSkip {
+            sig_period: fin_period,
+            current_period: store_period,
         });
     }
 
@@ -277,9 +251,9 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
         update.signature_slot,
     )?;
 
-    // Aggregate the participating validators' public keys.
+    // Aggregate the participating validators' public keys using the authenticated signing committee.
     let agg_pubkey_bytes = crypto::aggregate_participating_pubkeys(
-        &instance.current_sync_committee,
+        signing_committee,
         &update.sync_aggregate.sync_committee_bits,
     )?;
 
@@ -421,12 +395,14 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
     )?;
 
     // Period boundary committee rotation logic:
-    // Sync committee period = 256 epochs = 8,192 slots.
-    const SLOTS_PER_PERIOD: u64 = 8192;
-    let current_period = instance.current_slot / SLOTS_PER_PERIOD;
-    let update_period = update.finalized_header.slot / SLOTS_PER_PERIOD;
+    // Under the Ethereum Altair Light Client Sync Protocol, the active sync committee
+    // rotates if and only if the finalized header crosses into the next sync committee period.
+    // Tying rotation strictly to `fin_period > store_period` guarantees that `instance.current_slot`
+    // and `instance.current_sync_committee` remain synchronized across arbitrary update boundaries.
+    let store_period = crate::types::compute_sync_committee_period(instance.current_slot);
+    let fin_period = crate::types::compute_sync_committee_period(update.finalized_header.slot);
 
-    if update_period > current_period {
+    if fin_period > store_period {
         // We crossed into a new sync committee period.
         // The previously verified next_sync_committee now becomes active current_sync_committee.
         let next = instance
@@ -467,14 +443,25 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
         &update.finalized_header,
         branch,
     )?;
-    let execution_block_hash = payload_header.block_hash;
-    let execution_state_root = payload_header.state_root;
-    let receipts_root = payload_header.receipts_root;
 
-    // Update instance head and state root anchor.
+    // Execution Roots Authentication & Binding:
+    // In Gloas ePBS (generalized index 2856), the beacon block body commits only to payload_header.block_hash.
+    // The state_root and receipts_root MUST be derived from the verified execution_rlp header.
+    let (execution_block_hash, execution_state_root, receipts_root) =
+        verify_execution_roots_binding(
+            instance.chain_id,
+            update.finalized_header.slot,
+            payload_header,
+            update.execution_rlp.as_deref(),
+        )?;
+
+    // Update instance head, state root anchor, and authenticated execution roots.
     instance.current_header_hash = crypto::hash_tree_root_beacon_header(&update.finalized_header);
     instance.current_state_root = update.finalized_header.state_root;
     instance.current_slot = update.finalized_header.slot;
+    instance.current_execution_block_hash = execution_block_hash;
+    instance.current_execution_state_root = execution_state_root;
+    instance.current_receipts_root = receipts_root;
 
     // Build the authenticated header record for consumer programs.
     let header_record = HeaderRecord {
@@ -511,10 +498,25 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
     }
 
     // 3. Cryptographic State & Provenance Binding:
-    // When proving against the latest finalized block, the header's beacon root MUST match
-    // the instance's active authenticated current_header_hash.
+    // When proving against the latest finalized block, the header's beacon root and all execution roots
+    // MUST match the instance's active authenticated roots committed by handle_finish_update.
     if args.header.slot == args.instance.current_slot {
         if args.header.beacon_block_root != args.instance.current_header_hash {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        if args.instance.current_execution_state_root != [0u8; 32]
+            && args.header.execution_state_root != args.instance.current_execution_state_root
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        if args.instance.current_receipts_root != [0u8; 32]
+            && args.header.receipts_root != args.instance.current_receipts_root
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        if args.instance.current_execution_block_hash != [0u8; 32]
+            && args.header.execution_block_hash != args.instance.current_execution_block_hash
+        {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
     } else {
@@ -746,6 +748,91 @@ pub fn verify_execution_payload_branch(
 
     if root != finalized.body_root {
         return Err(MosooError::ExecutionPayloadBranchInvalid);
+    }
+    Ok(())
+}
+
+/// Cryptographically verify and bind execution roots.
+///
+/// In Gloas ePBS (generalized index 2856), the beacon block body commits only to `payload_header.block_hash`.
+/// The `state_root` and `receipts_root` MUST be derived from the authentic RLP execution block header
+/// whose keccak256 hash matches `payload_header.block_hash`.
+///
+/// If `payload_header` contains conflicting non-zero roots, or if `execution_rlp` is missing,
+/// this function fails closed with `ExecutionPayloadBranchInvalid` or `GloasExecutionRlpMismatch`.
+#[allow(clippy::type_complexity)]
+pub fn verify_execution_roots_binding(
+    chain_id: u64,
+    slot: u64,
+    payload_header: &ExecutionPayloadHeader,
+    execution_rlp: Option<&[u8]>,
+) -> Result<([u8; 32], [u8; 32], [u8; 32]), MosooError> {
+    let gindex = crypto::execution_proof_gindex(chain_id, slot);
+    if gindex == crypto::EXECUTION_BLOCK_HASH_GINDEX_GLOAS {
+        let rlp = execution_rlp.ok_or(MosooError::GloasExecutionRlpMismatch)?;
+        let (derived_state_root, derived_receipts_root, _block_num) =
+            crate::inclusion::execution_header_roots(&payload_header.block_hash, rlp)?;
+
+        // Fail-closed invariant: if caller-supplied payload_header contains conflicting roots, reject.
+        if payload_header.state_root != [0u8; 32] && payload_header.state_root != derived_state_root
+        {
+            return Err(MosooError::ExecutionPayloadBranchInvalid);
+        }
+        if payload_header.receipts_root != [0u8; 32]
+            && payload_header.receipts_root != derived_receipts_root
+        {
+            return Err(MosooError::ExecutionPayloadBranchInvalid);
+        }
+
+        Ok((
+            payload_header.block_hash,
+            derived_state_root,
+            derived_receipts_root,
+        ))
+    } else {
+        Ok((
+            payload_header.block_hash,
+            payload_header.state_root,
+            payload_header.receipts_root,
+        ))
+    }
+}
+
+/// Verify provenance and root integrity of a `HeaderRecord` against an authenticated `InstanceAccount`.
+///
+/// Ensures callers cannot supply fabricated execution roots alongside a genuine beacon block root.
+pub fn verify_header_record_provenance(
+    instance: &InstanceAccount,
+    header: &HeaderRecord,
+) -> Result<(), MosooError> {
+    if header.chain_id != instance.chain_id {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+    if header.slot > instance.current_slot {
+        return Err(MosooError::UnfinalizedHeader {
+            header_slot: header.slot,
+            current_slot: instance.current_slot,
+        });
+    }
+    if header.slot == instance.current_slot {
+        if header.beacon_block_root != instance.current_header_hash {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        if instance.current_execution_state_root != [0u8; 32]
+            && header.execution_state_root != instance.current_execution_state_root
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        if instance.current_receipts_root != [0u8; 32]
+            && header.receipts_root != instance.current_receipts_root
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+        if instance.current_execution_block_hash != [0u8; 32]
+            && header.execution_block_hash != instance.current_execution_block_hash
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
     }
     Ok(())
 }
