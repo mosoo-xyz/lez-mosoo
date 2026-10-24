@@ -132,9 +132,10 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         },
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0xaa; 32],
         initialized: true,
-        current_execution_block_hash: [0u8; 32],
-        current_execution_state_root: [0u8; 32],
+        current_execution_block_hash: [0xbb; 32],
+        current_execution_state_root: [0xcc; 32],
         current_receipts_root: [0u8; 32],
     };
 
@@ -179,8 +180,11 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         receipt_value: Some(erc20_receipt_bytes),
     };
 
+    let mut erc20_instance = instance.clone();
+    erc20_instance.current_receipts_root = erc20_receipts_root.0;
+
     let erc20_out = handle_attest_state(AttestStateArgs {
-        instance: instance.clone(),
+        instance: erc20_instance,
         header: erc20_header.clone(),
         header_history_branch: None,
         proof: erc20_proof,
@@ -256,8 +260,11 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         receipt_value: Some(eth_receipt_bytes),
     };
 
+    let mut eth_instance = instance.clone();
+    eth_instance.current_receipts_root = eth_receipts_root.0;
+
     let eth_out = handle_attest_state(AttestStateArgs {
-        instance,
+        instance: eth_instance,
         header: eth_header.clone(),
         header_history_branch: None,
         proof: eth_proof,

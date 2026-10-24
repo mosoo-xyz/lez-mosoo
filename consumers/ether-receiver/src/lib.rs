@@ -1085,10 +1085,11 @@ mod tests {
             },
             next_sync_committee: None,
             bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
             initialized: true,
-            current_execution_block_hash: [0u8; 32],
-            current_execution_state_root: [0u8; 32],
-            current_receipts_root: [0u8; 32],
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: state_root.0,
+            current_receipts_root: [0x88; 32],
         };
 
         let header = HeaderRecord {
@@ -1159,10 +1160,11 @@ mod tests {
             },
             next_sync_committee: None,
             bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
             initialized: true,
-            current_execution_block_hash: [0u8; 32],
-            current_execution_state_root: [0u8; 32],
-            current_receipts_root: [0u8; 32],
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: state_root.0,
+            current_receipts_root: [0x88; 32],
         };
 
         // Forged beacon block root
@@ -1229,10 +1231,11 @@ mod tests {
             },
             next_sync_committee: None,
             bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
             initialized: true,
-            current_execution_block_hash: [0u8; 32],
-            current_execution_state_root: [0u8; 32],
-            current_receipts_root: [0u8; 32],
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: state_root.0,
+            current_receipts_root: [0x88; 32],
         };
 
         let header = HeaderRecord {

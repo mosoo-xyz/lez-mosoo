@@ -125,6 +125,7 @@ fn test_mutation_attack_3_stale_update_rejected() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -522,10 +523,11 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 15_433_728,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
-        current_execution_block_hash: [0u8; 32],
-        current_execution_state_root: [0u8; 32],
-        current_receipts_root: [0u8; 32],
+        current_execution_block_hash: [0x11; 32],
+        current_execution_state_root: [0x22; 32],
+        current_receipts_root: [0x33; 32],
     };
 
     let dummy_proof = StateProof {
@@ -601,15 +603,49 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         receipts_root: [0x77; 32],
     };
     let res_c = handle_attest_state(AttestStateArgs {
-        instance,
+        instance: instance.clone(),
         header: forged_beacon_root_header,
+        header_history_branch: None,
+        proof: dummy_proof.clone(),
+        predicate: dummy_predicate.clone(),
+    });
+    assert!(
+        matches!(res_c, Err(MosooError::UnauthenticatedHeaderRecord)),
+        "handle_attest_state MUST reject forged beacon root with MosooError::UnauthenticatedHeaderRecord"
+    );
+
+    // Scenario D: Attacker attempts to attest state against an instance with zero/unauthenticated execution roots (e.g. at bootstrap)
+    let zero_exec_instance = InstanceAccount {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0x55; 32],
+        current_state_root: [0x66; 32],
+        current_slot: 15_433_728,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 15_433_728,
+        bootstrap_header_hash: [0x55; 32],
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+    let res_d = handle_attest_state(AttestStateArgs {
+        instance: zero_exec_instance,
+        header: HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 15_433_728,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x11; 32],
+            execution_state_root: [0x22; 32],
+            receipts_root: [0x33; 32],
+        },
         header_history_branch: None,
         proof: dummy_proof,
         predicate: dummy_predicate,
     });
     assert!(
-        matches!(res_c, Err(MosooError::UnauthenticatedHeaderRecord)),
-        "handle_attest_state MUST reject forged beacon root with MosooError::UnauthenticatedHeaderRecord"
+        matches!(res_d, Err(MosooError::UnauthenticatedHeaderRecord)),
+        "handle_attest_state MUST fail-closed when instance has unauthenticated zero execution roots"
     );
 }
 
@@ -731,6 +767,7 @@ fn test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejecte
         current_sync_committee: make_valid_bls_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -927,6 +964,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 10_000_000,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1301,6 +1339,7 @@ fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 1_000,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1357,6 +1396,7 @@ fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1499,6 +1539,7 @@ fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 1_000_000,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1622,6 +1663,7 @@ fn test_security_audit_attack_21_out_of_order_update_slots_rejected() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1760,6 +1802,11 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
 /// condition evaluates to false over verified Ethereum state, and NEVER generates a StatementIssued output.
 #[test]
 fn test_security_audit_attack_24_false_predicate_fails_closed() {
+    let user_addr = alloy_primitives::Address::repeat_byte(0x42);
+    let balance = alloy_primitives::U256::from(100u64);
+    let (state_root, proof_nodes, account_rlp) =
+        mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(user_addr, balance);
+
     let instance = InstanceAccount {
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100,
@@ -1768,28 +1815,21 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x11; 32],
         initialized: true,
-        current_execution_block_hash: [0u8; 32],
-        current_execution_state_root: [0u8; 32],
-        current_receipts_root: [0u8; 32],
+        current_execution_block_hash: [0x33; 32],
+        current_execution_state_root: state_root.0,
+        current_receipts_root: [0x55; 32],
     };
 
-    let header = HeaderRecord {
+    let valid_header = HeaderRecord {
         chain_id: ETH_MAINNET_CHAIN_ID,
         slot: 100,
         beacon_block_root: [0x11; 32],
         execution_block_hash: [0x33; 32],
-        execution_state_root: [0x44; 32],
+        execution_state_root: state_root.0,
         receipts_root: [0x55; 32],
     };
-
-    let user_addr = alloy_primitives::Address::repeat_byte(0x42);
-    let balance = alloy_primitives::U256::from(100u64);
-    let (state_root, proof_nodes, account_rlp) =
-        mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(user_addr, balance);
-
-    let mut valid_header = header;
-    valid_header.execution_state_root = state_root.0;
 
     let proof = StateProof {
         target: ProofTarget::AccountBalance { address: user_addr },
@@ -1834,6 +1874,7 @@ fn test_security_audit_attack_25_committee_handoff_period_skip_rejected() {
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1899,6 +1940,7 @@ fn test_security_audit_attack_26_next_period_missing_authenticated_committee_rej
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None, // No authenticated next committee!
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -1963,6 +2005,7 @@ fn test_security_audit_attack_27_previous_committee_future_period_signature_reje
         current_sync_committee: comm_period_0,
         next_sync_committee: Some(comm_period_1.clone()), // Authenticated period 1 committee
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -2059,6 +2102,7 @@ fn test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_p
         current_sync_committee: comm_0.clone(),
         next_sync_committee: Some(comm_1.clone()),
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -2298,6 +2342,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: genuine_exec_hash,
         current_execution_state_root: genuine_exec_state,
@@ -2412,6 +2457,7 @@ fn test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_
         current_sync_committee: comm_0.clone(),
         next_sync_committee: Some(comm_1.clone()), // Authenticated period 1 committee
         bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
         initialized: true,
         current_execution_block_hash: [0; 32],
         current_execution_state_root: [0; 32],

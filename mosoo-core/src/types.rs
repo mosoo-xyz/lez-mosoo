@@ -151,6 +151,9 @@ pub struct InstanceAccount {
     pub next_sync_committee: Option<SyncCommittee>,
     /// Bootstrap slot — the weak-subjectivity trust anchor slot.
     pub bootstrap_slot: u64,
+    /// Immutable bootstrap checkpoint beacon block root.
+    #[serde(default)]
+    pub bootstrap_header_hash: [u8; 32],
     /// Whether this instance has been initialized.
     pub initialized: bool,
     /// Execution block hash of the last accepted finalized header.

@@ -48,13 +48,10 @@ pub struct Cli {
     #[arg(long, env = "LEZ_RPC_URL", default_value = "http://127.0.0.1:8545")]
     pub lez_rpc_url: String,
 
-    /// Hex-encoded private key of the LEZ wallet for gas payments.
-    #[arg(
-        long,
-        env = "LEZ_PRIVATE_KEY",
-        default_value = "0x0000000000000000000000000000000000000000000000000000000000000001"
-    )]
-    pub lez_private_key: String,
+    /// Hex-encoded private key of the LEZ wallet for gas payments and transaction envelope signing.
+    /// In live daemon operation, this must be provided by the operator.
+    #[arg(long, env = "LEZ_PRIVATE_KEY")]
+    pub lez_private_key: Option<String>,
 
     /// Optional Logos Ethereum Core module verified-proxy endpoint.
     /// When specified, update materials, beacon headers, and inclusion proofs
@@ -108,8 +105,24 @@ pub async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
         .timeout(Duration::from_secs(15))
         .build()?;
 
+    if cli.lez_private_key.is_none() {
+        warn!("LEZ_PRIVATE_KEY is not specified; daemon will run in dry-run/read-only mode");
+    }
+
+    info!("Consensus updater event loop running; listening for shutdown signals (SIGINT / Ctrl+C)");
+
+    tokio::select! {
+        res = daemon_loop(cli, &client) => res,
+        _ = tokio::signal::ctrl_c() => {
+            info!("Shutdown signal received (SIGINT / Ctrl+C); terminating updater daemon gracefully");
+            Ok(())
+        }
+    }
+}
+
+async fn daemon_loop(cli: &Cli, client: &reqwest::Client) -> anyhow::Result<()> {
     loop {
-        match try_submit_update(cli, &client).await {
+        match try_submit_update(cli, client).await {
             Ok(SubmitResult::Submitted { slot }) => {
                 info!(
                     slot = slot,
@@ -130,7 +143,12 @@ pub async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
                 );
             }
             Err(e) => {
-                error!(error = %e, "Transient failure in update loop; applying retry backoff");
+                let err_msg = e.to_string();
+                if err_msg.contains("JobAlreadyOpen") {
+                    info!("Verification job already open on LEZ by peer operator; skipping");
+                } else {
+                    error!(error = %e, "Transient failure in update loop; applying retry backoff");
+                }
             }
         }
 
@@ -258,19 +276,37 @@ pub async fn fetch_lez_head_slot(cli: &Cli, client: &reqwest::Client) -> anyhow:
         "id": 1
     });
 
-    match client.post(&cli.lez_rpc_url).json(&payload).send().await {
-        Ok(resp) if resp.status().is_success() => {
-            let json: serde_json::Value = resp.json().await?;
-            if let Some(slot_val) = json.get("result").and_then(|r| r.as_u64()) {
-                return Ok(slot_val);
-            }
-        }
-        _ => {
-            warn!(lez_rpc = %cli.lez_rpc_url, "LEZ endpoint unavailable or testing; returning local baseline slot");
-        }
+    let resp = client
+        .post(&cli.lez_rpc_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("LEZ endpoint unreachable at {}: {}", cli.lez_rpc_url, e))?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "LEZ endpoint returned HTTP {}: {}",
+            resp.status(),
+            cli.lez_rpc_url
+        );
     }
 
-    Ok(15_433_728) // Canonical Period 1884 bootstrap slot baseline
+    let json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse LEZ slot response: {}", e))?;
+
+    if let Some(err) = json.get("error") {
+        anyhow::bail!("LEZ RPC returned error for lez_getInstanceSlot: {}", err);
+    }
+
+    json.get("result").and_then(|r| r.as_u64()).ok_or_else(|| {
+        anyhow::anyhow!(
+            "Invalid slot in LEZ RPC response from {}: {:?}",
+            cli.lez_rpc_url,
+            json
+        )
+    })
 }
 
 /// Derive the appropriate URL for consensus layer requests.
@@ -295,19 +331,35 @@ pub fn derive_consensus_url(cli: &Cli, path_suffix: &str) -> String {
 /// Query standard Ethereum Beacon Node REST API (or Logos Ethereum Core verified proxy) for finalized block header.
 pub async fn fetch_eth_finalized_slot(cli: &Cli, client: &reqwest::Client) -> anyhow::Result<u64> {
     let url = derive_consensus_url(cli, "headers/finalized");
-    let resp = client.get(&url).send().await;
+    let resp = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| anyhow::anyhow!("Consensus endpoint unreachable at {}: {}", url, e))?;
 
-    match resp {
-        Ok(r) if r.status().is_success() => {
-            let body: BeaconHeaderResponse = r.json().await?;
-            let slot: u64 = body.data.header.message.slot.parse()?;
-            Ok(slot)
-        }
-        _ => {
-            warn!(endpoint = %url, "Consensus finalized header endpoint unreachable; using canonical slot");
-            Ok(15_433_760) // Period 1884 update slot
-        }
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "Consensus endpoint returned HTTP {} at {}",
+            resp.status(),
+            url
+        );
     }
+
+    let body: BeaconHeaderResponse = resp.json().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse finalized beacon header from {}: {}",
+            url,
+            e
+        )
+    })?;
+    let slot: u64 = body
+        .data
+        .header
+        .message
+        .slot
+        .parse()
+        .map_err(|e| anyhow::anyhow!("Failed to parse beacon slot string: {}", e))?;
+    Ok(slot)
 }
 
 /// Fetch real LightClientUpdate from Ethereum Beacon API or Logos Ethereum Core proxy.
@@ -318,17 +370,30 @@ pub async fn fetch_light_client_update(
     _to_slot: u64,
 ) -> anyhow::Result<LightClientUpdate> {
     let url = derive_consensus_url(cli, "light_client/finality_update");
-    let resp = client.get(&url).send().await;
+    let resp = client.get(&url).send().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Consensus light client update endpoint unreachable at {}: {}",
+            url,
+            e
+        )
+    })?;
 
-    if let Ok(r) = resp {
-        if r.status().is_success() {
-            let body: FinalityUpdateResponse = r.json().await?;
-            return parse_beacon_update(body);
-        }
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "Consensus light client update endpoint returned HTTP {} at {}",
+            resp.status(),
+            url
+        );
     }
 
-    warn!("Live beacon finality update API unreachable; synthesizing authenticated testnet update vector");
-    Ok(synthesize_canonical_update())
+    let body: FinalityUpdateResponse = resp.json().await.map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to parse light client finality update from {}: {}",
+            url,
+            e
+        )
+    })?;
+    parse_beacon_update(body)
 }
 
 /// Parse standard Beacon API finality update response into native Mosoo types.
@@ -392,7 +457,8 @@ fn hex_to_32(s: &str) -> anyhow::Result<[u8; 32]> {
     Ok(arr)
 }
 
-fn synthesize_canonical_update() -> LightClientUpdate {
+#[cfg(test)]
+pub fn synthesize_canonical_update() -> LightClientUpdate {
     LightClientUpdate {
         attested_header: BeaconBlockHeader {
             slot: 15_433_761,
@@ -427,8 +493,15 @@ fn synthesize_canonical_update() -> LightClientUpdate {
 pub async fn submit_begin(
     cli: &Cli,
     client: &reqwest::Client,
-    _update: &LightClientUpdate,
+    update: &LightClientUpdate,
 ) -> anyhow::Result<u64> {
+    let key = cli.lez_private_key.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("LEZ_PRIVATE_KEY is required to sign and submit consensus updates to LEZ")
+    })?;
+
+    let update_json = serde_json::to_string(update)?;
+    let update_hex = format!("0x{}", hex::encode(update_json.as_bytes()));
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "lez_sendTransaction",
@@ -436,12 +509,50 @@ pub async fn submit_begin(
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "begin_update",
             "chain_id": cli.eth_chain_id,
+            "data": update_hex,
+            "signer": key,
         }],
         "id": 2
     });
 
-    let _ = client.post(&cli.lez_rpc_url).json(&payload).send().await;
-    let job_nonce = rand::thread_rng().gen_range(1..100_000);
+    let resp = client
+        .post(&cli.lez_rpc_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to send begin_update to LEZ sequencer at {}: {}",
+                cli.lez_rpc_url,
+                e
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "LEZ sequencer returned HTTP {} on begin_update",
+            resp.status()
+        );
+    }
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse begin_update response: {}", e))?;
+
+    if let Some(err) = resp_json.get("error") {
+        let err_str = err.to_string();
+        if err_str.contains("JobAlreadyOpen") || err_str.contains("already active") {
+            anyhow::bail!("JobAlreadyOpen");
+        }
+        anyhow::bail!("LEZ RPC execution error on begin_update: {}", err);
+    }
+
+    let job_nonce = resp_json
+        .get("result")
+        .and_then(|r| r.get("job_nonce").or(Some(r)))
+        .and_then(|v| v.as_u64())
+        .unwrap_or_else(|| rand::thread_rng().gen_range(1..100_000));
     Ok(job_nonce)
 }
 
@@ -450,6 +561,10 @@ pub async fn submit_miller(
     client: &reqwest::Client,
     job_nonce: u64,
 ) -> anyhow::Result<()> {
+    let key = cli.lez_private_key.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("LEZ_PRIVATE_KEY is required to sign and submit consensus updates to LEZ")
+    })?;
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "lez_sendTransaction",
@@ -457,11 +572,40 @@ pub async fn submit_miller(
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "miller_update",
             "job_nonce": job_nonce,
+            "signer": key,
         }],
         "id": 3
     });
 
-    let _ = client.post(&cli.lez_rpc_url).json(&payload).send().await;
+    let resp = client
+        .post(&cli.lez_rpc_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to send miller_update to LEZ sequencer at {}: {}",
+                cli.lez_rpc_url,
+                e
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "LEZ sequencer returned HTTP {} on miller_update",
+            resp.status()
+        );
+    }
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse miller_update response: {}", e))?;
+
+    if let Some(err) = resp_json.get("error") {
+        anyhow::bail!("LEZ RPC execution error on miller_update: {}", err);
+    }
+
     Ok(())
 }
 
@@ -470,6 +614,10 @@ pub async fn submit_finish(
     client: &reqwest::Client,
     job_nonce: u64,
 ) -> anyhow::Result<()> {
+    let key = cli.lez_private_key.as_deref().ok_or_else(|| {
+        anyhow::anyhow!("LEZ_PRIVATE_KEY is required to sign and submit consensus updates to LEZ")
+    })?;
+
     let payload = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "lez_sendTransaction",
@@ -477,11 +625,40 @@ pub async fn submit_finish(
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "finish_update",
             "job_nonce": job_nonce,
+            "signer": key,
         }],
         "id": 4
     });
 
-    let _ = client.post(&cli.lez_rpc_url).json(&payload).send().await;
+    let resp = client
+        .post(&cli.lez_rpc_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to send finish_update to LEZ sequencer at {}: {}",
+                cli.lez_rpc_url,
+                e
+            )
+        })?;
+
+    if !resp.status().is_success() {
+        anyhow::bail!(
+            "LEZ sequencer returned HTTP {} on finish_update",
+            resp.status()
+        );
+    }
+
+    let resp_json: serde_json::Value = resp
+        .json()
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to parse finish_update response: {}", e))?;
+
+    if let Some(err) = resp_json.get("error") {
+        anyhow::bail!("LEZ RPC execution error on finish_update: {}", err);
+    }
+
     Ok(())
 }
 
@@ -550,7 +727,7 @@ mod tests {
             eth_execution_rpc: "https://rpc.sepolia.org".to_string(),
             eth_chain_id: 11155111,
             lez_rpc_url: "http://127.0.0.1:8545".to_string(),
-            lez_private_key: "0x01".to_string(),
+            lez_private_key: Some("0x01".to_string()),
             logos_ethereum_core_rpc: None,
             poll_interval_secs: 60,
             log_level: "info".to_string(),
@@ -665,7 +842,7 @@ mod tests {
             eth_execution_rpc: "https://exec.example.com".to_string(),
             eth_chain_id: 1,
             lez_rpc_url: "https://lez.logos.co/rpc".to_string(),
-            lez_private_key: "0x01".to_string(),
+            lez_private_key: Some("0x01".to_string()),
             logos_ethereum_core_rpc: None,
             poll_interval_secs: 60,
             log_level: "info".to_string(),
@@ -690,5 +867,28 @@ mod tests {
         // Also verify leading-slash normalization on path suffix
         let url_with_slash = derive_consensus_url(&cli_no_trailing, "/headers/finalized");
         assert_eq!(url_with_slash, url_no_trailing);
+    }
+
+    #[tokio::test]
+    async fn test_daemon_submit_begin_requires_private_key() {
+        let cli = Cli {
+            eth_consensus_rpc: "https://beacon.example.com".to_string(),
+            eth_execution_rpc: "https://exec.example.com".to_string(),
+            eth_chain_id: 1,
+            lez_rpc_url: "http://127.0.0.1:8545".to_string(),
+            lez_private_key: None,
+            logos_ethereum_core_rpc: None,
+            poll_interval_secs: 60,
+            log_level: "info".to_string(),
+            log_format: "json".to_string(),
+        };
+        let client = reqwest::Client::new();
+        let update = synthesize_canonical_update();
+        let res = submit_begin(&cli, &client, &update).await;
+        assert!(res.is_err());
+        assert!(res
+            .unwrap_err()
+            .to_string()
+            .contains("LEZ_PRIVATE_KEY is required"));
     }
 }

@@ -136,6 +136,7 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         current_sync_committee: args.current_sync_committee,
         next_sync_committee: args.initial_next_committee,
         bootstrap_slot: args.bootstrap_header.slot,
+        bootstrap_header_hash: header_hash,
         initialized: true,
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
@@ -504,18 +505,20 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         if args.header.beacon_block_root != args.instance.current_header_hash {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if args.instance.current_execution_state_root != [0u8; 32]
-            && args.header.execution_state_root != args.instance.current_execution_state_root
+        // Fail-closed verification: To attest state at current_slot, the instance MUST have
+        // authenticated non-zero execution roots. Zero is NEVER a bypass or skip signal!
+        if args.instance.current_execution_state_root == [0u8; 32]
+            || args.header.execution_state_root != args.instance.current_execution_state_root
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if args.instance.current_receipts_root != [0u8; 32]
-            && args.header.receipts_root != args.instance.current_receipts_root
+        if args.instance.current_receipts_root == [0u8; 32]
+            || args.header.receipts_root != args.instance.current_receipts_root
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if args.instance.current_execution_block_hash != [0u8; 32]
-            && args.header.execution_block_hash != args.instance.current_execution_block_hash
+        if args.instance.current_execution_block_hash == [0u8; 32]
+            || args.header.execution_block_hash != args.instance.current_execution_block_hash
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
@@ -824,18 +827,18 @@ pub fn verify_header_record_provenance(
         if header.beacon_block_root != instance.current_header_hash {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if instance.current_execution_state_root != [0u8; 32]
-            && header.execution_state_root != instance.current_execution_state_root
+        if instance.current_execution_state_root == [0u8; 32]
+            || header.execution_state_root != instance.current_execution_state_root
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if instance.current_receipts_root != [0u8; 32]
-            && header.receipts_root != instance.current_receipts_root
+        if instance.current_receipts_root == [0u8; 32]
+            || header.receipts_root != instance.current_receipts_root
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
-        if instance.current_execution_block_hash != [0u8; 32]
-            && header.execution_block_hash != instance.current_execution_block_hash
+        if instance.current_execution_block_hash == [0u8; 32]
+            || header.execution_block_hash != instance.current_execution_block_hash
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
