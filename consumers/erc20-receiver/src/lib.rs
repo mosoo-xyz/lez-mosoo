@@ -569,6 +569,22 @@ impl Erc20Ledger {
         if amount == 0 {
             return Ok(());
         }
+        if from == to {
+            let from_entry =
+                self.accounts
+                    .get(&(*token, *from))
+                    .ok_or(ReceiverError::AccountNotFound {
+                        token: *token,
+                        owner: *from,
+                    })?;
+            if from_entry.balance < amount {
+                return Err(ReceiverError::InsufficientBalance {
+                    available: from_entry.balance,
+                    requested: amount,
+                });
+            }
+            return Ok(());
+        }
         let from_entry =
             self.accounts
                 .get_mut(&(*token, *from))

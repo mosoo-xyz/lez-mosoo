@@ -24,6 +24,7 @@ contract MosooLocker {
     address public owner;
     address public pendingOwner;
     address public attesterAuthority;
+    address public guardian;
     bool public paused;
 
     uint256 public totalLockedETH;
@@ -74,6 +75,7 @@ contract MosooLocker {
     );
 
     event AttesterAuthorityUpdated(address indexed oldAuthority, address indexed newAuthority);
+    event GuardianUpdated(address indexed previousGuardian, address indexed newGuardian);
     event PausedStateChanged(bool isPaused);
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -162,6 +164,7 @@ contract MosooLocker {
     {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || lezRecipient == bytes32(0)) revert ZeroAddress();
+        if (token.code.length == 0) revert ZeroAddress();
 
         uint256 balanceBefore = _getTokenBalance(token, address(this));
         _safeTransferFrom(token, msg.sender, address(this), amount);
@@ -199,7 +202,7 @@ contract MosooLocker {
         if (amount == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (address(this).balance < amount) revert InsufficientLockedETH();
+        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
 
         // 1. Verify burnId canonical derivation: sha256("mosoo_burn_v1" || chain_id || lezOwner || recipient || amount || nonce || slot)
         bytes32 expectedBurnId = keccak256(
@@ -258,6 +261,7 @@ contract MosooLocker {
     ) external whenNotPaused nonReentrant {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || recipient == address(0)) revert ZeroAddress();
+        if (token.code.length == 0) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
         if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
 
@@ -327,6 +331,7 @@ contract MosooLocker {
     }
 
     function _safeTransfer(address token, address to, uint256 amount) internal {
+        if (token.code.length == 0) revert ZeroAddress();
         bytes memory data = abi.encodeWithSelector(0xa9059cbb, to, amount);
         (bool success, bytes memory returnData) = token.call(data);
         if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
@@ -335,6 +340,7 @@ contract MosooLocker {
     }
 
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        if (token.code.length == 0) revert ZeroAddress();
         bytes memory data = abi.encodeWithSelector(0x23b87266, from, to, amount);
         (bool success, bytes memory returnData) = token.call(data);
         if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
@@ -349,12 +355,23 @@ contract MosooLocker {
         return abi.decode(returnData, (uint256));
     }
 
-    // --- Admin Functions ---
+    // --- Admin & Emergency Functions ---
 
     function setAttesterAuthority(address _newAuthority) external onlyOwner {
         if (_newAuthority == address(0)) revert ZeroAddress();
         emit AttesterAuthorityUpdated(attesterAuthority, _newAuthority);
         attesterAuthority = _newAuthority;
+    }
+
+    function setGuardian(address _newGuardian) external onlyOwner {
+        emit GuardianUpdated(guardian, _newGuardian);
+        guardian = _newGuardian;
+    }
+
+    function emergencyPause() external {
+        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        paused = true;
+        emit PausedStateChanged(true);
     }
 
     function setPaused(bool _paused) external onlyOwner {

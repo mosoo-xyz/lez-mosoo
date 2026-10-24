@@ -989,7 +989,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
     let tampered_res = handle_attest_state(AttestStateArgs {
         instance: instance.clone(),
         header: tampered_header,
-        header_history_branch: Some(branch),
+        header_history_branch: Some(branch.clone()),
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
     });
@@ -997,6 +997,22 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         matches!(tampered_res, Err(MosooError::UnauthenticatedHeaderRecord)),
         "Tampered historical root must be rejected with UnauthenticatedHeaderRecord"
     );
+
+    // Zero/uninitialized execution roots on historical header MUST be rejected
+    let mut zero_exec_header = historical_header.clone();
+    zero_exec_header.execution_state_root = [0u8; 32];
+    let zero_res = handle_attest_state(AttestStateArgs {
+        instance: instance.clone(),
+        header: zero_exec_header.clone(),
+        header_history_branch: Some(branch.clone()),
+        proof: dummy_proof.clone(),
+        predicate: predicate.clone(),
+    });
+    assert!(
+        matches!(zero_res, Err(MosooError::UnauthenticatedHeaderRecord)),
+        "Historical header with zero execution_state_root must be rejected"
+    );
+    assert!(verify_header_record_provenance(&instance, &zero_exec_header).is_err());
 
     // Malformed branch depth (17 instead of expected depth 19 for Fulu) MUST be rejected with InvalidProofBranchDepth
     let malformed_branch = vec![[0x88; 32]; 17];

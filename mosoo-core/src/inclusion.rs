@@ -504,6 +504,9 @@ fn verify_account_balance(
     state_root: B256,
     address: Address,
 ) -> Result<VerifiedValue, MosooError> {
+    if state_root == B256::ZERO {
+        return Err(MosooError::InvalidTrieProof);
+    }
     let account_key_hash = keccak256(address.as_slice());
     let nibbles = Nibbles::unpack(account_key_hash.as_slice());
 
@@ -531,6 +534,9 @@ fn verify_storage_slot(
     contract: Address,
     slot: B256,
 ) -> Result<VerifiedValue, MosooError> {
+    if state_root == B256::ZERO {
+        return Err(MosooError::InvalidTrieProof);
+    }
     // Resolve account storage root from state trie.
     let account_key_hash = keccak256(contract.as_slice());
     let account_nibbles = Nibbles::unpack(account_key_hash.as_slice());

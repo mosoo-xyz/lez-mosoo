@@ -545,6 +545,12 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         if computed_state_root != args.instance.current_state_root {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }
+        if args.header.beacon_block_root == [0u8; 32]
+            || args.header.execution_state_root == [0u8; 32]
+            || args.header.execution_block_hash == [0u8; 32]
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
     }
 
     // 4. Verify the Merkle-Patricia inclusion proof against the authenticated header.
@@ -830,6 +836,15 @@ pub fn verify_header_record_provenance(
         }
         if instance.current_execution_block_hash != [0u8; 32]
             && header.execution_block_hash != instance.current_execution_block_hash
+        {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
+    } else {
+        // Enforce fail-closed invariant for historical slots (header.slot < instance.current_slot):
+        // Neither the beacon block root nor execution roots may be trivial / uninitialized zero bytes.
+        if header.beacon_block_root == [0u8; 32]
+            || header.execution_state_root == [0u8; 32]
+            || header.execution_block_hash == [0u8; 32]
         {
             return Err(MosooError::UnauthenticatedHeaderRecord);
         }

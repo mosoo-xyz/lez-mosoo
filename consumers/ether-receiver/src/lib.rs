@@ -545,6 +545,19 @@ impl MethLedger {
         if amount_wei == 0 {
             return Ok(());
         }
+        if from == to {
+            let from_account = self
+                .accounts
+                .get(from)
+                .ok_or(EtherReceiverError::AccountNotFound(*from))?;
+            if from_account.balance_wei < amount_wei {
+                return Err(EtherReceiverError::InsufficientBalance {
+                    available: from_account.balance_wei,
+                    requested: amount_wei,
+                });
+            }
+            return Ok(());
+        }
         let from_account = self
             .accounts
             .get_mut(from)
