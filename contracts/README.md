@@ -21,7 +21,13 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
   - Releases locked ETH directly to `recipient`.
 
 - **Security Guarantees**:
-  - `ReentrancyGuard` protection against recursive calls.
-  - Cryptographic nullifiers prevent double-spending on both chains.
+  - `ReentrancyGuard` protection against recursive calls across deposit and unlock flows.
+  - Cryptographic nullifiers (`executedBurns`) prevent double-spending and cross-chain replay.
+  - Safe token transfer checks: strict contract existence checks (`token.code.length > 0`) preventing phantom transfers on EOAs.
+  - Fee-on-transfer protection via before/after balance differentials on `depositERC20`.
+  - Signature malleability protection: strict EIP-2 upper-bound checks on `s` values.
   - 1:1 asset backing invariance: `totalLockedETH == active_mETH_supply_on_LEZ`.
-  - Emergency pausing mechanism controlled by owner.
+  - Vault accounting invariants: checks `totalLockedETH < amount || address(this).balance < amount` prior to ETH release.
+  - Direct transfer protection: `receive()` strictly reverts to prevent unindexed ether desync.
+  - Dual-role emergency controls: `emergencyPause()` callable by designated `guardian` or `owner`.
+  - Two-step ownership transfers: `transferOwnership` + `acceptOwnership` to guard against operational misdirection.
