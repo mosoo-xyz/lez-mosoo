@@ -666,6 +666,8 @@ fn test_monotonic_slot_progression_boundary_conditions() {
 
     let current_slot = 15_433_760u64;
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0xAB; 32],
         current_state_root: [0xCD; 32],
@@ -1017,6 +1019,8 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
 
     // 1. Stale bootstrap rejected: trusted network head slot is 3,000,000 (> 1,728,000 slots older)
     let init_stale = mosoo_core::verifier::handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
         current_sync_committee: committee.clone(),
@@ -1038,6 +1042,8 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
 
     // 2. Fresh bootstrap succeeds
     let init_ok = mosoo_core::verifier::handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
         current_sync_committee: committee.clone(),
@@ -1070,6 +1076,8 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
     };
 
     let fresh_init = mosoo_core::verifier::handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: new_bootstrap_header,
         current_sync_committee: committee,
@@ -1119,6 +1127,8 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
     };
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0xaa; 32],
         current_state_root: [0xdd; 32],

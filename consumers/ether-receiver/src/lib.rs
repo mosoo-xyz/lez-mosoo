@@ -1164,6 +1164,8 @@ mod tests {
             build_test_account_balance_proof(Address::from(user_addr), balance);
 
         let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
             chain_id: ETH_MAINNET_CHAIN_ID,
             current_header_hash: [0x55; 32],
             current_state_root: [0x66; 32],
@@ -1240,6 +1242,8 @@ mod tests {
             build_test_account_balance_proof(Address::from(user_addr), balance);
 
         let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
             chain_id: ETH_MAINNET_CHAIN_ID,
             current_header_hash: [0x55; 32],
             current_state_root: [0x66; 32],
@@ -1312,6 +1316,8 @@ mod tests {
             build_test_account_balance_proof(Address::from(user_addr), balance);
 
         let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
             chain_id: ETH_MAINNET_CHAIN_ID,
             current_header_hash: [0x55; 32],
             current_state_root: [0x66; 32],

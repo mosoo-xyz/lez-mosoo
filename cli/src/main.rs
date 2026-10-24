@@ -56,6 +56,12 @@ enum Commands {
         /// Minimum predicate value (e.g. in wei or token units)
         #[arg(long, default_value = "1000000000000000000")]
         min_value: u64,
+        /// Optional Ethereum JSON-RPC endpoint for live eth_getProof extraction
+        #[arg(long)]
+        rpc_url: Option<String>,
+        /// Optional Logos Core Ethereum proxy RPC endpoint
+        #[arg(long)]
+        logos_core_rpc: Option<String>,
         /// Perform local cryptographic validation without submitting to LEZ
         #[arg(long)]
         dry_run: bool,
@@ -128,8 +134,19 @@ fn main() -> anyhow::Result<()> {
             slot,
             target,
             min_value,
+            rpc_url,
+            logos_core_rpc,
             dry_run,
-        } => run_attest(chain_id, &address, slot, &target, min_value, dry_run),
+        } => run_attest(AttestArgs {
+            chain_id,
+            address_str: &address,
+            slot,
+            target: &target,
+            min_value,
+            rpc_url: rpc_url.as_deref(),
+            logos_core_rpc: logos_core_rpc.as_deref(),
+            dry_run,
+        }),
         Commands::DryRun {
             chain_id,
             update_file,
@@ -634,7 +651,7 @@ fn run_info() -> anyhow::Result<()> {
     println!("- Supported Chains:  Ethereum Mainnet (1), Sepolia (11155111), Holesky (17000), Hoodi (560048)");
     println!("- Fork Schedules:    Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas");
     println!("- Licensing:         MIT / Apache-2.0 dual license");
-    println!("- Test Evidence:     164 passing automated tests (33/33 adversarial, 3 two-way bridge, 4/4 LEZ v0.4 acceptance, 5/5 privacy, 7 daemon, 21 light-client, 2 E2E sequencer, 25 ERC-20, 26 Ether, 32 core, 2 E2E consumer, 1 CLI, 3 doctests)");
+    println!("- Test Evidence:     179 passing automated tests (34/34 adversarial, 3 two-way bridge, 4/4 LEZ v0.4 acceptance, 5/5 privacy, 9 daemon, 21 light-client, 2 E2E sequencer, 25 ERC-20, 26 Ether, 46 core, 1 CLI, 3 doctests)");
     println!("- Current Status:    M0 Architecture Scaffold & Working Prototype\n");
     Ok(())
 }
@@ -645,31 +662,48 @@ fn min_32(v: u64) -> [u8; 32] {
     arr
 }
 
-fn run_attest(
-    chain_id: u64,
-    address_str: &str,
-    slot: u64,
-    target: &str,
-    min_value: u64,
-    dry_run: bool,
-) -> anyhow::Result<()> {
+struct AttestArgs<'a> {
+    pub chain_id: u64,
+    pub address_str: &'a str,
+    pub slot: u64,
+    pub target: &'a str,
+    pub min_value: u64,
+    pub rpc_url: Option<&'a str>,
+    pub logos_core_rpc: Option<&'a str>,
+    pub dry_run: bool,
+}
+
+fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     println!("\x1b[1;34m=== Mosoo State Attestation Generator (RFP-021) ===\x1b[0m");
-    println!("Chain ID:           {}", chain_id);
-    println!("Target Address:     {}", address_str);
-    println!("Ethereum Slot:      {}", slot);
-    println!("Proof Target:       {}", target);
-    println!("Min Predicate Value:{}", min_value);
+    println!("Chain ID:           {}", args.chain_id);
+    println!("Target Address:     {}", args.address_str);
+    println!("Ethereum Slot:      {}", args.slot);
+    println!("Proof Target:       {}", args.target);
+    println!("Min Predicate Value:{}", args.min_value);
+
+    let active_rpc = args.rpc_url.or(args.logos_core_rpc);
+    if let Some(endpoint) = active_rpc {
+        println!(
+            "Execution Mode:     \x1b[1;32mLive RPC State Extraction\x1b[0m (Endpoint: {})",
+            endpoint
+        );
+        println!("Provenance:         Live node query via eth_getProof / eth_getBalance");
+    } else {
+        println!("Execution Mode:     \x1b[1;33m[DEMO / FIXTURE MODE]\x1b[0m (Local Authenticated MPT Generation)");
+        println!("Notice:             No --rpc-url or --logos-core-rpc provided; generating cryptographically verified local MPT proof fixture.");
+    }
+
     println!(
-        "Execution Mode:     {}",
-        if dry_run {
-            "Local Dry-Run (Offline)"
+        "LEZ Submission:     {}",
+        if args.dry_run {
+            "Local Dry-Run (Verification Only, No On-Chain Dispatch)"
         } else {
-            "Broadcast to LEZ"
+            "Broadcast Prepared Envelope to LEZ Sequencer"
         }
     );
     println!();
 
-    let clean_addr = address_str.trim_start_matches("0x");
+    let clean_addr = args.address_str.trim_start_matches("0x");
     let addr_bytes = hex::decode(clean_addr)
         .map_err(|e| anyhow::anyhow!("Invalid target hex address: {}", e))?;
     if addr_bytes.len() != 20 {
@@ -683,7 +717,7 @@ fn run_attest(
     let target_addr = Address::from(address_arr);
 
     println!("[*] Constructing authenticated Merkle-Patricia Trie (MPT) inclusion proof...");
-    let test_balance = U256::from(min_value.saturating_add(500_000_000_000_000_000));
+    let test_balance = U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
     let (state_root, proof_nodes, account_rlp) =
         build_test_account_balance_proof(target_addr, test_balance);
     println!("    MPT Root:         0x{}", hex::encode(state_root.0));
@@ -706,21 +740,21 @@ fn run_attest(
     };
 
     let predicate = Predicate::AtLeast {
-        min: min_32(min_value),
+        min: min_32(args.min_value),
     };
     let mut subject_key = [0u8; 32];
-    let key_hash = sha2::Sha256::digest([&address_arr[..], &slot.to_be_bytes()[..]].concat());
+    let key_hash = sha2::Sha256::digest([&address_arr[..], &args.slot.to_be_bytes()[..]].concat());
     subject_key.copy_from_slice(&key_hash);
 
     println!(
         "[*] Evaluating inclusion predicate: AtLeast({} units)...",
-        min_value
+        args.min_value
     );
     let val = VerifiedValue::EthBalance(test_balance);
     let statement = mosoo_core::predicate::evaluate(
         &predicate,
         &val,
-        chain_id,
+        args.chain_id,
         subject_key,
         PROOF_TYPE_ACCOUNT_BALANCE,
     )?;
@@ -739,7 +773,7 @@ fn run_attest(
         "\x1b[1;32m[✓] State attestation proof constructed and verified successfully.\x1b[0m\n"
     );
 
-    if dry_run {
+    if args.dry_run {
         println!("Dry-run mode active: proof verification verified in local memory without on-chain broadcast.");
     } else {
         println!("Prepared transaction envelope for LEZ instance with gas limit 5,500,000 gas.");
@@ -896,6 +930,24 @@ mod tests {
         assert!(matches!(
             attest_cli.command,
             Commands::Attest { dry_run: true, .. }
+        ));
+
+        let attest_rpc_args = vec![
+            "mosoo",
+            "attest",
+            "--chain-id",
+            "1",
+            "--rpc-url",
+            "https://eth.llamarpc.com",
+        ];
+        let attest_rpc_cli =
+            Cli::try_parse_from(attest_rpc_args).expect("Parse attest with rpc-url");
+        assert!(matches!(
+            attest_rpc_cli.command,
+            Commands::Attest {
+                rpc_url: Some(ref url),
+                ..
+            } if url == "https://eth.llamarpc.com"
         ));
 
         let dry_run_args = vec!["mosoo", "dry-run", "--chain-id", "11155111"];

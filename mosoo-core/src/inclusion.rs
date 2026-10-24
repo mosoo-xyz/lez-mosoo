@@ -471,17 +471,24 @@ pub fn rlp_decode_list_items(buf: &[u8]) -> Result<Vec<&[u8]>, MosooError> {
         if buf.len() < 1 + ll {
             return Err(MosooError::RlpDecodeFailed("truncated list header".into()));
         }
-        let len = decode_be_usize(&buf[1..1 + ll]);
-        if buf.len() < 1 + ll + len {
+        let len = decode_be_usize(&buf[1..1 + ll])?;
+        let total = 1usize
+            .checked_add(ll)
+            .and_then(|v| v.checked_add(len))
+            .ok_or_else(|| MosooError::RlpDecodeFailed("RLP list length overflow".into()))?;
+        if buf.len() < total {
             return Err(MosooError::RlpDecodeFailed("truncated list payload".into()));
         }
-        &buf[1 + ll..1 + ll + len]
+        &buf[1 + ll..total]
     } else if first >= 0xc0 {
         let len = (first - 0xc0) as usize;
-        if buf.len() < 1 + len {
+        let total = 1usize
+            .checked_add(len)
+            .ok_or_else(|| MosooError::RlpDecodeFailed("RLP list length overflow".into()))?;
+        if buf.len() < total {
             return Err(MosooError::RlpDecodeFailed("truncated list payload".into()));
         }
-        &buf[1..1 + len]
+        &buf[1..total]
     } else {
         return Err(MosooError::RlpDecodeFailed(format!(
             "expected RLP list prefix, got 0x{first:02x}"
@@ -613,9 +620,35 @@ fn rlp_decode_account_fields(rlp: &[u8]) -> Result<[&[u8]; 4], MosooError> {
     let first = buf[0];
     if first >= 0xf8 {
         let ll = (first - 0xf7) as usize;
-        buf = &buf[1 + ll..];
+        if buf.len() < 1 + ll {
+            return Err(MosooError::RlpDecodeFailed(
+                "truncated account RLP list length-of-length".into(),
+            ));
+        }
+        let list_len = decode_be_usize(&buf[1..1 + ll])?;
+        let total = 1usize
+            .checked_add(ll)
+            .and_then(|v| v.checked_add(list_len))
+            .ok_or_else(|| {
+                MosooError::RlpDecodeFailed("account RLP list length overflow".into())
+            })?;
+        if buf.len() < total {
+            return Err(MosooError::RlpDecodeFailed(
+                "truncated account RLP payload".into(),
+            ));
+        }
+        buf = &buf[1 + ll..total];
     } else if first >= 0xc0 {
-        buf = &buf[1..];
+        let list_len = (first - 0xc0) as usize;
+        let total = 1usize.checked_add(list_len).ok_or_else(|| {
+            MosooError::RlpDecodeFailed("account RLP list length overflow".into())
+        })?;
+        if buf.len() < total {
+            return Err(MosooError::RlpDecodeFailed(
+                "truncated account RLP payload".into(),
+            ));
+        }
+        buf = &buf[1..total];
     } else {
         return Err(MosooError::RlpDecodeFailed(format!(
             "expected RLP list, got prefix 0x{first:02x}"
@@ -644,16 +677,28 @@ fn rlp_next_item(buf: &[u8]) -> Result<(&[u8], &[u8]), MosooError> {
         (first - 0x80, 1)
     } else if first < 0xc0 {
         let ll = first - 0xb7;
-        let l = decode_be_usize(&buf[1..1 + ll]);
+        if buf.len() < 1 + ll {
+            return Err(MosooError::RlpDecodeFailed(
+                "truncated RLP string length-of-length".into(),
+            ));
+        }
+        let l = decode_be_usize(&buf[1..1 + ll])?;
         (l, 1 + ll)
     } else if first < 0xf8 {
         (first - 0xc0, 1)
     } else {
         let ll = first - 0xf7;
-        let l = decode_be_usize(&buf[1..1 + ll]);
+        if buf.len() < 1 + ll {
+            return Err(MosooError::RlpDecodeFailed(
+                "truncated RLP list length-of-length".into(),
+            ));
+        }
+        let l = decode_be_usize(&buf[1..1 + ll])?;
         (l, 1 + ll)
     };
-    let total = hlen + len;
+    let total = hlen
+        .checked_add(len)
+        .ok_or_else(|| MosooError::RlpDecodeFailed("RLP item length overflow".into()))?;
     if buf.len() < total {
         return Err(MosooError::RlpDecodeFailed("truncated RLP item".into()));
     }
@@ -696,8 +741,20 @@ pub fn rlp_strip_prefix(item: &[u8]) -> &[u8] {
     }
 }
 
-fn decode_be_usize(bytes: &[u8]) -> usize {
-    bytes.iter().fold(0usize, |acc, &b| (acc << 8) | b as usize)
+fn decode_be_usize(bytes: &[u8]) -> Result<usize, MosooError> {
+    if bytes.len() > core::mem::size_of::<usize>() {
+        return Err(MosooError::RlpDecodeFailed(
+            "RLP length field exceeds platform pointer width".into(),
+        ));
+    }
+    let mut acc = 0usize;
+    for &b in bytes {
+        acc = acc
+            .checked_mul(256)
+            .and_then(|v| v.checked_add(b as usize))
+            .ok_or_else(|| MosooError::RlpDecodeFailed("RLP integer overflow".into()))?;
+    }
+    Ok(acc)
 }
 
 /// Extracts `(state_root, receipts_root, block_number)` from an RLP execution block header
@@ -1285,5 +1342,63 @@ mod tests {
         let verified =
             verify_state_proof(&proof, &header).expect("Account balance proof must verify");
         assert_eq!(verified, VerifiedValue::EthBalance(balance));
+    }
+
+    #[test]
+    fn test_rlp_truncated_length_of_length_returns_typed_error_without_panic() {
+        // Long string prefix 0xb9 indicates 2-byte length follows, but buffer ends immediately
+        let truncated_str = [0xb9u8];
+        let res = rlp_next_item(&truncated_str);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+
+        // Long list prefix 0xf9 indicates 2-byte length follows, but buffer ends immediately
+        let truncated_list = [0xf9u8];
+        let res = rlp_next_item(&truncated_list);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+
+        // Long string prefix 0xba indicates 3-byte length follows, but only 1 byte present
+        let truncated_str_partial = [0xbau8, 0x01];
+        let res = rlp_next_item(&truncated_str_partial);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+
+        // Long list prefix 0xfa indicates 3-byte length follows, but only 1 byte present
+        let truncated_list_partial = [0xfau8, 0x01];
+        let res = rlp_next_item(&truncated_list_partial);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_rlp_decode_account_fields_truncated_returns_typed_error_without_panic() {
+        // Truncated list prefix in account RLP
+        let truncated_account_1 = [0xf8u8];
+        assert!(matches!(
+            rlp_decode_account_fields(&truncated_account_1),
+            Err(MosooError::RlpDecodeFailed(_))
+        ));
+
+        let truncated_account_2 = [0xf9u8, 0x05];
+        assert!(matches!(
+            rlp_decode_account_fields(&truncated_account_2),
+            Err(MosooError::RlpDecodeFailed(_))
+        ));
+
+        let empty_account = [];
+        assert!(matches!(
+            rlp_decode_account_fields(&empty_account),
+            Err(MosooError::RlpDecodeFailed(_))
+        ));
+    }
+
+    #[test]
+    fn test_rlp_decode_list_items_overflow_safety() {
+        // Buffer claiming 10,000 bytes payload when only 2 bytes exist
+        let invalid_buf = [0xf9u8, 0x27, 0x10];
+        let res = rlp_decode_list_items(&invalid_buf);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+
+        // Empty buffer
+        let empty_buf = [];
+        let res = rlp_decode_list_items(&empty_buf);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
     }
 }

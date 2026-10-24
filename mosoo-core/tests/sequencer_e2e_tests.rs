@@ -142,6 +142,8 @@ fn test_sequencer_full_lifecycle_e2e() {
     assert_eq!(computed_root, state_root);
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0x55; 32],
         current_state_root: [0x66; 32],
@@ -418,6 +420,8 @@ fn test_sequencer_sepolia_gloas_lifecycle_e2e() {
     // 1. Initialize Sepolia instance
     let initial_committee = make_committee_512();
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: sepolia_chain,
         current_header_hash: [0x88; 32],
         current_state_root: [0x77; 32],

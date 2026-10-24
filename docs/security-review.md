@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Audit Boundary & Milestones:**
-> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 32 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
+> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 34 mutation attack tests (`tests/adversarial_mutation_tests.rs`), and two-way cross-chain bridge security suite (`tests/two_way_bridge_tests.rs`) passing in CI.
 > - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
 
 ---
@@ -158,6 +158,8 @@ All 32 attack vectors are implemented as automated regression tests in `tests/ad
 | `test_security_audit_attack_30` | Gloas RLP execution header hash mismatch | `MosooError::GloasExecutionRlpMismatch` |
 | `test_security_audit_attack_31` | Authentic beacon root with tampered execution roots | `MosooError::UnauthenticatedHeaderRecord` |
 | `test_security_audit_attack_32` | Sequential multi-update boundary rotation invariant | Verified multi-update boundary progression |
+| `test_security_audit_attack_33` | Predicate variation replay on identical Ethereum state | Enforce canonical state fact binding; invariant statement ID rejects altered predicate replay |
+| `test_security_audit_attack_34` | Cross-instance job injection on same chain (RFP-021 #15) | Job PDA keying binds `instance_id` & `chain_id`; rejected with `JobInstanceMismatch` |
 
 ### 3.1 Two-Way Bridge Security & Escrow Defense Harness
 

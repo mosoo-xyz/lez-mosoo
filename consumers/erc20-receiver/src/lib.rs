@@ -1184,6 +1184,8 @@ mod tests {
         let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
 
         let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
             chain_id: ETH_MAINNET_CHAIN_ID,
             current_header_hash: [0x55; 32],
             current_state_root: [0x66; 32],
@@ -1271,6 +1273,8 @@ mod tests {
             build_leaf_mpt_proof(&alloy_rlp::encode(0u64), &receipt_rlp);
 
         let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
             chain_id: ETH_MAINNET_CHAIN_ID,
             current_header_hash: [0x55; 32],
             current_state_root: [0x66; 32],
@@ -1354,6 +1358,8 @@ mod tests {
             build_leaf_mpt_proof(&alloy_rlp::encode(0u64), &receipt_rlp);
 
         let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
             chain_id: ETH_MAINNET_CHAIN_ID,
             current_header_hash: [0x55; 32],
             current_state_root: [0x66; 32],

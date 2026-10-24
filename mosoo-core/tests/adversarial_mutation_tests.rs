@@ -119,6 +119,8 @@ fn test_mutation_attack_3_stale_update_rejected() {
     let stale_slot = 10_499_999u64;
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0x55; 32],
         current_state_root: [0x66; 32],
@@ -231,6 +233,8 @@ fn test_mutation_attack_4_forged_committee_branch_rejected() {
     // 2. Invoking handle_initialize with corrupted bootstrap branch (gindex 54) MUST fail
     let genuine_bootstrap_root = compute_branch_root(committee_leaf, &genuine_branch, 54);
     let init_res = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: BeaconBlockHeader {
             slot: 10_000_000,
@@ -544,6 +548,8 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
 #[test]
 fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0x55; 32],
         current_state_root: [0x66; 32],
@@ -647,6 +653,8 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
 
     // Scenario D: Attacker attempts to attest state against an instance with zero/unauthenticated execution roots (e.g. at bootstrap)
     let zero_exec_instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0x55; 32],
         current_state_root: [0x66; 32],
@@ -842,6 +850,8 @@ fn make_valid_bls_committee_with_seed(count: usize, seed: u8) -> SyncCommittee {
 #[test]
 fn test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0x55; 32],
         current_state_root: [0x66; 32],
@@ -972,6 +982,8 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
 
     // Attack 11A: Next committee supplied without branch proof MUST be rejected
     let res_no_branch = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
         current_sync_committee: current_comm.clone(),
@@ -988,6 +1000,8 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
     // Attack 11B: Next committee supplied with corrupted branch MUST be rejected
     let corrupted_next_branch = vec![[0xfe; 32]; 5];
     let res_bad_branch = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
         current_sync_committee: current_comm.clone(),
@@ -1003,6 +1017,8 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
 
     // Legitimate bootstrap without initial_next_committee succeeds cleanly
     let res_clean = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header,
         current_sync_committee: current_comm,
@@ -1079,6 +1095,8 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
     let expected_state_root = compute_branch_root(historical_beacon_root, &branch, gindex);
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0x55; 32],
         current_state_root: expected_state_root,
@@ -1539,6 +1557,8 @@ fn test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention() {
 #[test]
 fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 20_000,
         current_header_hash: [0x11; 32],
@@ -1603,6 +1623,8 @@ fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
 #[test]
 fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100,
         current_header_hash: [0x11; 32],
@@ -1618,6 +1640,7 @@ fn test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection() {
     };
 
     let done_job = JobAccount {
+        instance_id: [0u8; 32],
         instance_chain_id: ETH_MAINNET_CHAIN_ID,
         instance_slot: 100,
         stage: JobStage::Done,
@@ -1746,6 +1769,8 @@ fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevent
 #[test]
 fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 2_000_000,
         current_header_hash: [0x11; 32],
@@ -1801,7 +1826,7 @@ fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
     assert!(matches!(err, MosooError::WeakSubjectivityExpired { .. }));
 
     // Spec-compliant recovery: initialize a FRESH instance at the contemporary checkpoint
-    let comm = make_test_committee(512);
+    let comm = make_valid_bls_committee(512);
     let leaf = hash_tree_root_sync_committee(&comm).unwrap();
     let branch = vec![[0x55; 32]; 5];
     let computed_root = compute_branch_root(leaf, &branch, 54);
@@ -1814,6 +1839,8 @@ fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
     };
 
     let fresh_res = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: fresh_bootstrap_header,
         current_sync_committee: comm,
@@ -1870,6 +1897,8 @@ fn test_security_audit_attack_20_reverted_transaction_receipt_rejected() {
 #[test]
 fn test_security_audit_attack_21_out_of_order_update_slots_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100,
         current_header_hash: [0x11; 32],
@@ -1967,6 +1996,8 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
 
     // Case 1: trusted_head_slot is 0 (missing/zero)
     let err_zero = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header.clone(),
         current_sync_committee: committee.clone(),
@@ -1980,6 +2011,8 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
 
     // Case 2: trusted_head_slot precedes bootstrap slot (inconsistent future bootstrap)
     let err_precede = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header.clone(),
         current_sync_committee: committee.clone(),
@@ -1995,6 +2028,8 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
 
     // Case 3: trusted_head_slot is past weak subjectivity window (> 1,728,000 slots)
     let err_expired = handle_initialize(InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header,
         current_sync_committee: committee,
@@ -2022,6 +2057,8 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
         mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(user_addr, balance);
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100,
         current_header_hash: [0x11; 32],
@@ -2082,6 +2119,8 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
 #[test]
 fn test_security_audit_attack_25_committee_handoff_period_skip_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100, // Period 0 (0..8191)
         current_header_hash: [0x11; 32],
@@ -2148,6 +2187,8 @@ fn test_security_audit_attack_25_committee_handoff_period_skip_rejected() {
 #[test]
 fn test_security_audit_attack_26_next_period_missing_authenticated_committee_rejected() {
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100, // Period 0
         current_header_hash: [0x11; 32],
@@ -2213,6 +2254,8 @@ fn test_security_audit_attack_27_previous_committee_future_period_signature_reje
     let comm_period_1 = make_valid_bls_committee_with_seed(512, 2);
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100, // Period 0
         current_header_hash: [0x11; 32],
@@ -2310,6 +2353,8 @@ fn test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_p
     let comm_1 = make_test_committee(512);
 
     let mut instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 100, // Period 0
         current_header_hash: [0x11; 32],
@@ -2372,6 +2417,7 @@ fn test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_p
     };
 
     let job = JobAccount {
+        instance_id: [0u8; 32],
         instance_chain_id: instance.chain_id,
         instance_slot: instance.current_slot,
         stage: JobStage::Finish,
@@ -2550,6 +2596,8 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
     let current_slot = 10_000u64;
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: genuine_beacon_root,
         current_state_root: [0x55; 32],
@@ -2668,6 +2716,8 @@ fn test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_
     let comm_2 = make_valid_bls_committee_with_seed(512, 3);
 
     let mut instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_slot: 8_100, // Period 0
         current_header_hash: [0x11; 32],
@@ -2747,4 +2797,268 @@ fn test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_
         instance.next_sync_committee.as_ref().unwrap().pubkeys[0],
         comm_2.pubkeys[0]
     );
+}
+
+/// Attack 33: Predicate Variation Replay Attack Prevention on Identical Ethereum State.
+///
+/// An attacker attempts to bypass replay prevention for an Ethereum state event by submitting
+/// a second transaction with an altered predicate (e.g. AtLeast(100) vs AtLeast(200)), attempting
+/// to generate an alternate statement ID and double-claim consumer funds.
+///
+/// The statement engine enforces canonical state fact binding, ensuring that statements for the
+/// identical underlying state share the deterministic statement identity, and consumer nullifiers
+/// reject the duplicate claim.
+#[test]
+fn test_security_audit_attack_33_predicate_variation_replay_attack_rejected() {
+    let mut nullifiers = erc20_receiver::NullifierSet::new();
+    let token = [0x55; 20];
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let block_hash = [0x77; 32];
+    let slot = 10_000_000u64;
+    let tx_index = 0u64;
+    let log_index = 0usize;
+
+    let subject_key = erc20_receiver::derive_erc20_transfer_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &token,
+        &sender,
+        &recipient,
+    );
+
+    let mut verified_value = [0u8; 32];
+    verified_value[24..32].copy_from_slice(&500_000u64.to_be_bytes());
+
+    // Statement 1: Predicate AtLeast(100_000)
+    let pred_1 = Predicate::AtLeast {
+        min: {
+            let mut m = [0u8; 32];
+            m[24..32].copy_from_slice(&100_000u64.to_be_bytes());
+            m
+        },
+    };
+    let stmt_1 = mosoo_core::predicate::evaluate_with_binding(
+        &pred_1,
+        &mosoo_core::inclusion::VerifiedValue::StorageValue(verified_value),
+        ETH_MAINNET_CHAIN_ID,
+        subject_key,
+        PROOF_TYPE_ERC20_TRANSFER,
+        StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract: token,
+            sender,
+            recipient,
+        },
+    )
+    .expect("Statement 1 generation succeeds");
+
+    // First claim succeeds
+    let claim_1 =
+        erc20_receiver::claim(&stmt_1, &mut nullifiers, 100_000).expect("First claim MUST succeed");
+    assert_eq!(claim_1, 500_000);
+
+    // Attacker constructs Statement 2 for identical underlying transfer with altered predicate AtLeast(200_000)
+    let pred_2 = Predicate::AtLeast {
+        min: {
+            let mut m = [0u8; 32];
+            m[24..32].copy_from_slice(&200_000u64.to_be_bytes());
+            m
+        },
+    };
+    let stmt_2 = mosoo_core::predicate::evaluate_with_binding(
+        &pred_2,
+        &mosoo_core::inclusion::VerifiedValue::StorageValue(verified_value),
+        ETH_MAINNET_CHAIN_ID,
+        subject_key,
+        PROOF_TYPE_ERC20_TRANSFER,
+        StatementBinding::Erc20Transfer {
+            execution_block_hash: block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract: token,
+            sender,
+            recipient,
+        },
+    )
+    .expect("Statement 2 generation succeeds");
+
+    // Statement IDs MUST be invariant under predicate variation for identical state
+    assert_eq!(
+        stmt_1.statement_id, stmt_2.statement_id,
+        "Statement ID MUST NOT change when varying the predicate over identical Ethereum state"
+    );
+
+    // Second claim MUST be strictly rejected as AlreadyClaimed!
+    let err = erc20_receiver::claim(&stmt_2, &mut nullifiers, 200_000)
+        .expect_err("Duplicate claim with altered predicate MUST be rejected as AlreadyClaimed");
+    assert_eq!(err, erc20_receiver::ReceiverError::AlreadyClaimed);
+}
+
+/// Attack 34: Multiple Independent Instances per Chain & Cross-Instance Job Injection Rejection (RFP-021 Functionality #15).
+///
+/// Demonstrates that:
+/// 1. Multiple independent light client instances can coexist on the same chain (Ethereum Mainnet),
+///    each maintaining its own unique `instance_id`, independent checkpoint, and tracking state.
+/// 2. An attacker cannot take an open verification job belonging to Instance A (`[0xAA; 32]`)
+///    and apply it to Instance B (`[0xBB; 32]`), even though both track the same chain ID.
+///    The verifier MUST strictly reject with `JobInstanceMismatch`.
+#[test]
+fn test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_rejected() {
+    let comm = make_valid_bls_committee(512);
+    let comm_leaf = hash_tree_root_sync_committee(&comm).unwrap();
+    let bootstrap_slot = 10_000_000u64;
+    let gindex = current_sync_committee_gindex(ETH_MAINNET_CHAIN_ID, bootstrap_slot);
+    let branch = vec![[0x33; 32]; 5];
+    let computed_state_root = compute_branch_root(comm_leaf, &branch, gindex);
+
+    let header = BeaconBlockHeader {
+        slot: bootstrap_slot,
+        proposer_index: 1,
+        parent_root: [0x11; 32],
+        state_root: computed_state_root,
+        body_root: [0x22; 32],
+    };
+
+    let instance_id_a = [0xAA; 32];
+    let instance_id_b = [0xBB; 32];
+
+    // Initialize Instance A
+    let init_a = InitializeArgs {
+        instance_id: instance_id_a,
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header.clone(),
+        current_sync_committee: comm.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: bootstrap_slot + 10,
+    };
+    let output_a = handle_initialize(init_a).expect("Initialize Instance A succeeds");
+    let instance_a = match output_a {
+        InstructionOutput::Initialized(inst) => inst,
+        _ => panic!("Expected Initialized"),
+    };
+    assert_eq!(instance_a.instance_id, instance_id_a);
+    assert_eq!(instance_a.chain_id, ETH_MAINNET_CHAIN_ID);
+
+    // Initialize Instance B on the same chain (Mainnet) with distinct instance_id
+    let init_b = InitializeArgs {
+        instance_id: instance_id_b,
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header.clone(),
+        current_sync_committee: comm.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: bootstrap_slot + 10,
+    };
+    let output_b = handle_initialize(init_b).expect("Initialize Instance B succeeds");
+    let instance_b = match output_b {
+        InstructionOutput::Initialized(inst) => inst,
+        _ => panic!("Expected Initialized"),
+    };
+    assert_eq!(instance_b.instance_id, instance_id_b);
+    assert_eq!(instance_b.chain_id, ETH_MAINNET_CHAIN_ID);
+
+    // Both instances coexist on Mainnet with distinct PDA seeds
+    let chain_bytes = ETH_MAINNET_CHAIN_ID.to_le_bytes();
+    let seeds_a =
+        mosoo_core::types::derive_instance_pda_seeds(&chain_bytes, &instance_a.instance_id);
+    let seeds_b =
+        mosoo_core::types::derive_instance_pda_seeds(&chain_bytes, &instance_b.instance_id);
+    assert_ne!(
+        seeds_a[2], seeds_b[2],
+        "PDA seeds for instances A and B MUST differ"
+    );
+
+    // Construct valid update for slot 10_000_032
+    let next_slot = bootstrap_slot + 32;
+    let mut bits = vec![0u8; 64];
+    for i in 0..400 {
+        bits[i / 8] |= 1 << (i % 8);
+    }
+    let sig = vec![0x00; 96];
+
+    let update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: next_slot,
+            proposer_index: 1,
+            parent_root: [0x11; 32],
+            state_root: [0x22; 32],
+            body_root: [0x33; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: next_slot,
+            proposer_index: 1,
+            parent_root: [0x11; 32],
+            state_root: [0x22; 32],
+            body_root: [0x33; 32],
+        },
+        finality_branch: vec![[0x44; 32]; 6],
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: bits,
+            sync_committee_signature: sig,
+        },
+        signature_slot: next_slot,
+    };
+
+    let begin_out = handle_begin_update(BeginUpdateArgs {
+        instance: instance_a.clone(),
+        update: update.clone(),
+        nonce: 1,
+    })
+    .expect("Begin update for instance A succeeds");
+
+    let job_a = match begin_out {
+        InstructionOutput::JobCreated(j) => j,
+        _ => panic!("Expected JobCreated"),
+    };
+    assert_eq!(job_a.instance_id, instance_id_a);
+    assert_eq!(job_a.instance_chain_id, ETH_MAINNET_CHAIN_ID);
+
+    // Cross-Instance Attack on Miller: Attacker tries to submit Job A to Instance B on the same chain!
+    let err_cross_miller = handle_miller_update(MillerUpdateArgs {
+        instance: instance_b.clone(), // Cross-instance submission!
+        job: job_a.clone(),
+    })
+    .expect_err("Cross-instance miller update on same chain MUST be rejected");
+    assert!(matches!(
+        err_cross_miller,
+        MosooError::JobInstanceMismatch { .. }
+    ));
+
+    // Cross-Instance Attack on Finish: Attacker tries to finish Job A on Instance B!
+    let mut fake_finish_job = job_a.clone();
+    fake_finish_job.stage = JobStage::Finish;
+    fake_finish_job.miller_output = Some(MillerOutput {
+        miller_result: vec![0u8; 1152],
+    });
+
+    let err_cross_finish = handle_finish_update(FinishUpdateArgs {
+        instance: instance_b.clone(),
+        job: fake_finish_job,
+    })
+    .expect_err("Cross-instance finish update on same chain MUST be rejected");
+    assert!(matches!(
+        err_cross_finish,
+        MosooError::JobInstanceMismatch { .. }
+    ));
+
+    // Both instances remain in their independent states
+    assert_eq!(instance_a.current_slot, bootstrap_slot);
+    assert_eq!(instance_b.current_slot, bootstrap_slot);
 }

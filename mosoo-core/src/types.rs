@@ -132,11 +132,39 @@ pub fn compute_sync_committee_period(slot: u64) -> u64 {
     slot / SLOTS_PER_SYNC_COMMITTEE_PERIOD
 }
 
-/// **Instance Account** — one per tracked Ethereum network.
+/// Explicit consensus network configuration parameters.
+/// Allows the same uncompiled program binary to track any Ethereum-consensus network
+/// (including devnets and L2s with custom genesis validators root and fork schedules)
+/// per RFP-021 Functionality #14.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct NetworkConfig {
+    pub chain_id: u64,
+    pub genesis_validators_root: [u8; 32],
+    #[serde(default)]
+    pub altair_fork_version: [u8; 4],
+    #[serde(default)]
+    pub bellatrix_fork_version: [u8; 4],
+    #[serde(default)]
+    pub capella_fork_version: [u8; 4],
+    #[serde(default)]
+    pub deneb_fork_version: [u8; 4],
+    #[serde(default)]
+    pub electra_fork_version: [u8; 4],
+    #[serde(default)]
+    pub fulu_fork_version: [u8; 4],
+    #[serde(default)]
+    pub gloas_fork_version: [u8; 4],
+}
+
+/// **Instance Account** — light client tracker instance on LEZ.
 ///
-/// PDA seed: `["mosoo_instance", chain_id.to_le_bytes()]`
+/// PDA seed: `["mosoo_instance", chain_id.to_le_bytes(), instance_id]`
+/// Multiple independent instances can coexist on the same chain (RFP-021 Functionality #15).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstanceAccount {
+    /// Unique instance identifier (enables multiple independent instances per chain).
+    #[serde(default)]
+    pub instance_id: [u8; 32],
     /// EIP-155 chain ID (1 = mainnet, 11155111 = Sepolia …).
     pub chain_id: u64,
     /// SHA-256 of the last accepted finalized BeaconBlockHeader (SSZ-encoded).
@@ -165,6 +193,9 @@ pub struct InstanceAccount {
     /// Execution receipts root of the last accepted finalized header.
     #[serde(default)]
     pub current_receipts_root: [u8; 32],
+    /// Optional network configuration for custom or non-whitelisted consensus networks.
+    #[serde(default)]
+    pub network_config: Option<NetworkConfig>,
 }
 
 impl InstanceAccount {
@@ -186,7 +217,10 @@ impl InstanceAccount {
 /// PDA seed: `["mosoo_job", instance_pubkey, nonce.to_le_bytes()]`
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobAccount {
-    /// Which instance this job belongs to.
+    /// Unique instance identifier this job belongs to.
+    #[serde(default)]
+    pub instance_id: [u8; 32],
+    /// Which instance chain ID this job belongs to.
     pub instance_chain_id: u64,
     /// Head slot of the instance when this job began (cross-stage monotonicity check).
     pub instance_slot: u64,
@@ -268,6 +302,10 @@ pub struct HistoricalHeaderProof {
 /// to the trusted beacon block header via an SSZ Merkle branch at the fork's generalized index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InitializeArgs {
+    /// Unique instance identifier for this light client instance.
+    /// Enables multiple independent instances to coexist on the same chain (RFP-021 Functionality #15).
+    #[serde(default)]
+    pub instance_id: [u8; 32],
     pub chain_id: u64,
     /// Beacon block header of the weak-subjectivity trusted checkpoint.
     pub bootstrap_header: BeaconBlockHeader,
@@ -282,9 +320,29 @@ pub struct InitializeArgs {
     pub initial_next_committee_branch: Option<Vec<[u8; 32]>>,
     /// Mandatory operator-attested trusted network head slot for enforcing weak subjectivity freshness.
     pub trusted_head_slot: u64,
+    /// Optional custom consensus network configuration.
+    #[serde(default)]
+    pub network_config: Option<NetworkConfig>,
 }
 
-/// Arguments to re-anchor a light client instance that has stalled beyond the weak-subjectivity window (>1,728,000 slots).
+/// Helper to derive the PDA seeds for an instance account.
+/// Allows multiple independent instances on the same Ethereum chain.
+pub fn derive_instance_pda_seeds<'a>(
+    chain_id_bytes: &'a [u8; 8],
+    instance_id: &'a [u8; 32],
+) -> [&'a [u8]; 3] {
+    [b"mosoo_instance", chain_id_bytes, instance_id]
+}
+
+/// Legacy recovery structure.
+///
+/// In compliance with Logos RFP-021, light client instances are strictly immutable
+/// once initialized. Stale or misconfigured instances are not mutated on-chain;
+/// operators initialize a fresh instance with a new `instance_id`, and consumers migrate
+/// by binding to the new instance PDA without any admin mutation backdoors.
+#[deprecated(
+    note = "Instances are strictly immutable once initialized per RFP-021; initialize a new instance with a unique instance_id instead"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecoverInstanceArgs {
     pub instance: InstanceAccount,

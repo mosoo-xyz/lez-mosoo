@@ -122,6 +122,8 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     let recipient = [0x44; 32];
 
     let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         current_header_hash: [0xaa; 32],
         current_state_root: [0xdd; 32],

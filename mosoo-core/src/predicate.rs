@@ -1,6 +1,5 @@
 //! Predicate engine for evaluating conditions over verified Ethereum state.
 
-use serde_json;
 use sha2::{Digest, Sha256};
 
 use crate::error::MosooError;
@@ -130,24 +129,32 @@ fn check_inner(
     }
 }
 
-/// Derive a collision-resistant statement ID.
+/// Derives the canonical deterministic statement identifier for verified Ethereum state.
 ///
-/// sha256(chain_id_le8 || subject_key_32 || proof_type_u8 || value_be32 || predicate_json)
+/// Cryptographically binds:
+/// 1. Domain-separation tag (`"mosoo_statement_v1"`).
+/// 2. Target Ethereum `chain_id`.
+/// 3. Canonical `subject_key` (incorporating block hash, slot, indices, and emitter for events).
+/// 4. Proof type tag.
+/// 5. Verified state value.
+///
+/// NOTE: The statement identity represents the underlying verified Ethereum state fact.
+/// It is strictly invariant to predicate variations, guaranteeing that an attacker cannot
+/// construct alternative predicates (e.g. AtLeast(50) vs AtLeast(60)) for the same event
+/// to derive distinct statement IDs and bypass single-use nullifier checks.
 pub fn derive_statement_id(
     chain_id: u64,
     subject_key: &[u8; 32],
     proof_type_tag: u8,
     value: &VerifiedValue,
-    predicate: &Predicate,
+    _predicate: &Predicate,
 ) -> [u8; 32] {
     let mut h = Sha256::new();
+    h.update(b"mosoo_statement_v1");
     h.update(chain_id.to_le_bytes());
     h.update(subject_key);
     h.update([proof_type_tag]);
     h.update(value.as_bytes32());
-    if let Ok(pred_bytes) = serde_json::to_vec(predicate) {
-        h.update(&pred_bytes);
-    }
     h.finalize().into()
 }
 
@@ -365,6 +372,41 @@ mod tests {
         assert_ne!(
             stmt_a.statement_id, stmt_b.statement_id,
             "Statement IDs for separate block occurrences MUST NOT collide"
+        );
+    }
+
+    #[test]
+    fn test_statement_id_invariant_under_predicate_variation_prevents_replay() {
+        let subject = [0x55; 32];
+        let val = val(100);
+        let chain_id = 1;
+        let proof_type = 4; // ERC20 transfer
+
+        let pred_1 = Predicate::AtLeast { min: [0u8; 32] };
+        let mut min_50 = [0u8; 32];
+        min_50[31] = 50;
+        let pred_2 = Predicate::AtLeast { min: min_50 };
+        let mut min_80 = [0u8; 32];
+        min_80[31] = 80;
+        let pred_3 = Predicate::AtLeast { min: min_80 };
+
+        let stmt_1 = evaluate(&pred_1, &val, chain_id, subject, proof_type).unwrap();
+        let stmt_2 = evaluate(&pred_2, &val, chain_id, subject, proof_type).unwrap();
+        let stmt_3 = evaluate(&pred_3, &val, chain_id, subject, proof_type).unwrap();
+
+        assert!(stmt_1.predicate_holds);
+        assert!(stmt_2.predicate_holds);
+        assert!(stmt_3.predicate_holds);
+
+        // All three statements verify the same underlying Ethereum fact with different predicates.
+        // Their statement_ids MUST be identical so an attacker cannot replay claims using varying predicates!
+        assert_eq!(
+            stmt_1.statement_id, stmt_2.statement_id,
+            "Statement ID must be invariant to predicate changes on identical state"
+        );
+        assert_eq!(
+            stmt_2.statement_id, stmt_3.statement_id,
+            "Statement ID must be invariant to predicate changes on identical state"
         );
     }
 }

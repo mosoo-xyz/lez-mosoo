@@ -51,8 +51,8 @@ pub enum InstructionOutput {
 }
 
 pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, MosooError> {
-    // Guard: chain_id must be a supported Ethereum network
-    if !crypto::is_supported_chain(args.chain_id) {
+    // Guard: chain_id must be a supported Ethereum network or configured with explicit NetworkConfig
+    if !crypto::is_supported_chain_or_configured(args.chain_id, args.network_config.as_ref()) {
         return Err(MosooError::UnsupportedChain(args.chain_id));
     }
 
@@ -131,6 +131,7 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
     let header_hash = crypto::hash_tree_root_beacon_header(&args.bootstrap_header);
 
     let instance = InstanceAccount {
+        instance_id: args.instance_id,
         chain_id: args.chain_id,
         current_header_hash: header_hash,
         current_state_root: args.bootstrap_header.state_root,
@@ -143,6 +144,7 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         current_execution_block_hash: [0u8; 32],
         current_execution_state_root: [0u8; 32],
         current_receipts_root: [0u8; 32],
+        network_config: args.network_config,
     };
 
     Ok(InstructionOutput::Initialized(instance))
@@ -264,6 +266,7 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
     let msg_g2 = crypto::blst_hash_to_g2(&signing_root);
 
     let job = JobAccount {
+        instance_id: instance.instance_id,
         instance_chain_id: instance.chain_id,
         instance_slot: instance.current_slot,
         stage: JobStage::Miller,
@@ -283,8 +286,10 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
 pub fn handle_miller_update(args: MillerUpdateArgs) -> Result<InstructionOutput, MosooError> {
     let mut job = args.job;
 
-    // Cross-stage provenance and instance binding checks
-    if job.instance_chain_id != args.instance.chain_id {
+    // Cross-stage provenance and instance binding checks (chain ID and unique instance ID)
+    if job.instance_chain_id != args.instance.chain_id
+        || job.instance_id != args.instance.instance_id
+    {
         return Err(MosooError::JobInstanceMismatch {
             expected: args.instance.chain_id,
             actual: job.instance_chain_id,
@@ -345,8 +350,8 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
     let mut instance = args.instance;
     let job = args.job;
 
-    // Cross-stage provenance and instance binding checks
-    if job.instance_chain_id != instance.chain_id {
+    // Cross-stage provenance and instance binding checks (chain ID and unique instance ID)
+    if job.instance_chain_id != instance.chain_id || job.instance_id != instance.instance_id {
         return Err(MosooError::JobInstanceMismatch {
             expected: instance.chain_id,
             actual: job.instance_chain_id,

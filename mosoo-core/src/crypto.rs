@@ -349,6 +349,21 @@ pub fn is_supported_chain(chain_id: u64) -> bool {
     matches!(chain_id, 1 | 11_155_111 | 560_048 | 17_000)
 }
 
+/// Returns true if the chain ID is supported or provided with a valid explicit NetworkConfig.
+/// Enables network-agnostic operation for arbitrary consensus chains per RFP-021 Functionality #14.
+pub fn is_supported_chain_or_configured(
+    chain_id: u64,
+    config: Option<&crate::types::NetworkConfig>,
+) -> bool {
+    if is_supported_chain(chain_id) {
+        return true;
+    }
+    if let Some(cfg) = config {
+        return cfg.chain_id == chain_id && cfg.genesis_validators_root != [0u8; 32];
+    }
+    false
+}
+
 /// Returns genesis_validators_root for a given chain.
 pub fn genesis_validators_root(chain_id: u64) -> [u8; 32] {
     match chain_id {

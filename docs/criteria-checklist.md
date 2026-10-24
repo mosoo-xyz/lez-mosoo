@@ -17,7 +17,8 @@ This document provides a technical mapping between the requirements in the [Logo
 | **State Inclusion Prover** | Merkle-Patricia Trie (MPT) proofs for account balances and contract storage slots | `mosoo-core/src/inclusion.rs` using `alloy-trie`; state binding verified in `verifier.rs:handle_attest_state` |
 | **Receipt Log Prover** | MPT receipt inclusion and event log extraction (legacy and EIP-2718 typed receipts) | `mosoo-core/src/inclusion.rs:verify_receipt_log_proof`, tested against simulated EIP-1559 transfer receipts in `inclusion::tests` |
 | **Predicate Evaluation Engine** | Logical evaluation over verified state facts (`Equal`, `AtLeast`, `LessThan`, `All`, `Any`) | `mosoo-core/src/predicate.rs` with compound condition support |
-| **Deterministic Statement IDs** | Unique nullifiers derived from verified consensus and state data for replay resistance | `mosoo-core/src/predicate.rs:derive_statement_id` bound to chain ID, subject key, proof type, value, and predicate; prevents cross-block and cross-chain replay |
+| **Deterministic Statement IDs** | Unique nullifiers derived from verified consensus and canonical state facts for replay resistance | `mosoo-core/src/predicate.rs:derive_statement_id` bound to chain ID, subject key, proof type, and verified value; statement identity is invariant under predicate variations to prevent predicate-tampering replay (Attack 33) |
+| **Multiple Instances per Chain** | Multiple independent light client instances per Ethereum network with isolated PDA seeds (RFP-021 #15) | `mosoo-core/src/types.rs`, `mosoo-core/src/verifier.rs`: PDA seeds keyed by `(chain_id, instance_id)`; distinct tracking states, cross-instance job injection rejected with `JobInstanceMismatch` (Attack 34) |
 | **Consensus Update Daemon** | Permissionless headless service monitoring beacon RPCs and submitting updates to LEZ | `daemon/src/main.rs`: REST Beacon API poller, JSON-RPC submitter, randomized jitter backoff, and competing-update recovery; tested in daemon unit tests |
 | **Reference Consumers** | Working consumer dApps demonstrating on-chain state consumption | `consumers/erc20-receiver` (token minting) and `consumers/ether-receiver` (native ETH accounting) supporting both atomic same-transaction and decoupled relayer flows |
 
@@ -68,12 +69,12 @@ Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **162 automated tests** (159 unit/integration + 3 doc tests) passing with 0 warnings:
+The repository test suite consists of **179 automated tests** (176 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
-| **Core Verification & Crypto** | `mosoo-core/src/` | 33 (32 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding |
-| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 32 | 32 explicit attack scenarios tested against guest handlers |
+| **Core Verification & Crypto** | `mosoo-core/src/` | 47 (46 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety |
+| **Adversarial Mutation Suite** | `tests/adversarial_mutation_tests.rs` | 34 | 34 explicit attack scenarios tested against guest handlers |
 | **Light Client Suite** | `tests/light_client_tests.rs` | 21 | Canonical Period 1884 vector, bootstrap, multi-network domains |
 | **Two-Way Bridge Suite** | `tests/two_way_bridge_tests.rs` | 3 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, and unlock |
 | **LEZ v0.4 Acceptance Suite** | `tests/lez_v04_acceptance_tests.rs` | 4 | Single-tx gas envelopes (<=10M), PDA seeds, CPI dispatch, Core proxy routing |
@@ -81,8 +82,7 @@ The repository test suite consists of **162 automated tests** (159 unit/integrat
 | **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 26 (25 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, burn & unlock |
 | **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 27 (26 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, BurnReceipt generation |
 | **Sequencer E2E Suite** | `tests/sequencer_e2e_tests.rs` | 2 | Full 3-Tx lifecycle on mock sequencer across Mainnet and Sepolia |
-| **Consumer Lifecycle E2E** | `tests/e2e_consumer_tests.rs` | 2 | Cross-slot nullifier persistence and end-to-end claim execution |
-| **Daemon Operational Suite** | `daemon/src/main.rs` | 6 | Beacon parsing, randomized jitter, competing-update recovery, proxy URL derivations |
+| **Daemon Operational Suite** | `daemon/src/main.rs` | 9 | Beacon parsing, randomized jitter, competing-update recovery, proxy URL derivations |
 | **CLI Suite** | `cli/src/main.rs` | 1 | CLI argument parser and test vector loading |
 | **Two-Way Bridge Testnet Pipeline** | `scripts/testnet-two-way-bridge.py` | 1 script (5 phases) | Live testnet sequencer connectivity, deposit, 3-tx split, mint, burn, unlock |
 | **Evidence Verification Script** | `scripts/verify-evidence.py` | 1 script (12 checks) | Verifies committed sequencer harness execution manifests and tx receipts |
@@ -92,7 +92,7 @@ The repository test suite consists of **162 automated tests** (159 unit/integrat
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 162 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 179 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.
