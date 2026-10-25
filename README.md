@@ -15,13 +15,13 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 249 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 252 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the full Two-Way Bridge integration test suite (21 passing tests)
 cargo test --test two_way_bridge_tests
 
-# 3. Run the 42 adversarial mutation attack tests
+# 3. Run the 46 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
 # 4. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
@@ -80,8 +80,8 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`) strictly binding to approved light-client instances (`config.is_trusted_instance`) and program-owned persistent accounts (`store.get_account_owner == MOSOO_PROGRAM_ID`), atomic test harness verification, and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **249 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix**: Includes 42 adversarial mutation tests, 21 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 15 daemon tests, 22 light-client tests, 4 sequencer E2E tests, 42 ERC-20 receiver tests, 39 Ether receiver tests, 49 core unit tests, 3 gas benchmark tests, 3 CLI tests, and 3 doc tests.
+- **252 Passing Tests** (Rust Workspace) + **13 Passing Tests** (Foundry Solidity Suite) = **265 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix**: Includes 46 adversarial mutation tests, 21 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 15 daemon tests, 22 light-client tests, 4 sequencer E2E tests, 42 ERC-20 receiver tests, 39 Ether receiver tests, 45 core unit tests, 4 CLI tests, and 3 doc tests; plus 13 Foundry EVM suite tests for MosooLocker.
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
 

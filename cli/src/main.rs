@@ -53,6 +53,12 @@ enum Commands {
         /// Optional token owner address (0x...) for ERC-20 mapping slot derivation
         #[arg(long)]
         owner: Option<String>,
+        /// Optional mapping slot index for ERC-20 private _balances layout (default: 0)
+        #[arg(long, default_value = "0")]
+        mapping_slot: u64,
+        /// Allow fallback to unfinalized block ("latest") when "finalized" block tag is absent on RPC node (e.g. devnet)
+        #[arg(long)]
+        allow_unfinalized: bool,
         /// Slot number for the target state
         #[arg(long, default_value = "15433760")]
         slot: u64,
@@ -156,6 +162,8 @@ fn main() -> anyhow::Result<()> {
             chain_id,
             address,
             owner,
+            mapping_slot,
+            allow_unfinalized,
             slot,
             target,
             min_value,
@@ -166,6 +174,8 @@ fn main() -> anyhow::Result<()> {
             chain_id,
             address_str: &address,
             owner_str: owner.as_deref(),
+            mapping_slot,
+            allow_unfinalized,
             slot,
             target: &target,
             min_value,
@@ -738,6 +748,7 @@ fn parse_hex_bytes32(s: &str) -> anyhow::Result<[u8; 32]> {
     Ok(arr)
 }
 
+#[allow(dead_code)]
 fn construct_account_rlp(
     nonce: u64,
     balance: alloy_primitives::U256,
@@ -790,6 +801,8 @@ struct AttestArgs<'a> {
     pub chain_id: u64,
     pub address_str: &'a str,
     pub owner_str: Option<&'a str>,
+    pub mapping_slot: u64,
+    pub allow_unfinalized: bool,
     pub slot: u64,
     pub target: &'a str,
     pub min_value: u64,
@@ -805,9 +818,20 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     if let Some(owner_s) = args.owner_str {
         println!("Token Owner:        {}", owner_s);
     }
+    if args.target.to_lowercase() == "erc20" {
+        println!("Mapping Slot:       {}", args.mapping_slot);
+    }
     println!("Ethereum Slot:      {}", args.slot);
     println!("Proof Target:       {}", args.target);
     println!("Min Predicate Value:{}", args.min_value);
+
+    let active_rpc = args.rpc_url.or(args.logos_core_rpc);
+
+    if args.target.to_lowercase() == "erc20" && active_rpc.is_some() && args.owner_str.is_none() {
+        anyhow::bail!(
+            "Trustless ERC-20 attestation requires explicit --owner <ADDRESS> for authentic token balance mapping slot derivation"
+        );
+    }
 
     let probe_owner = if let Some(owner_s) = args.owner_str {
         let clean = owner_s.trim_start_matches("0x");
@@ -892,29 +916,40 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             serde_json::Value::Null
         };
 
-        // Fallback to "latest" if "finalized" tag returns null or error (e.g. devnet/testnet without consensus client)
+        // Strict fail-closed on "finalized" block: fallback to "latest" only if --allow-unfinalized is explicitly passed
         if json_block.get("result").is_none() || json_block.get("result").unwrap().is_null() {
-            let req_latest = serde_json::json!({
-                "jsonrpc": "2.0",
-                "method": "eth_getBlockByNumber",
-                "params": ["latest", false],
-                "id": 1
-            });
-            let resp_latest = http
-                .post(endpoint)
-                .header("User-Agent", "mosoo/1.0")
-                .json(&req_latest)
-                .send()
-                .map_err(|e| anyhow::anyhow!("Live RPC unreachable at {}: {}", endpoint, e))?;
-            if !resp_latest.status().is_success() {
+            if args.allow_unfinalized {
+                println!(
+                    "    \x1b[1;33m[WARN] 'finalized' block not available; using unfinalized 'latest' (--allow-unfinalized enabled)\x1b[0m"
+                );
+                let req_latest = serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "method": "eth_getBlockByNumber",
+                    "params": ["latest", false],
+                    "id": 1
+                });
+                let resp_latest = http
+                    .post(endpoint)
+                    .header("User-Agent", "mosoo/1.0")
+                    .json(&req_latest)
+                    .send()
+                    .map_err(|e| anyhow::anyhow!("Live RPC unreachable at {}: {}", endpoint, e))?;
+                if !resp_latest.status().is_success() {
+                    anyhow::bail!(
+                        "Live node returned HTTP {} on eth_getBlockByNumber",
+                        resp_latest.status()
+                    );
+                }
+                json_block = resp_latest.json().map_err(|e| {
+                    anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
+                })?;
+            } else {
                 anyhow::bail!(
-                    "Live node returned HTTP {} on eth_getBlockByNumber",
-                    resp_latest.status()
+                    "Trustless verification failed: 'finalized' block header is not available from JSON-RPC node.\n\
+                    Fallback to unfinalized 'latest' is disabled by default to prevent reorg and double-claim vulnerabilities.\n\
+                    Ensure your Ethereum node is synced with a consensus beacon client, or pass --allow-unfinalized if running on a local test harness without consensus finality."
                 );
             }
-            json_block = resp_latest.json().map_err(|e| {
-                anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
-            })?;
         }
         if let Some(err) = json_block.get("error") {
             anyhow::bail!("Live RPC execution error on eth_getBlockByNumber: {}", err);
@@ -951,8 +986,8 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
 
         // 2. Fetch live EIP-1186 MPT proof for target address pinned to exact block number (race-free)
         let slot = if args.target.to_lowercase() == "erc20" {
-            // Standard Solidity mapping(address => uint256) private _balances at slot 0
-            derive_erc20_balance_mapping_slot(probe_owner, 0)
+            // Standard Solidity mapping(address => uint256) private _balances at configured mapping_slot
+            derive_erc20_balance_mapping_slot(probe_owner, args.mapping_slot)
         } else {
             B256::repeat_byte(0x01)
         };
@@ -1012,20 +1047,24 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             .get("nonce")
             .and_then(|v| v.as_str())
             .unwrap_or("0x0");
-        let parsed_nonce = u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or(0);
+        let _parsed_nonce =
+            u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
-        let storage_hash = parse_hex_bytes32(
-            proof_res
-                .get("storageHash")
-                .and_then(|v| v.as_str())
-                .unwrap_or("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
-        )?;
-        let code_hash = parse_hex_bytes32(
-            proof_res
-                .get("codeHash")
-                .and_then(|v| v.as_str())
-                .unwrap_or("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"),
-        )?;
+        let storage_hash_hex = proof_res
+            .get("storageHash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Malformed RPC response: missing 'storageHash' in eth_getProof")
+            })?;
+        let _storage_hash = parse_hex_bytes32(storage_hash_hex)?;
+
+        let code_hash_hex = proof_res
+            .get("codeHash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Malformed RPC response: missing 'codeHash' in eth_getProof")
+            })?;
+        let _code_hash = parse_hex_bytes32(code_hash_hex)?;
 
         let proof_array = proof_res
             .get("accountProof")
@@ -1038,12 +1077,16 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| anyhow::anyhow!("Failed to decode account proof nodes: {e}"))?;
 
-        let account_rlp = live_account_proof
-            .last()
-            .and_then(|node| extract_account_rlp_from_leaf(node))
-            .unwrap_or_else(|| {
-                construct_account_rlp(parsed_nonce, parsed_bal, storage_hash, code_hash)
-            });
+        let account_rlp = extract_account_rlp_from_leaf(
+            live_account_proof
+                .last()
+                .ok_or_else(|| anyhow::anyhow!("Malformed RPC response: empty accountProof"))?,
+        )
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Malformed RPC response: failed to extract authentic account RLP from proof leaf node"
+            )
+        })?;
 
         match args.target.to_lowercase().as_str() {
             "storage" | "erc20" => {
@@ -1142,7 +1185,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                     "    Target Type:      StorageSlot (Account Trie + Contract Storage Trie)"
                 );
                 let slot = if args.target.to_lowercase() == "erc20" {
-                    derive_erc20_balance_mapping_slot(probe_owner, 0)
+                    derive_erc20_balance_mapping_slot(probe_owner, args.mapping_slot)
                 } else {
                     B256::repeat_byte(0x01)
                 };
@@ -2084,6 +2127,8 @@ mod tests {
             chain_id: 1,
             address_str: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             owner_str: None,
+            mapping_slot: 0,
+            allow_unfinalized: false,
             slot: 15_433_760,
             target: "storage",
             min_value: 100,
@@ -2098,6 +2143,8 @@ mod tests {
             chain_id: 1,
             address_str: "0x4299900000000000000000000000000000000001",
             owner_str: None,
+            mapping_slot: 0,
+            allow_unfinalized: false,
             slot: 15_433_760,
             target: "deposit",
             min_value: 1_000_000_000,
@@ -2112,6 +2159,8 @@ mod tests {
             chain_id: 1,
             address_str: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
             owner_str: Some("0x1111111111111111111111111111111111111111"),
+            mapping_slot: 0,
+            allow_unfinalized: false,
             slot: 15_433_760,
             target: "erc20",
             min_value: 100,

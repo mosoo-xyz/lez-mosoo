@@ -592,6 +592,37 @@ pub trait AccountStore {
         Ok(())
     }
 
+    /// Remove an account from storage (e.g. for atomic transaction rollback).
+    fn remove_account(&mut self, address: &[u8; 32]) -> bool;
+
+    /// Fallible account removal operation.
+    fn try_remove_account(&mut self, address: &[u8; 32]) -> Result<bool, StoreError> {
+        Ok(self.remove_account(address))
+    }
+
+    /// Transactional batch account write enforcing atomicity.
+    /// If any write fails, all previously written accounts in the batch are immediately
+    /// removed to prevent orphaned/inconsistent storage state.
+    fn try_set_accounts_batch_with_owner(
+        &mut self,
+        entries: &[([u8; 32], Vec<u8>, [u8; 32])],
+    ) -> Result<(), StoreError> {
+        let mut written = Vec::new();
+        for (addr, data, owner) in entries {
+            match self.try_set_account_with_owner(addr, data.clone(), *owner) {
+                Ok(()) => written.push(*addr),
+                Err(err) => {
+                    // Roll back all previously written accounts in this batch
+                    for rolled in written {
+                        let _ = self.try_remove_account(&rolled);
+                    }
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn has_account(&self, address: &[u8; 32]) -> bool {
         self.get_account(address).is_some()
     }
@@ -623,6 +654,9 @@ impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
         self.insert(*address, data);
         Ok(())
     }
+    fn remove_account(&mut self, address: &[u8; 32]) -> bool {
+        self.remove(address).is_some()
+    }
 }
 
 /// Program-owned account record on LEZ (matching runtime AccountInfo).
@@ -637,6 +671,7 @@ pub struct ProgramAccount {
 pub struct ProgramAccountStore {
     pub accounts: HashMap<[u8; 32], ProgramAccount>,
     pub simulate_write_failure: bool,
+    pub fail_on_address: Option<[u8; 32]>,
 }
 
 impl ProgramAccountStore {
@@ -644,6 +679,7 @@ impl ProgramAccountStore {
         Self {
             accounts: HashMap::new(),
             simulate_write_failure: false,
+            fail_on_address: None,
         }
     }
 
@@ -679,12 +715,15 @@ impl AccountStore for ProgramAccountStore {
         data: Vec<u8>,
         owner: [u8; 32],
     ) -> Result<(), StoreError> {
-        if self.simulate_write_failure {
+        if self.simulate_write_failure || self.fail_on_address == Some(*address) {
             return Err(StoreError::WriteFailed(*address));
         }
         self.accounts
             .insert(*address, ProgramAccount { owner, data });
         Ok(())
+    }
+    fn remove_account(&mut self, address: &[u8; 32]) -> bool {
+        self.accounts.remove(address).is_some()
     }
 }
 

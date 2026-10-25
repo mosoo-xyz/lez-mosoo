@@ -36,13 +36,13 @@ jobs:
       - name: Workspace check
         run: cargo check --workspace
 
-      - name: Run unit & integration tests (249 total — core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
+      - name: Run unit & integration tests (252 total — core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
         run: cargo test --workspace --verbose
 
       - name: Run 4/4 LEZ v0.4 Conformance & Acceptance Tests (RFP-021 Deployment Gate)
         run: cargo test --test lez_v04_acceptance_tests --verbose
 
-      - name: Run 42/42 Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)
+      - name: Run 46/46 Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)
         run: cargo test --test adversarial_mutation_tests --verbose
 
       - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (ETH/mETH & USDC Settlement, 21/21 tests)
@@ -54,7 +54,7 @@ jobs:
       - name: Run 5/5 Privacy & Zero-Correlation Tests (RFP-021 Privacy Guarantee)
         run: cargo test --test privacy_and_correlation_tests --verbose
 
-      - name: Run 14 Daemon Operational Tests (Proxy, Jitter, Competing-Update Recovery)
+      - name: Run 15 Daemon Operational Tests (Proxy, Jitter, Competing-Update Recovery)
         run: cargo test -p mosoo-daemon --verbose
 
       - name: Execute Live Empirical Benchmark Suite & Emit JSON Artifact

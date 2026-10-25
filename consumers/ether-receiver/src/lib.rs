@@ -1563,7 +1563,7 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
         return Err(EtherReceiverError::AlreadyClaimed);
     }
 
-    // Atomically persist nullifier PDA to LEZ AccountStore (Finding P1 / Priority 2)
+    // Atomically persist nullifier PDA to LEZ AccountStore with transactional rollback guarantee (Finding P1 / Priority 2)
     let nullifier_rec = EtherNullifierAccount {
         statement_id: statement.statement_id,
         subject_key: statement.subject_key,
@@ -1573,20 +1573,17 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
     let encoded = serde_json::to_vec(&nullifier_rec).map_err(|e| {
         EtherReceiverError::AttestationFailed(format!("failed to serialize nullifier PDA: {e}"))
     })?;
-    store
-        .try_set_account_with_owner(&nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID)
-        .map_err(|e| {
-            EtherReceiverError::AttestationFailed(format!("failed to store nullifier PDA: {e}"))
-        })?;
+    let mut batch = vec![(nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID)];
     if let Some(sub_pda) = subject_pda {
-        store
-            .try_set_account_with_owner(&sub_pda, encoded, MOSOO_PROGRAM_ID)
-            .map_err(|e| {
-                EtherReceiverError::AttestationFailed(format!(
-                    "failed to store subject nullifier PDA: {e}"
-                ))
-            })?;
+        batch.push((sub_pda, encoded, MOSOO_PROGRAM_ID));
     }
+    store
+        .try_set_accounts_batch_with_owner(&batch)
+        .map_err(|e| {
+            EtherReceiverError::AttestationFailed(format!(
+                "failed to atomically store nullifier PDA batch: {e}"
+            ))
+        })?;
 
     nullifiers.mark_used(statement.statement_id);
     if statement.subject_key != [0u8; 32] {

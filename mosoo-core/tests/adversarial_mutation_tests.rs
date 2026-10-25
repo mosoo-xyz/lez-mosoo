@@ -4271,3 +4271,47 @@ fn test_mutation_attack_45_account_store_fallible_write_simulation() {
     assert!(matches!(res, Err(mosoo_core::types::StoreError::WriteFailed(a)) if a == fail_addr));
     assert_eq!(store.get_account(&fail_addr), None);
 }
+
+/// Attack 46: Dual Nullifier PDA Transactional Atomicity & Rollback Verification.
+/// Verifies that if storing the subject nullifier PDA fails, the statement nullifier PDA
+/// is cleanly rolled back and removed from persistent storage, preventing permanent claim lockouts.
+#[test]
+fn test_mutation_attack_46_dual_nullifier_atomic_rollback_on_partial_failure() {
+    let mut store = ProgramAccountStore::new();
+    let statement_pda = [0x55; 32];
+    let subject_pda = [0x66; 32];
+    let data = vec![1, 2, 3];
+
+    // Configure store to fail ONLY on the second write (subject_pda)
+    store.fail_on_address = Some(subject_pda);
+
+    let batch = vec![
+        (statement_pda, data.clone(), MOSOO_PROGRAM_ID),
+        (subject_pda, data.clone(), MOSOO_PROGRAM_ID),
+    ];
+
+    let res = store.try_set_accounts_batch_with_owner(&batch);
+    assert!(
+        res.is_err(),
+        "Batch write must fail when second PDA write fails"
+    );
+
+    // CRITICAL SECURITY ASSERTION:
+    // statement_pda MUST NOT remain committed in storage!
+    assert_eq!(
+        store.get_account(&statement_pda),
+        None,
+        "Statement nullifier PDA must be cleanly rolled back when subject PDA write fails!"
+    );
+    assert_eq!(
+        store.get_account(&subject_pda),
+        None,
+        "Subject nullifier PDA must not be written"
+    );
+
+    // After resolving the failure condition, the entire batch succeeds
+    store.fail_on_address = None;
+    assert!(store.try_set_accounts_batch_with_owner(&batch).is_ok());
+    assert_eq!(store.get_account(&statement_pda), Some(data.clone()));
+    assert_eq!(store.get_account(&subject_pda), Some(data));
+}
