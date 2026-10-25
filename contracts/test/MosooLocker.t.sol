@@ -152,7 +152,9 @@ contract MosooLockerTest is Test {
         vm.prank(user);
         locker.depositETH{value: 20 ether}(bytes32(uint256(0xAA)));
 
-        locker.setDailyWithdrawalLimitETH(5 ether);
+        locker.proposeDailyWithdrawalLimitETH(5 ether);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeDailyWithdrawalLimitETH();
         assertEq(locker.dailyWithdrawalLimitETH(), 5 ether, "daily limit mismatch");
     }
 
@@ -175,9 +177,17 @@ contract MosooLockerTest is Test {
         address attester2 = vm.addr(attester2Pk);
         address attester3 = vm.addr(attester3Pk);
 
-        locker.addAttester(attester2);
-        locker.addAttester(attester3);
-        locker.setQuorum(2);
+        locker.proposeAddAttester(attester2);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeAddAttester();
+
+        locker.proposeAddAttester(attester3);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeAddAttester();
+
+        locker.proposeQuorum(2);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeQuorum();
 
         assertEq(locker.attesterCount(), 3, "total attesters should be 3");
         assertEq(locker.requiredQuorum(), 2, "required quorum should be 2");
@@ -241,6 +251,34 @@ contract MosooLockerTest is Test {
 
     function test_direct_set_guardian_deprecated() public {
         try locker.setGuardian(address(0x1234)) {
+            revert("Expected revert with DirectGovernanceDeprecated");
+        } catch {
+            // Success
+        }
+    }
+
+    function test_direct_governance_setters_deprecated() public {
+        try locker.setDailyWithdrawalLimitETH(1 ether) {
+            revert("Expected revert with DirectGovernanceDeprecated");
+        } catch {
+            // Success
+        }
+        try locker.setDailyWithdrawalLimitERC20(address(token), 1000) {
+            revert("Expected revert with DirectGovernanceDeprecated");
+        } catch {
+            // Success
+        }
+        try locker.addAttester(address(0x1234)) {
+            revert("Expected revert with DirectGovernanceDeprecated");
+        } catch {
+            // Success
+        }
+        try locker.removeAttester(address(0x1234)) {
+            revert("Expected revert with DirectGovernanceDeprecated");
+        } catch {
+            // Success
+        }
+        try locker.setQuorum(2) {
             revert("Expected revert with DirectGovernanceDeprecated");
         } catch {
             // Success

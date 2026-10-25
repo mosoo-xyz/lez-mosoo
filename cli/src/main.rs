@@ -717,6 +717,58 @@ fn min_32(v: u64) -> [u8; 32] {
     arr
 }
 
+fn parse_hex_bytes32(s: &str) -> anyhow::Result<[u8; 32]> {
+    let clean = s.trim_start_matches("0x");
+    let bytes = hex::decode(clean)
+        .map_err(|e| anyhow::anyhow!("Failed to decode hex string '{}': {}", s, e))?;
+    if bytes.len() != 32 {
+        anyhow::bail!(
+            "Expected 32 bytes hex string, got {} bytes: '{}'",
+            bytes.len(),
+            s
+        );
+    }
+    let mut arr = [0u8; 32];
+    arr.copy_from_slice(&bytes);
+    Ok(arr)
+}
+
+fn construct_account_rlp(
+    nonce: u64,
+    balance: alloy_primitives::U256,
+    storage_root: [u8; 32],
+    code_hash: [u8; 32],
+) -> Vec<u8> {
+    let nonce_rlp = alloy_rlp::encode(nonce);
+    let balance_rlp = alloy_rlp::encode(balance);
+    let storage_root_rlp = alloy_rlp::encode(storage_root);
+    let code_hash_rlp = alloy_rlp::encode(code_hash);
+
+    let mut account_payload = Vec::new();
+    account_payload.extend_from_slice(&nonce_rlp);
+    account_payload.extend_from_slice(&balance_rlp);
+    account_payload.extend_from_slice(&storage_root_rlp);
+    account_payload.extend_from_slice(&code_hash_rlp);
+
+    let mut account_rlp = Vec::new();
+    alloy_rlp::Header {
+        list: true,
+        payload_length: account_payload.len(),
+    }
+    .encode(&mut account_rlp);
+    account_rlp.extend_from_slice(&account_payload);
+    account_rlp
+}
+
+fn extract_account_rlp_from_leaf(leaf: &[u8]) -> Option<Vec<u8>> {
+    let items = rlp_decode_list_items(leaf).ok()?;
+    if items.len() == 2 {
+        Some(rlp_strip_prefix(items[1]).to_vec())
+    } else {
+        None
+    }
+}
+
 struct AttestArgs<'a> {
     pub chain_id: u64,
     pub address_str: &'a str,
@@ -773,149 +825,341 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
 
     println!("[*] Constructing authenticated Merkle-Patricia Trie (MPT) inclusion proof...");
 
-    let mut live_balance: Option<U256> = None;
-
-    // Live RPC state interrogation when --rpc-url or --logos-core-rpc is configured
-    if let Some(endpoint) = active_rpc {
+    let (proof, execution_state_root, receipts_root, execution_block_hash) = if let Some(endpoint) =
+        active_rpc
+    {
         let http = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(10))
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to build HTTP client: {e}"))?;
 
         println!("    Connecting to live JSON-RPC node: {}", endpoint);
-        let req_body = serde_json::json!({
+
+        // 1. Fetch live execution block header
+        let req_block = serde_json::json!({
             "jsonrpc": "2.0",
-            "method": "eth_getBalance",
-            "params": [format!("0x{}", hex::encode(target_addr.as_slice())), "latest"],
+            "method": "eth_getBlockByNumber",
+            "params": ["latest", false],
             "id": 1
         });
-        let resp = http
+        let resp_block = http
             .post(endpoint)
-            .json(&req_body)
+            .header("User-Agent", "mosoo/1.0")
+            .json(&req_block)
             .send()
-            .map_err(|e| anyhow::anyhow!("Live RPC node unreachable at {}: {}", endpoint, e))?;
+            .map_err(|e| anyhow::anyhow!("Live RPC unreachable at {}: {}", endpoint, e))?;
 
-        if !resp.status().is_success() {
+        if !resp_block.status().is_success() {
             anyhow::bail!(
-                "Live node returned HTTP {} on eth_getBalance",
-                resp.status()
+                "Live node returned HTTP {} on eth_getBlockByNumber",
+                resp_block.status()
             );
         }
-
-        let json: serde_json::Value = resp.json().map_err(|e| {
+        let json_block: serde_json::Value = resp_block.json().map_err(|e| {
             anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
         })?;
-        if let Some(err) = json.get("error") {
-            anyhow::bail!("Live RPC execution error on eth_getBalance: {}", err);
+        if let Some(err) = json_block.get("error") {
+            anyhow::bail!("Live RPC execution error on eth_getBlockByNumber: {}", err);
         }
-        let bal_hex = json
+        let block_res = json_block
             .get("result")
-            .and_then(|r| r.as_str())
-            .ok_or_else(|| anyhow::anyhow!("Missing result field in eth_getBalance response"))?;
+            .ok_or_else(|| anyhow::anyhow!("Missing result in eth_getBlockByNumber"))?;
+        let state_root_hex = block_res
+            .get("stateRoot")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing stateRoot in block"))?;
+        let receipts_root_hex = block_res
+            .get("receiptsRoot")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing receiptsRoot in block"))?;
+        let block_hash_hex = block_res
+            .get("hash")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("Missing hash in block"))?;
+        let block_num_hex = block_res
+            .get("number")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x0");
+
+        let state_root_bytes = parse_hex_bytes32(state_root_hex)?;
+        let receipts_root_bytes = parse_hex_bytes32(receipts_root_hex)?;
+        let block_hash_bytes = parse_hex_bytes32(block_hash_hex)?;
+
         println!(
-            "    \x1b[32m[ok] Live node query succeeded: eth_getBalance -> {}\x1b[0m",
-            bal_hex
+            "    \x1b[32m[ok] Live block header retrieved: block {}, stateRoot 0x{}\x1b[0m",
+            block_num_hex,
+            hex::encode(state_root_bytes)
         );
 
-        let bal_clean = bal_hex.trim_start_matches("0x");
-        let parsed_bal = if bal_clean.is_empty() {
+        // 2. Fetch live EIP-1186 MPT proof for target address
+        let slot = B256::repeat_byte(0x01);
+        let storage_keys = match args.target.to_lowercase().as_str() {
+            "storage" | "erc20" => vec![format!("0x{}", hex::encode(slot.0))],
+            _ => vec![],
+        };
+
+        let req_proof = serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "eth_getProof",
+            "params": [
+                format!("0x{}", hex::encode(target_addr.as_slice())),
+                storage_keys,
+                "latest"
+            ],
+            "id": 2
+        });
+        let resp_proof = http
+            .post(endpoint)
+            .header("User-Agent", "mosoo/1.0")
+            .json(&req_proof)
+            .send()
+            .map_err(|e| anyhow::anyhow!("Live RPC unreachable at {}: {}", endpoint, e))?;
+
+        if !resp_proof.status().is_success() {
+            anyhow::bail!(
+                "Live node returned HTTP {} on eth_getProof",
+                resp_proof.status()
+            );
+        }
+        let json_proof: serde_json::Value = resp_proof.json().map_err(|e| {
+            anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
+        })?;
+        if let Some(err) = json_proof.get("error") {
+            anyhow::bail!("Live RPC execution error on eth_getProof: {}", err);
+        }
+        let proof_res = json_proof
+            .get("result")
+            .ok_or_else(|| anyhow::anyhow!("Missing result in eth_getProof"))?;
+
+        let bal_hex = proof_res
+            .get("balance")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x0");
+        let parsed_bal = if bal_hex.trim_start_matches("0x").is_empty() {
             U256::ZERO
         } else {
-            U256::from_str_radix(bal_clean, 16).map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to parse live eth_getBalance result '{}': {}",
-                    bal_hex,
-                    e
-                )
-            })?
+            U256::from_str_radix(bal_hex.trim_start_matches("0x"), 16).unwrap_or(U256::ZERO)
         };
-        live_balance = Some(parsed_bal);
-    }
+        println!(
+            "    \x1b[32m[ok] Live eth_getProof succeeded: balance = {}\x1b[0m",
+            parsed_bal
+        );
 
-    let (proof, execution_state_root, receipts_root) = match args.target.to_lowercase().as_str() {
-        "storage" | "erc20" => {
-            println!("    Target Type:      StorageSlot (Account Trie + Contract Storage Trie)");
-            let slot = B256::repeat_byte(0x01);
-            let mut val_bytes = [0u8; 32];
-            val_bytes[24..32].copy_from_slice(&(args.min_value.saturating_add(100)).to_be_bytes());
+        let nonce_hex = proof_res
+            .get("nonce")
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x0");
+        let parsed_nonce = u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
-            let (state_root, account_proof, account_rlp, storage_proof, storage_rlp) =
-                build_test_storage_proof(target_addr, slot, val_bytes);
+        let storage_hash = parse_hex_bytes32(
+            proof_res
+                .get("storageHash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421"),
+        )?;
+        let code_hash = parse_hex_bytes32(
+            proof_res
+                .get("codeHash")
+                .and_then(|v| v.as_str())
+                .unwrap_or("0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470"),
+        )?;
 
-            println!("    MPT State Root:   0x{}", hex::encode(state_root.0));
-            println!("    Storage Slot:     0x{}", hex::encode(slot.0));
-            println!("    Account Proof:    {} trie nodes", account_proof.len());
-            println!("    Storage Proof:    {} trie nodes", storage_proof.len());
+        let proof_array = proof_res
+            .get("accountProof")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| anyhow::anyhow!("Missing accountProof in eth_getProof"))?;
+        let live_account_proof: Vec<alloy_primitives::Bytes> = proof_array
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| hex::decode(s.trim_start_matches("0x")).map(alloy_primitives::Bytes::from))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| anyhow::anyhow!("Failed to decode account proof nodes: {e}"))?;
 
-            let p = StateProof {
-                target: ProofTarget::StorageSlot {
-                    contract: target_addr,
-                    slot,
-                },
-                account_proof,
-                storage_proof: Some(storage_proof),
-                receipt_proof: None,
-                account_value: Some(account_rlp),
-                storage_value: Some(storage_rlp),
-                receipt_value: None,
-            };
-            (p, state_root.0, [0x88; 32])
-        }
-        "deposit" | "receipt" => {
-            println!("    Target Type:      NativeEthDeposit (Receipts Trie Event Log)");
-            let sender = Address::repeat_byte(0x11);
-            let recipient = [0x22u8; 32];
-            let test_amount = U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
-
-            let (r_root, proof_nodes, receipt_rlp) =
-                build_test_deposit_receipt_proof(target_addr, sender, recipient, test_amount);
-
-            println!("    Receipts Root:    0x{}", hex::encode(r_root.0));
-            println!("    Receipt Proof:    {} trie nodes", proof_nodes.len());
-            println!("    Receipt RLP Size: {} bytes", receipt_rlp.len());
-
-            let p = StateProof {
-                target: ProofTarget::NativeEthDeposit {
-                    tx_index: 0,
-                    log_index: 0,
-                    deposit_contract: target_addr,
-                    sender,
-                    recipient,
-                },
-                account_proof: vec![],
-                storage_proof: None,
-                receipt_proof: Some(proof_nodes),
-                account_value: None,
-                storage_value: None,
-                receipt_value: Some(receipt_rlp),
-            };
-            (p, [0x77; 32], r_root.0)
-        }
-        _ => {
-            // Default: "balance" (Account native ETH balance)
-            println!("    Target Type:      AccountBalance (Account Trie Leaf)");
-            let actual_balance = live_balance.unwrap_or_else(|| {
-                U256::from(args.min_value.saturating_add(500_000_000_000_000_000))
+        let account_rlp = live_account_proof
+            .last()
+            .and_then(|node| extract_account_rlp_from_leaf(node))
+            .unwrap_or_else(|| {
+                construct_account_rlp(parsed_nonce, parsed_bal, storage_hash, code_hash)
             });
-            let (state_root, proof_nodes, account_rlp) =
-                build_test_account_balance_proof(target_addr, actual_balance);
 
-            println!("    MPT State Root:   0x{}", hex::encode(state_root.0));
-            println!("    Account Proof:    {} trie nodes", proof_nodes.len());
-            println!("    Account RLP Size: {} bytes", account_rlp.len());
+        match args.target.to_lowercase().as_str() {
+            "storage" | "erc20" => {
+                let sp_array = proof_res
+                    .get("storageProof")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| anyhow::anyhow!("Missing storageProof in eth_getProof"))?;
+                let first_sp = sp_array
+                    .first()
+                    .ok_or_else(|| anyhow::anyhow!("Empty storageProof array"))?;
+                let sp_proof = first_sp
+                    .get("proof")
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| anyhow::anyhow!("Missing proof in storageProof"))?;
+                let live_storage_proof: Vec<alloy_primitives::Bytes> = sp_proof
+                    .iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| {
+                        hex::decode(s.trim_start_matches("0x")).map(alloy_primitives::Bytes::from)
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| anyhow::anyhow!("Failed to decode storage proof nodes: {e}"))?;
+                let sp_val_hex = first_sp
+                    .get("value")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0x0");
+                let sp_val_bytes = {
+                    let clean = sp_val_hex.trim_start_matches("0x");
+                    let mut b = [0u8; 32];
+                    if let Ok(dec) = hex::decode(clean) {
+                        if dec.len() <= 32 {
+                            b[32 - dec.len()..].copy_from_slice(&dec);
+                        }
+                    }
+                    b
+                };
 
-            let p = StateProof {
-                target: ProofTarget::AccountBalance {
-                    address: target_addr,
-                },
-                account_proof: proof_nodes,
-                storage_proof: None,
-                receipt_proof: None,
-                account_value: Some(account_rlp),
-                storage_value: None,
-                receipt_value: None,
-            };
-            (p, state_root.0, [0x88; 32])
+                let p = StateProof {
+                    target: ProofTarget::StorageSlot {
+                        contract: target_addr,
+                        slot,
+                    },
+                    account_proof: live_account_proof,
+                    storage_proof: Some(live_storage_proof),
+                    receipt_proof: None,
+                    account_value: Some(account_rlp),
+                    storage_value: Some(sp_val_bytes.to_vec()),
+                    receipt_value: None,
+                };
+                (p, state_root_bytes, receipts_root_bytes, block_hash_bytes)
+            }
+            "deposit" | "receipt" => {
+                let sender = Address::repeat_byte(0x11);
+                let recipient = [0x22u8; 32];
+                let test_amount =
+                    U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
+                let (r_root, proof_nodes, receipt_rlp) =
+                    build_test_deposit_receipt_proof(target_addr, sender, recipient, test_amount);
+                let p = StateProof {
+                    target: ProofTarget::NativeEthDeposit {
+                        tx_index: 0,
+                        log_index: 0,
+                        deposit_contract: target_addr,
+                        sender,
+                        recipient,
+                    },
+                    account_proof: vec![],
+                    storage_proof: None,
+                    receipt_proof: Some(proof_nodes),
+                    account_value: None,
+                    storage_value: None,
+                    receipt_value: Some(receipt_rlp),
+                };
+                (p, state_root_bytes, r_root.0, block_hash_bytes)
+            }
+            _ => {
+                let p = StateProof {
+                    target: ProofTarget::AccountBalance {
+                        address: target_addr,
+                    },
+                    account_proof: live_account_proof,
+                    storage_proof: None,
+                    receipt_proof: None,
+                    account_value: Some(account_rlp),
+                    storage_value: None,
+                    receipt_value: None,
+                };
+                (p, state_root_bytes, receipts_root_bytes, block_hash_bytes)
+            }
+        }
+    } else {
+        match args.target.to_lowercase().as_str() {
+            "storage" | "erc20" => {
+                println!(
+                    "    Target Type:      StorageSlot (Account Trie + Contract Storage Trie)"
+                );
+                let slot = B256::repeat_byte(0x01);
+                let mut val_bytes = [0u8; 32];
+                val_bytes[24..32]
+                    .copy_from_slice(&(args.min_value.saturating_add(100)).to_be_bytes());
+
+                let (state_root, account_proof, account_rlp, storage_proof, storage_rlp) =
+                    build_test_storage_proof(target_addr, slot, val_bytes);
+
+                println!("    MPT State Root:   0x{}", hex::encode(state_root.0));
+                println!("    Storage Slot:     0x{}", hex::encode(slot.0));
+                println!("    Account Proof:    {} trie nodes", account_proof.len());
+                println!("    Storage Proof:    {} trie nodes", storage_proof.len());
+
+                let p = StateProof {
+                    target: ProofTarget::StorageSlot {
+                        contract: target_addr,
+                        slot,
+                    },
+                    account_proof,
+                    storage_proof: Some(storage_proof),
+                    receipt_proof: None,
+                    account_value: Some(account_rlp),
+                    storage_value: Some(storage_rlp),
+                    receipt_value: None,
+                };
+                (p, state_root.0, [0x88; 32], [0x77; 32])
+            }
+            "deposit" | "receipt" => {
+                println!("    Target Type:      NativeEthDeposit (Receipts Trie Event Log)");
+                let sender = Address::repeat_byte(0x11);
+                let recipient = [0x22u8; 32];
+                let test_amount =
+                    U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
+
+                let (r_root, proof_nodes, receipt_rlp) =
+                    build_test_deposit_receipt_proof(target_addr, sender, recipient, test_amount);
+
+                println!("    Receipts Root:    0x{}", hex::encode(r_root.0));
+                println!("    Receipt Proof:    {} trie nodes", proof_nodes.len());
+                println!("    Receipt RLP Size: {} bytes", receipt_rlp.len());
+
+                let p = StateProof {
+                    target: ProofTarget::NativeEthDeposit {
+                        tx_index: 0,
+                        log_index: 0,
+                        deposit_contract: target_addr,
+                        sender,
+                        recipient,
+                    },
+                    account_proof: vec![],
+                    storage_proof: None,
+                    receipt_proof: Some(proof_nodes),
+                    account_value: None,
+                    storage_value: None,
+                    receipt_value: Some(receipt_rlp),
+                };
+                (p, [0x77; 32], r_root.0, [0x77; 32])
+            }
+            _ => {
+                // Default: "balance" (Account native ETH balance)
+                println!("    Target Type:      AccountBalance (Account Trie Leaf)");
+                let actual_balance =
+                    U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
+                let (state_root, proof_nodes, account_rlp) =
+                    build_test_account_balance_proof(target_addr, actual_balance);
+
+                println!("    MPT State Root:   0x{}", hex::encode(state_root.0));
+                println!("    Account Proof:    {} trie nodes", proof_nodes.len());
+                println!("    Account RLP Size: {} bytes", account_rlp.len());
+
+                let p = StateProof {
+                    target: ProofTarget::AccountBalance {
+                        address: target_addr,
+                    },
+                    account_proof: proof_nodes,
+                    storage_proof: None,
+                    receipt_proof: None,
+                    account_value: Some(account_rlp),
+                    storage_value: None,
+                    receipt_value: None,
+                };
+                (p, state_root.0, [0x88; 32], [0x77; 32])
+            }
         }
     };
 
@@ -923,11 +1167,13 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         min: min_32(args.min_value),
     };
 
+    let beacon_block_root = [0x55; 32];
+    let bootstrap_slot = if args.slot == 0 { 1 } else { args.slot };
     let instance = InstanceAccount {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: args.chain_id,
-        current_header_hash: [0x55; 32],
+        current_header_hash: beacon_block_root,
         current_state_root: execution_state_root,
         current_slot: args.slot,
         current_sync_committee: SyncCommittee {
@@ -935,10 +1181,10 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             aggregate_pubkey: vec![0u8; 48],
         },
         next_sync_committee: None,
-        bootstrap_slot: args.slot,
-        bootstrap_header_hash: [0x55; 32],
+        bootstrap_slot,
+        bootstrap_header_hash: beacon_block_root,
         initialized: true,
-        current_execution_block_hash: [0x77; 32],
+        current_execution_block_hash: execution_block_hash,
         current_execution_state_root: execution_state_root,
         current_receipts_root: receipts_root,
     };
@@ -946,23 +1192,41 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     let header = HeaderRecord {
         chain_id: args.chain_id,
         slot: args.slot,
-        beacon_block_root: [0x55; 32],
-        execution_block_hash: [0x77; 32],
+        beacon_block_root,
+        execution_block_hash,
         execution_state_root,
         receipts_root,
     };
 
+    let mut store = ProgramAccountStore::new();
+    let instance_pda = instance.pda_address();
+    store.insert_program_account(
+        instance_pda,
+        serde_json::to_vec(&instance)?,
+        MOSOO_PROGRAM_ID,
+    );
+
+    let header_pda = header.pda_address();
+    store.insert_program_account(header_pda, serde_json::to_vec(&header)?, MOSOO_PROGRAM_ID);
+
     let attest_args = mosoo_core::verifier::AttestStateArgs {
-        instance,
-        header,
+        instance: instance.clone(),
+        header: header.clone(),
         header_history_branch: None,
         historical_execution_proof: None,
         proof,
         predicate,
     };
 
-    println!("[*] Executing in-guest zkVM attestation verifier: handle_attest_state()...");
-    let output = mosoo_core::verifier::handle_attest_state(attest_args)?;
+    println!(
+        "[*] Executing in-guest zkVM attestation verifier: handle_attest_state_authenticated()..."
+    );
+    let output = mosoo_core::verifier::handle_attest_state_authenticated(
+        &store,
+        &instance_pda,
+        Some(&header_pda),
+        attest_args,
+    )?;
     let statement = match output {
         mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
         _ => anyhow::bail!("Expected StatementIssued from verifier"),
@@ -1112,30 +1376,28 @@ fn run_submit_update(
         "../test_vectors/period_1884_canonical_fixture.json",
         "../../test_vectors/period_1884_canonical_fixture.json",
     ];
-    let resolved_path = update_file
-        .or_else(|| {
-            default_paths
-                .iter()
-                .find(|p| std::path::Path::new(p).exists())
-                .copied()
-        })
-        .unwrap_or("test_vectors/period_1884_canonical_fixture.json");
+    let resolved_path = if let Some(p) = update_file {
+        if !std::path::Path::new(p).exists() {
+            anyhow::bail!("Specified update file '{}' does not exist.", p);
+        }
+        p
+    } else {
+        default_paths
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "No update file provided and default canonical fixture 'test_vectors/period_1884_canonical_fixture.json' not found."
+                )
+            })?
+    };
     println!("Update File:    {}", resolved_path);
     println!();
 
     // 1. Read and parse real update payload
-    let file_content = match std::fs::read_to_string(resolved_path) {
-        Ok(c) => c,
-        Err(_) => r#"{
-            "description": "Ethereum Mainnet Period 1884 Canonical Finalized Checkpoint & Inclusion Fixture",
-            "chain_id": 1,
-            "update": {
-                "finalized_slot": 15433760,
-                "participation_count": 498,
-                "total_validators": 512
-            }
-        }"#.to_string(),
-    };
+    let file_content = std::fs::read_to_string(resolved_path)
+        .map_err(|e| anyhow::anyhow!("Failed to read update file '{}': {}", resolved_path, e))?;
 
     let parsed_json: serde_json::Value = serde_json::from_str(&file_content)
         .map_err(|e| anyhow::anyhow!("Failed to parse JSON from {}: {}", resolved_path, e))?;
@@ -1230,6 +1492,7 @@ fn run_submit_update(
         let tx1_digest = {
             let mut h = sha2::Sha256::new();
             sha2::Digest::update(&mut h, b"lez_tx_v1");
+            sha2::Digest::update(&mut h, MOSOO_PROGRAM_ID);
             sha2::Digest::update(&mut h, b"begin_update");
             sha2::Digest::update(&mut h, chain_id.to_be_bytes());
             sha2::Digest::update(&mut h, job_nonce.to_be_bytes());
@@ -1244,11 +1507,12 @@ fn run_submit_update(
             "jsonrpc": "2.0",
             "method": "lez_sendTransaction",
             "params": [{
-                "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+                "to": format!("0x{}", hex::encode(MOSOO_PROGRAM_ID)),
                 "instruction": "begin_update",
                 "chain_id": chain_id,
                 "job_nonce": job_nonce,
                 "data": format!("0x{}", hex::encode(update_digest)),
+                "update_payload": parsed_json,
                 "from": format!("{:#x}", sender_addr),
                 "signature": format!("0x{}", hex::encode(sig1.as_bytes())),
             }],
@@ -1277,8 +1541,11 @@ fn run_submit_update(
         let tx2_digest = {
             let mut h = sha2::Sha256::new();
             sha2::Digest::update(&mut h, b"lez_tx_v1");
+            sha2::Digest::update(&mut h, MOSOO_PROGRAM_ID);
             sha2::Digest::update(&mut h, b"miller_update");
+            sha2::Digest::update(&mut h, chain_id.to_be_bytes());
             sha2::Digest::update(&mut h, job_nonce.to_be_bytes());
+            sha2::Digest::update(&mut h, update_digest);
             alloy::primitives::B256::from_slice(&sha2::Digest::finalize(h))
         };
         let sig2 = signer
@@ -1289,9 +1556,11 @@ fn run_submit_update(
             "jsonrpc": "2.0",
             "method": "lez_sendTransaction",
             "params": [{
-                "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+                "to": format!("0x{}", hex::encode(MOSOO_PROGRAM_ID)),
                 "instruction": "miller_update",
+                "chain_id": chain_id,
                 "job_nonce": job_nonce,
+                "update_digest": format!("0x{}", hex::encode(update_digest)),
                 "from": format!("{:#x}", sender_addr),
                 "signature": format!("0x{}", hex::encode(sig2.as_bytes())),
             }],
@@ -1320,8 +1589,11 @@ fn run_submit_update(
         let tx3_digest = {
             let mut h = sha2::Sha256::new();
             sha2::Digest::update(&mut h, b"lez_tx_v1");
+            sha2::Digest::update(&mut h, MOSOO_PROGRAM_ID);
             sha2::Digest::update(&mut h, b"finish_update");
+            sha2::Digest::update(&mut h, chain_id.to_be_bytes());
             sha2::Digest::update(&mut h, job_nonce.to_be_bytes());
+            sha2::Digest::update(&mut h, update_digest);
             alloy::primitives::B256::from_slice(&sha2::Digest::finalize(h))
         };
         let sig3 = signer
@@ -1332,9 +1604,11 @@ fn run_submit_update(
             "jsonrpc": "2.0",
             "method": "lez_sendTransaction",
             "params": [{
-                "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+                "to": format!("0x{}", hex::encode(MOSOO_PROGRAM_ID)),
                 "instruction": "finish_update",
+                "chain_id": chain_id,
                 "job_nonce": job_nonce,
+                "update_digest": format!("0x{}", hex::encode(update_digest)),
                 "from": format!("{:#x}", sender_addr),
                 "signature": format!("0x{}", hex::encode(sig3.as_bytes())),
             }],

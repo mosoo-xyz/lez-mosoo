@@ -518,10 +518,8 @@ pub trait AccountStore {
     fn get_account_owner(&self, _address: &[u8; 32]) -> Option<[u8; 32]> {
         None
     }
-    /// Write account data with an explicit program owner.
-    fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, _owner: [u8; 32]) {
-        self.set_account(address, data);
-    }
+    /// Write account data with an explicit program owner. Mandatory method to prevent silent ownership discard.
+    fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, owner: [u8; 32]);
     fn has_account(&self, address: &[u8; 32]) -> bool {
         self.get_account(address).is_some()
     }
@@ -540,6 +538,9 @@ impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
         } else {
             None
         }
+    }
+    fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, _owner: [u8; 32]) {
+        self.insert(*address, data);
     }
 }
 

@@ -1395,18 +1395,27 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
             .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
 
     // 2. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
-    if !config.is_trusted_instance(authentic_instance.chain_id, instance_pda) {
+    let loaded_config = TrustedBridgeConfig::load_or_canonical(store);
+    if !config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
+        && !loaded_config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
+    {
         return Err(ReceiverError::UntrustedInstanceAccount(*instance_pda));
     }
 
-    // 3. Guard: Verify authentic stored instance's bootstrap root matches pinned trusted checkpoint (Finding P0)
-    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(authentic_instance.chain_id) {
-        if authentic_instance.bootstrap_header_hash != expected_checkpoint {
-            return Err(ReceiverError::AttestationFailed(
-                "authenticated instance bootstrap root does not match pinned trusted checkpoint"
-                    .into(),
-            ));
-        }
+    // 3. Guard: Verify authentic stored instance's bootstrap root matches pinned trusted checkpoint (Finding P0 / Chat 19)
+    let expected_checkpoint = config
+        .get_trusted_checkpoint(authentic_instance.chain_id)
+        .or_else(|| loaded_config.get_trusted_checkpoint(authentic_instance.chain_id))
+        .ok_or_else(|| {
+            ReceiverError::AttestationFailed(
+                "trusted checkpoint root absent from configuration for target chain".into(),
+            )
+        })?;
+
+    if authentic_instance.bootstrap_header_hash != expected_checkpoint {
+        return Err(ReceiverError::AttestationFailed(
+            "authenticated instance bootstrap root does not match pinned trusted checkpoint".into(),
+        ));
     }
 
     let current_slot = authentic_instance.current_slot;
