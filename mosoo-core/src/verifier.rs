@@ -834,6 +834,15 @@ pub fn verify_instance_account_authenticity<S: AccountStore>(
     store: &S,
     expected_pda: &[u8; 32],
 ) -> Result<InstanceAccount, MosooError> {
+    // 1. Program ownership verification: Account MUST be owned by MOSOO_PROGRAM_ID
+    if let Some(owner) = store.get_account_owner(expected_pda) {
+        if owner != MOSOO_PROGRAM_ID {
+            return Err(MosooError::DomainSeparationFailed);
+        }
+    } else {
+        return Err(MosooError::NotInitialized);
+    }
+
     let data = store
         .get_account(expected_pda)
         .ok_or(MosooError::NotInitialized)?;
@@ -873,6 +882,13 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
 
     // 2. If a header PDA is provided, load and authenticate HeaderRecord from store
     if let Some(h_pda) = header_pda {
+        if let Some(owner) = store.get_account_owner(h_pda) {
+            if owner != MOSOO_PROGRAM_ID {
+                return Err(MosooError::DomainSeparationFailed);
+            }
+        } else {
+            return Err(MosooError::UnauthenticatedHeaderRecord);
+        }
         let h_data = store
             .get_account(h_pda)
             .ok_or(MosooError::UnauthenticatedHeaderRecord)?;

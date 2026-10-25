@@ -108,6 +108,11 @@ pub enum ReceiverError {
     #[error("untrusted chain or locker: chain {0} has no authenticated locker vault configured")]
     UntrustedLocker(u64),
 
+    #[error(
+        "untrusted light-client instance {0:?}: instance is not approved in TrustedBridgeConfig"
+    )]
+    UntrustedInstanceAccount([u8; 32]),
+
     #[error("arithmetic overflow in token operation")]
     Overflow,
 }
@@ -1182,6 +1187,12 @@ pub struct AtomicErc20ClaimArgsU256 {
 }
 
 /// Execute atomic same-transaction ERC-20 token claim with full 256-bit amount preservation.
+///
+/// NOTE: In-memory test harness entrypoint for offline simulation.
+/// Production LEZ contracts MUST invoke `claim_authenticated_store_u256` with persistent `AccountStore` and pinned `TrustedBridgeConfig`.
+#[deprecated(
+    note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_authenticated_store_u256 with pinned TrustedBridgeConfig."
+)]
 pub fn claim_atomic_u256(
     args: AtomicErc20ClaimArgsU256,
     nullifiers: &mut NullifierSet,
@@ -1339,6 +1350,7 @@ pub fn claim_atomic_u256(
 #[deprecated(
     note = "Use `claim_atomic_u256` for full U256 precision to prevent overflow/truncation of amounts > u64::MAX"
 )]
+#[allow(deprecated)]
 pub fn claim_atomic(
     args: AtomicErc20ClaimArgs,
     nullifiers: &mut NullifierSet,
@@ -1368,14 +1380,29 @@ pub fn claim_atomic(
 }
 
 /// Execute atomic same-transaction ERC-20 token claim backed by an authenticated InstanceAccount
-/// loaded directly from the persistent LEZ AccountStore.
+/// loaded directly from the persistent LEZ AccountStore and verified against pinned TrustedBridgeConfig.
 pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
     store: &S,
     instance_pda: &[u8; 32],
     header_pda: Option<&[u8; 32]>,
     args: AtomicErc20ClaimArgsU256,
     nullifiers: &mut NullifierSet,
+    config: &TrustedBridgeConfig,
 ) -> Result<U256, ReceiverError> {
+    // 1. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
+    if !config.is_trusted_instance(args.instance.chain_id, instance_pda) {
+        return Err(ReceiverError::UntrustedInstanceAccount(*instance_pda));
+    }
+
+    // 2. Guard: If a trusted checkpoint root is registered, verify instance's bootstrap matches it
+    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(args.instance.chain_id) {
+        if args.instance.bootstrap_header_hash != expected_checkpoint {
+            return Err(ReceiverError::AttestationFailed(
+                "instance bootstrap root does not match pinned trusted checkpoint".into(),
+            ));
+        }
+    }
+
     let attest_args = mosoo_core::verifier::AttestStateArgs {
         instance: args.instance,
         header: args.header,

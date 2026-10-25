@@ -30,9 +30,12 @@ pub struct WithdrawalRecord {
 }
 
 pub const GOVERNANCE_TIMELOCK_DELAY: u64 = 172_800; // 2 days in seconds
+pub const MAX_CLEANUP_BATCH: usize = 32;
 
 /// Mock simulation of Ethereum `MosooLocker.sol` state machine
 struct MockEthereumLocker {
+    pub owner: [u8; 20],
+    pub guardian: [u8; 20],
     pub locked_eth_wei: u128,
     pub unlocked_eth_wei: u128,
     pub locked_erc20: HashMap<[u8; 20], u128>,
@@ -55,6 +58,10 @@ struct MockEthereumLocker {
     pub erc20_withdrawal_head: HashMap<[u8; 20], usize>,
     pub rolling_withdrawn_erc20: HashMap<[u8; 20], u128>,
     pub daily_withdrawal_limit_erc20: HashMap<[u8; 20], u128>,
+    pub pending_daily_withdrawal_limit_eth: Option<u128>,
+    pub daily_withdrawal_limit_eth_timelock_unlock: u64,
+    pub pending_daily_withdrawal_limit_erc20: HashMap<[u8; 20], u128>,
+    pub daily_withdrawal_limit_erc20_timelock_unlock: HashMap<[u8; 20], u64>,
     pub large_withdrawal_threshold_eth: u128,
     pub large_withdrawal_delay: u64,
     pub queued_withdrawals: HashMap<[u8; 32], u64>,
@@ -75,9 +82,15 @@ pub const LARGE_WITHDRAWAL_THRESHOLD_ETH: u128 = 10_000_000_000_000_000_000; // 
 
 impl MockEthereumLocker {
     fn new(locker_address: [u8; 20]) -> Self {
+        Self::new_with_guardian(locker_address, [0xee; 20])
+    }
+
+    fn new_with_guardian(locker_address: [u8; 20], guardian: [u8; 20]) -> Self {
         let mut is_attester = HashMap::new();
         is_attester.insert([0xaa; 20], true);
         Self {
+            owner: [0xee; 20],
+            guardian,
             locked_eth_wei: 0,
             unlocked_eth_wei: 0,
             locked_erc20: HashMap::new(),
@@ -100,6 +113,10 @@ impl MockEthereumLocker {
             erc20_withdrawal_head: HashMap::new(),
             rolling_withdrawn_erc20: HashMap::new(),
             daily_withdrawal_limit_erc20: HashMap::new(),
+            pending_daily_withdrawal_limit_eth: None,
+            daily_withdrawal_limit_eth_timelock_unlock: 0,
+            pending_daily_withdrawal_limit_erc20: HashMap::new(),
+            daily_withdrawal_limit_erc20_timelock_unlock: HashMap::new(),
             large_withdrawal_threshold_eth: LARGE_WITHDRAWAL_THRESHOLD_ETH,
             large_withdrawal_delay: 86_400,
             queued_withdrawals: HashMap::new(),
@@ -383,8 +400,96 @@ impl MockEthereumLocker {
         alloy_primitives::keccak256(&final_digest_input).0
     }
 
-    fn set_daily_withdrawal_limit_eth(&mut self, limit: u128) {
-        self.daily_withdrawal_limit_eth = limit;
+    fn propose_daily_withdrawal_limit_eth(
+        &mut self,
+        new_limit: u128,
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        self.pending_daily_withdrawal_limit_eth = Some(new_limit);
+        let unlock = current_time + GOVERNANCE_TIMELOCK_DELAY;
+        self.daily_withdrawal_limit_eth_timelock_unlock = unlock;
+        Ok(unlock)
+    }
+
+    fn execute_daily_withdrawal_limit_eth(
+        &mut self,
+        current_time: u64,
+    ) -> Result<u128, &'static str> {
+        let proposed = self
+            .pending_daily_withdrawal_limit_eth
+            .ok_or("NoPendingGovernanceAction")?;
+        if current_time < self.daily_withdrawal_limit_eth_timelock_unlock {
+            return Err("GovernanceTimelockActive");
+        }
+        self.daily_withdrawal_limit_eth = proposed;
+        self.pending_daily_withdrawal_limit_eth = None;
+        self.daily_withdrawal_limit_eth_timelock_unlock = 0;
+        Ok(proposed)
+    }
+
+    fn propose_daily_withdrawal_limit_erc20(
+        &mut self,
+        token: [u8; 20],
+        new_limit: u128,
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        if token == [0u8; 20] {
+            return Err("ZeroAddress");
+        }
+        self.pending_daily_withdrawal_limit_erc20
+            .insert(token, new_limit);
+        let unlock = current_time + GOVERNANCE_TIMELOCK_DELAY;
+        self.daily_withdrawal_limit_erc20_timelock_unlock
+            .insert(token, unlock);
+        Ok(unlock)
+    }
+
+    fn execute_daily_withdrawal_limit_erc20(
+        &mut self,
+        token: [u8; 20],
+        current_time: u64,
+    ) -> Result<u128, &'static str> {
+        if token == [0u8; 20] {
+            return Err("ZeroAddress");
+        }
+        let proposed = self
+            .pending_daily_withdrawal_limit_erc20
+            .get(&token)
+            .copied()
+            .ok_or("NoPendingGovernanceAction")?;
+        let unlock = self
+            .daily_withdrawal_limit_erc20_timelock_unlock
+            .get(&token)
+            .copied()
+            .unwrap_or(0);
+        if current_time < unlock {
+            return Err("GovernanceTimelockActive");
+        }
+        self.pending_daily_withdrawal_limit_erc20.remove(&token);
+        self.daily_withdrawal_limit_erc20_timelock_unlock.remove(&token);
+        self.daily_withdrawal_limit_erc20.insert(token, proposed);
+        Ok(proposed)
+    }
+
+    fn set_daily_withdrawal_limit_eth(&mut self, _limit: u128) -> Result<(), &'static str> {
+        Err("DirectGovernanceDeprecated")
+    }
+
+    fn set_daily_withdrawal_limit_erc20(
+        &mut self,
+        _token: [u8; 20],
+        _limit: u128,
+    ) -> Result<(), &'static str> {
+        Err("DirectGovernanceDeprecated")
+    }
+
+    fn cancel_burn_by(&mut self, caller: [u8; 20], burn_id: [u8; 32]) -> Result<(), &'static str> {
+        if caller != self.owner && caller != self.guardian {
+            return Err("Unauthorized");
+        }
+        self.queued_withdrawals.remove(&burn_id);
+        self.cancelled_burns.insert(burn_id);
+        Ok(())
     }
 
     fn cancel_queued_withdrawal(&mut self, burn_id: [u8; 32]) -> Result<(), &'static str> {
@@ -475,13 +580,16 @@ impl MockEthereumLocker {
         // Continuous rolling 24-hour volume limit check (Finding M-04 / 3 hardening)
         if self.daily_withdrawal_limit_eth > 0 {
             let cutoff = current_timestamp.saturating_sub(86_400);
+            let mut cleaned = 0;
             while self.eth_withdrawal_head < self.eth_withdrawals.len()
                 && self.eth_withdrawals[self.eth_withdrawal_head].timestamp < cutoff
+                && cleaned < MAX_CLEANUP_BATCH
             {
                 self.rolling_withdrawn_eth = self
                     .rolling_withdrawn_eth
                     .saturating_sub(self.eth_withdrawals[self.eth_withdrawal_head].amount);
                 self.eth_withdrawal_head += 1;
+                cleaned += 1;
             }
 
             if self.rolling_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
@@ -500,10 +608,6 @@ impl MockEthereumLocker {
         self.locked_eth_wei -= amount_wei;
         self.unlocked_eth_wei += amount_wei;
         Ok(())
-    }
-
-    fn set_daily_withdrawal_limit_erc20(&mut self, token: [u8; 20], limit: u128) {
-        self.daily_withdrawal_limit_erc20.insert(token, limit);
     }
 
     /// Simulates `unlockERC20` with continuous 24h rolling rate limit
@@ -549,10 +653,15 @@ impl MockEthereumLocker {
                 let head = self.erc20_withdrawal_head.entry(token).or_insert(0);
                 let history = self.erc20_withdrawals.entry(token).or_default();
                 let rolling = self.rolling_withdrawn_erc20.entry(token).or_insert(0);
+                let mut cleaned = 0;
 
-                while *head < history.len() && history[*head].timestamp < cutoff {
+                while *head < history.len()
+                    && history[*head].timestamp < cutoff
+                    && cleaned < MAX_CLEANUP_BATCH
+                {
                     *rolling = rolling.saturating_sub(history[*head].amount);
                     *head += 1;
+                    cleaned += 1;
                 }
 
                 if *rolling + amount > limit {
@@ -1038,9 +1147,21 @@ fn test_mosoo_locker_daily_withdrawal_limit_enforced() {
     let total_deposit: u128 = 20_000_000_000_000_000_000; // 20 ETH
     locker.deposit_eth(total_deposit);
 
-    // Set daily withdrawal limit of 5 ETH
+    // Set daily withdrawal limit of 5 ETH via timelocked governance
     let daily_limit: u128 = 5_000_000_000_000_000_000;
-    locker.set_daily_withdrawal_limit_eth(daily_limit);
+    assert_eq!(
+        locker.set_daily_withdrawal_limit_eth(daily_limit),
+        Err("DirectGovernanceDeprecated")
+    );
+    let unlock_ts = locker
+        .propose_daily_withdrawal_limit_eth(daily_limit, 0)
+        .unwrap();
+    assert_eq!(
+        locker
+            .execute_daily_withdrawal_limit_eth(unlock_ts)
+            .unwrap(),
+        daily_limit
+    );
 
     let burn_id_1 = derive_burn_id(
         1,
@@ -1264,9 +1385,21 @@ fn test_mosoo_locker_midnight_boundary_rolling_limit_enforced() {
     let total_deposit: u128 = 20_000_000_000_000_000_000; // 20 ETH
     locker.deposit_eth(total_deposit);
 
-    // Daily withdrawal limit = 5 ETH
+    // Daily withdrawal limit = 5 ETH via timelocked governance
     let daily_limit: u128 = 5_000_000_000_000_000_000;
-    locker.set_daily_withdrawal_limit_eth(daily_limit);
+    assert_eq!(
+        locker.set_daily_withdrawal_limit_eth(daily_limit),
+        Err("DirectGovernanceDeprecated")
+    );
+    let unlock_ts = locker
+        .propose_daily_withdrawal_limit_eth(daily_limit, 0)
+        .unwrap();
+    assert_eq!(
+        locker
+            .execute_daily_withdrawal_limit_eth(unlock_ts)
+            .unwrap(),
+        daily_limit
+    );
 
     // 1. Withdrawal of 3 ETH at 23:59:59 of Day 1 (timestamp 86399)
     let burn_id_1 = derive_burn_id(
@@ -1427,7 +1560,19 @@ fn test_mosoo_locker_erc20_rolling_limit_enforced() {
     locker.locked_erc20.insert(token, initial_locked);
 
     let daily_limit: u128 = 10_000 * 1_000_000;
-    locker.set_daily_withdrawal_limit_erc20(token, daily_limit);
+    assert_eq!(
+        locker.set_daily_withdrawal_limit_erc20(token, daily_limit),
+        Err("DirectGovernanceDeprecated")
+    );
+    let unlock_ts = locker
+        .propose_daily_withdrawal_limit_erc20(token, daily_limit, 0)
+        .unwrap();
+    assert_eq!(
+        locker
+            .execute_daily_withdrawal_limit_erc20(token, unlock_ts)
+            .unwrap(),
+        daily_limit
+    );
 
     // 1. Withdrawal of 6,000 at timestamp 86399 succeeds
     let burn_id_1 = derive_burn_erc20_id(
@@ -1496,4 +1641,137 @@ fn test_mosoo_locker_erc20_rolling_limit_enforced() {
             172800,
         )
         .is_ok());
+}
+
+#[test]
+fn test_mosoo_locker_rate_limit_timelock_governance() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let token = [0x55; 20];
+
+    // 1. Direct rate-limit modification must revert with DirectGovernanceDeprecated
+    assert_eq!(
+        locker.set_daily_withdrawal_limit_eth(100),
+        Err("DirectGovernanceDeprecated")
+    );
+    assert_eq!(
+        locker.set_daily_withdrawal_limit_erc20(token, 100),
+        Err("DirectGovernanceDeprecated")
+    );
+
+    // 2. Propose ETH rate-limit adjustment (e.g. lowering or setting to 0)
+    let current_time = 1_000_000;
+    let unlock_ts = locker
+        .propose_daily_withdrawal_limit_eth(50_000_000_000_000_000_000, current_time)
+        .expect("Propose ETH limit failed");
+    assert_eq!(unlock_ts, current_time + GOVERNANCE_TIMELOCK_DELAY);
+
+    // 3. Premature execution must fail
+    let err_premature = locker.execute_daily_withdrawal_limit_eth(current_time + 100);
+    assert_eq!(err_premature.unwrap_err(), "GovernanceTimelockActive");
+
+    // 4. Execution at or after unlock timestamp succeeds
+    let res = locker.execute_daily_withdrawal_limit_eth(unlock_ts);
+    assert_eq!(res.unwrap(), 50_000_000_000_000_000_000);
+    assert_eq!(
+        locker.daily_withdrawal_limit_eth,
+        50_000_000_000_000_000_000
+    );
+
+    // 5. Test ERC-20 timelocked rate-limit administration
+    let erc20_unlock_ts = locker
+        .propose_daily_withdrawal_limit_erc20(token, 25_000 * 1_000_000, current_time)
+        .expect("Propose ERC20 limit failed");
+    assert_eq!(erc20_unlock_ts, current_time + GOVERNANCE_TIMELOCK_DELAY);
+
+    assert_eq!(
+        locker
+            .execute_daily_withdrawal_limit_erc20(token, current_time + 1_000)
+            .unwrap_err(),
+        "GovernanceTimelockActive"
+    );
+    let erc20_res = locker.execute_daily_withdrawal_limit_erc20(token, erc20_unlock_ts);
+    assert_eq!(erc20_res.unwrap(), 25_000 * 1_000_000);
+    assert_eq!(
+        locker
+            .daily_withdrawal_limit_erc20
+            .get(&token)
+            .copied()
+            .unwrap(),
+        25_000 * 1_000_000
+    );
+}
+
+#[test]
+fn test_mosoo_locker_independent_guardian_veto() {
+    let guardian = [0x99; 20];
+    let mut locker = MockEthereumLocker::new_with_guardian([0x11; 20], guardian);
+    let rogue_actor = [0x42; 20];
+    let burn_id = [0x77; 32];
+
+    // Queue a withdrawal
+    locker.queued_withdrawals.insert(burn_id, 100_000);
+
+    // Rogue actor tries to cancel burn -> Unauthorized
+    assert_eq!(
+        locker.cancel_burn_by(rogue_actor, burn_id),
+        Err("Unauthorized")
+    );
+    assert!(!locker.cancelled_burns.contains(&burn_id));
+
+    // Independent Guardian executes veto -> Succeeds
+    assert!(locker.cancel_burn_by(guardian, burn_id).is_ok());
+    assert!(locker.cancelled_burns.contains(&burn_id));
+    assert!(!locker.queued_withdrawals.contains_key(&burn_id));
+}
+
+#[test]
+fn test_mosoo_locker_bounded_pruning_gas_defense() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    locker.deposit_eth(100_000_000_000_000_000_000);
+
+    // Set daily limit to 10 ETH via timelock
+    let unlock_ts = locker
+        .propose_daily_withdrawal_limit_eth(10_000_000_000_000_000_000, 0)
+        .unwrap();
+    locker
+        .execute_daily_withdrawal_limit_eth(unlock_ts)
+        .unwrap();
+
+    // Insert 50 expired withdrawal records (more than MAX_CLEANUP_BATCH = 32)
+    let expired_timestamp = 100;
+    for i in 0..50 {
+        locker.eth_withdrawals.push(WithdrawalRecord {
+            timestamp: expired_timestamp + i,
+            amount: 10_000_000_000_000_000, // 0.01 ETH
+        });
+        locker.rolling_withdrawn_eth += 10_000_000_000_000_000;
+    }
+    assert_eq!(locker.eth_withdrawal_head, 0);
+    assert_eq!(locker.eth_withdrawals.len(), 50);
+
+    // Perform withdrawal after 2 days (timestamp = 200,000)
+    let burn_id = derive_burn_id(
+        1,
+        &lez_owner,
+        &eth_recipient,
+        1_000_000_000_000_000_000,
+        1,
+        100,
+    );
+    let res = locker.unlock_eth_with_time(
+        burn_id,
+        1_000_000_000_000_000_000,
+        lez_owner,
+        eth_recipient,
+        1,
+        100,
+        200_000,
+    );
+    assert!(res.is_ok());
+
+    // Verify bounded cleanup: head only advanced by MAX_CLEANUP_BATCH (32), NOT all 50
+    assert_eq!(locker.eth_withdrawal_head, MAX_CLEANUP_BATCH);
+    assert_eq!(locker.eth_withdrawal_head, 32);
 }

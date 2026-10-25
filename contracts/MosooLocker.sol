@@ -78,12 +78,24 @@ contract MosooLocker {
 
     /// @notice Multi-signer governance timelock (2-day delay for attester/quorum modifications)
     uint256 public constant GOVERNANCE_TIMELOCK_DELAY = 2 days;
+    /// @notice Maximum number of expired withdrawal records cleaned up per transaction to guarantee O(1) gas
+    uint256 public constant MAX_CLEANUP_BATCH = 32;
+
     uint256 public pendingQuorum;
     uint256 public quorumTimelockUnlock;
     address public pendingAddAttester;
     uint256 public addAttesterTimelockUnlock;
     address public pendingRemoveAttester;
     uint256 public removeAttesterTimelockUnlock;
+
+    /// @notice Timelocked rate-limit administration (2-day timelock delay)
+    uint256 public pendingDailyLimitETH;
+    uint256 public dailyLimitETHTimelockUnlock;
+    bool public hasPendingDailyLimitETH;
+
+    mapping(address => uint256) public pendingDailyLimitERC20;
+    mapping(address => uint256) public dailyLimitERC20TimelockUnlock;
+    mapping(address => bool) public hasPendingDailyLimitERC20;
 
     /// @notice Large withdrawal threshold requiring mandatory timelock delay
     uint256 public constant LARGE_WITHDRAWAL_THRESHOLD_ETH = 10 ether;
@@ -176,6 +188,8 @@ contract MosooLocker {
     event QuorumChangeProposed(uint256 currentQuorum, uint256 proposedQuorum, uint256 unlockTimestamp);
     event AttesterAddProposed(address indexed proposedAttester, uint256 unlockTimestamp);
     event AttesterRemoveProposed(address indexed proposedAttester, uint256 unlockTimestamp);
+    event DailyLimitETHChangeProposed(uint256 currentLimit, uint256 proposedLimit, uint256 unlockTimestamp);
+    event DailyLimitERC20ChangeProposed(address indexed token, uint256 currentLimit, uint256 proposedLimit, uint256 unlockTimestamp);
     event PendingGovernanceCancelled(string action, address indexed cancelledBy);
 
     // --- Errors ---
@@ -228,10 +242,10 @@ contract MosooLocker {
 
     // --- Constructor ---
 
-    constructor(address _attesterAuthority) {
+    constructor(address _attesterAuthority, address _guardian) {
         if (_attesterAuthority == address(0)) revert ZeroAddress();
         owner = msg.sender;
-        guardian = msg.sender; // Finding M-05 hardening: default non-zero guardian set to deployer
+        guardian = _guardian != address(0) ? _guardian : msg.sender; // Finding M-05/Chat 17 hardening: support independent guardian
         attesterAuthority = _attesterAuthority;
         isAttester[_attesterAuthority] = true;
         attesterCount = 1;
@@ -249,7 +263,7 @@ contract MosooLocker {
 
         _status = _NOT_ENTERED;
         emit OwnershipTransferred(address(0), msg.sender);
-        emit GuardianUpdated(address(0), msg.sender);
+        emit GuardianUpdated(address(0), guardian);
         emit AttesterAuthorityUpdated(address(0), _attesterAuthority);
         emit AttesterAdded(_attesterAuthority);
         emit QuorumUpdated(0, 1);
@@ -624,19 +638,60 @@ contract MosooLocker {
         emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
     }
 
-    /// @notice Configure rolling daily withdrawal volume cap for native ETH
-    function setDailyWithdrawalLimitETH(uint256 newLimit) external onlyOwner {
-        uint256 oldLimit = dailyWithdrawalLimitETH;
-        dailyWithdrawalLimitETH = newLimit;
-        emit DailyWithdrawalLimitUpdatedETH(oldLimit, newLimit);
+    /// @notice Propose rolling daily withdrawal volume cap for native ETH subject to 2-day timelock
+    function proposeDailyWithdrawalLimitETH(uint256 newLimit) external onlyOwner {
+        pendingDailyLimitETH = newLimit;
+        hasPendingDailyLimitETH = true;
+        dailyLimitETHTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit DailyLimitETHChangeProposed(dailyWithdrawalLimitETH, newLimit, dailyLimitETHTimelockUnlock);
     }
 
-    /// @notice Configure rolling daily withdrawal volume cap for a specific ERC-20 token
-    function setDailyWithdrawalLimitERC20(address token, uint256 newLimit) external onlyOwner {
+    /// @notice Execute proposed daily withdrawal limit for ETH after timelock delay
+    function executeDailyWithdrawalLimitETH() external onlyOwner {
+        if (!hasPendingDailyLimitETH) revert NoPendingGovernanceAction();
+        if (block.timestamp < dailyLimitETHTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, dailyLimitETHTimelockUnlock);
+        }
+        uint256 oldLimit = dailyWithdrawalLimitETH;
+        dailyWithdrawalLimitETH = pendingDailyLimitETH;
+        hasPendingDailyLimitETH = false;
+        pendingDailyLimitETH = 0;
+        dailyLimitETHTimelockUnlock = 0;
+        emit DailyWithdrawalLimitUpdatedETH(oldLimit, dailyWithdrawalLimitETH);
+    }
+
+    /// @notice Propose rolling daily withdrawal volume cap for an ERC-20 token subject to 2-day timelock
+    function proposeDailyWithdrawalLimitERC20(address token, uint256 newLimit) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
+        pendingDailyLimitERC20[token] = newLimit;
+        hasPendingDailyLimitERC20[token] = true;
+        dailyLimitERC20TimelockUnlock[token] = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit DailyLimitERC20ChangeProposed(token, dailyWithdrawalLimitERC20[token], newLimit, dailyLimitERC20TimelockUnlock[token]);
+    }
+
+    /// @notice Execute proposed daily withdrawal limit for an ERC-20 token after timelock delay
+    function executeDailyWithdrawalLimitERC20(address token) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        if (!hasPendingDailyLimitERC20[token]) revert NoPendingGovernanceAction();
+        if (block.timestamp < dailyLimitERC20TimelockUnlock[token]) {
+            revert GovernanceTimelockActive(block.timestamp, dailyLimitERC20TimelockUnlock[token]);
+        }
         uint256 oldLimit = dailyWithdrawalLimitERC20[token];
-        dailyWithdrawalLimitERC20[token] = newLimit;
-        emit DailyWithdrawalLimitUpdatedERC20(token, oldLimit, newLimit);
+        dailyWithdrawalLimitERC20[token] = pendingDailyLimitERC20[token];
+        hasPendingDailyLimitERC20[token] = false;
+        pendingDailyLimitERC20[token] = 0;
+        dailyLimitERC20TimelockUnlock[token] = 0;
+        emit DailyWithdrawalLimitUpdatedERC20(token, oldLimit, dailyWithdrawalLimitERC20[token]);
+    }
+
+    /// @notice Deprecated: direct rate-limit updates without timelock are disabled for production safety.
+    function setDailyWithdrawalLimitETH(uint256) external pure {
+        revert DirectGovernanceDeprecated();
+    }
+
+    /// @notice Deprecated: direct rate-limit updates without timelock are disabled for production safety.
+    function setDailyWithdrawalLimitERC20(address, uint256) external pure {
+        revert DirectGovernanceDeprecated();
     }
 
     /// @notice Cancel a queued large withdrawal in an emergency (guardian or owner)
@@ -668,11 +723,13 @@ contract MosooLocker {
         uint256 head = _ethWithdrawalHead;
         uint256 len = _ethWithdrawals.length;
         uint256 rolling = _rollingWithdrawnETH;
+        uint256 cleaned = 0;
 
-        while (head < len && _ethWithdrawals[head].timestamp < cutoff) {
+        while (head < len && _ethWithdrawals[head].timestamp < cutoff && cleaned < MAX_CLEANUP_BATCH) {
             rolling -= _ethWithdrawals[head].amount;
             delete _ethWithdrawals[head];
             head++;
+            cleaned++;
         }
         _ethWithdrawalHead = head;
 
@@ -696,11 +753,13 @@ contract MosooLocker {
         WithdrawalRecord[] storage history = _erc20Withdrawals[token];
         uint256 len = history.length;
         uint256 rolling = _rollingWithdrawnERC20[token];
+        uint256 cleaned = 0;
 
-        while (head < len && history[head].timestamp < cutoff) {
+        while (head < len && history[head].timestamp < cutoff && cleaned < MAX_CLEANUP_BATCH) {
             rolling -= history[head].amount;
             delete history[head];
             head++;
+            cleaned++;
         }
         _erc20WithdrawalHead[token] = head;
 
@@ -955,9 +1014,23 @@ contract MosooLocker {
             pendingRemoveAttester = address(0);
             removeAttesterTimelockUnlock = 0;
             emit PendingGovernanceCancelled("removeAttester", msg.sender);
+        } else if (actionType == 4) {
+            hasPendingDailyLimitETH = false;
+            pendingDailyLimitETH = 0;
+            dailyLimitETHTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("dailyLimitETH", msg.sender);
         } else {
             revert NoPendingGovernanceAction();
         }
+    }
+
+    function cancelPendingGovernanceERC20(address token) external {
+        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        if (token == address(0) || !hasPendingDailyLimitERC20[token]) revert NoPendingGovernanceAction();
+        hasPendingDailyLimitERC20[token] = false;
+        pendingDailyLimitERC20[token] = 0;
+        dailyLimitERC20TimelockUnlock[token] = 0;
+        emit PendingGovernanceCancelled("dailyLimitERC20", msg.sender);
     }
 
     /// @notice Deprecated: direct attester addition without timelock is disabled for production safety.

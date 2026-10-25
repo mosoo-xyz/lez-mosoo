@@ -78,6 +78,11 @@ pub enum EtherReceiverError {
 
     #[error("untrusted chain or locker: chain {0} has no authenticated locker vault configured")]
     UntrustedLocker(u64),
+
+    #[error(
+        "untrusted light-client instance {0:?}: instance is not approved in TrustedBridgeConfig"
+    )]
+    UntrustedInstanceAccount([u8; 32]),
 }
 
 /// A persistent Program-Derived Account (PDA) nullifier record for Native ETH on Logos Execution Zone.
@@ -1246,6 +1251,10 @@ pub fn claim_account_balance_atomic(
 /// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit.
 /// Strictly enforces that the deposit was locked in the canonical trusted vault contract
 /// ([`get_canonical_trusted_locker`]) for the benefit of `args.recipient`.
+#[deprecated(
+    note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_native_eth_deposit_authenticated_store_with_config with pinned TrustedBridgeConfig."
+)]
+#[allow(deprecated)]
 pub fn claim_native_eth_deposit_atomic(
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
@@ -1257,6 +1266,9 @@ pub fn claim_native_eth_deposit_atomic(
 ///
 /// Returns a strongly-typed `EthDepositReceipt` proving that the deposit was locked in
 /// the configured trusted vault contract for the benefit of `args.recipient`.
+#[deprecated(
+    note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_native_eth_deposit_authenticated_store_with_config with pinned TrustedBridgeConfig."
+)]
 pub fn claim_native_eth_deposit_atomic_with_config(
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
@@ -1396,6 +1408,21 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
     if !is_supported_chain_id(args.instance.chain_id) {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
+
+    // 1. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
+    if !config.is_trusted_instance(args.instance.chain_id, instance_pda) {
+        return Err(EtherReceiverError::UntrustedInstanceAccount(*instance_pda));
+    }
+
+    // 2. Guard: If a trusted checkpoint root is registered, verify instance's bootstrap matches it
+    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(args.instance.chain_id) {
+        if args.instance.bootstrap_header_hash != expected_checkpoint {
+            return Err(EtherReceiverError::AttestationFailed(
+                "instance bootstrap root does not match pinned trusted checkpoint".into(),
+            ));
+        }
+    }
+
     if args.expected_address == [0u8; 20] {
         return Err(EtherReceiverError::DepositBackingRequired);
     }

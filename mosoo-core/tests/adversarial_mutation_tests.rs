@@ -8,11 +8,13 @@
 
 use blst::min_pk::SecretKey;
 use erc20_receiver::{
-    claim, claim_erc20_transfer, Erc20TransferClaim, NullifierSet, ReceiverError,
+    claim, claim_authenticated_store_u256, claim_erc20_transfer, AtomicErc20ClaimArgsU256,
+    Erc20TransferClaim, NullifierSet, ReceiverError,
 };
 use ether_receiver::{
-    claim_ether, claim_native_eth_deposit, EtherNullifierSet, EtherReceiverError, MethLedger,
-    NativeEthDepositClaim,
+    claim_ether, claim_native_eth_deposit,
+    claim_native_eth_deposit_authenticated_store_with_config, AtomicEtherClaimArgs,
+    EtherNullifierSet, EtherReceiverError, MethLedger, NativeEthDepositClaim,
 };
 use mosoo_core::{
     crypto::*,
@@ -3712,4 +3714,218 @@ fn test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected() {
     let err3 = handle_attest_state_authenticated(&store, &canonical_uninit_pda, None, attest_args)
         .expect_err("handle_attest_state_authenticated must reject uninitialized instance");
     assert!(matches!(err3, MosooError::NotInitialized));
+}
+
+/// Attack 40: Attacker fabricates an unpinned light-client instance and attempts to trick consumers
+/// into minting tokens or releasing native ETH against it.
+/// Verifies that both `erc20-receiver` and `ether-receiver` strictly enforce pinned instance PDA verification.
+#[test]
+fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account() {
+    let mut config = TrustedBridgeConfig::canonical();
+    let approved_pda = [0x55; 32];
+    let approved_checkpoint = [0x77; 32];
+    config.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, approved_pda);
+    config.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, approved_checkpoint);
+
+    let store = ProgramAccountStore::new();
+
+    // Attacker fabricates an instance with unapproved instance PDA
+    let unpinned_pda = [0x99; 32];
+    let unpinned_instance = InstanceAccount {
+        instance_id: unpinned_pda,
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        current_header_hash: [0x22; 32],
+        current_state_root: [0x33; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 9_900_000,
+        bootstrap_header_hash: approved_checkpoint,
+        initialized: true,
+        current_execution_block_hash: [0x33; 32],
+        current_execution_state_root: [0x44; 32],
+        current_receipts_root: [0x55; 32],
+    };
+
+    let header = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0x22; 32],
+        execution_block_hash: [0x33; 32],
+        execution_state_root: [0x44; 32],
+        receipts_root: [0x55; 32],
+    };
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x42),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    let erc20_args = AtomicErc20ClaimArgsU256 {
+        instance: unpinned_instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_deposit_contract: [0x11; 20],
+        expected_token_contract: [0x22; 20],
+        expected_sender: None,
+        recipient: [0xaa; 32],
+        min_amount: alloy_primitives::U256::ZERO,
+    };
+
+    let mut erc20_nullifiers = NullifierSet::new();
+
+    // Verification against unpinned instance PDA must strictly fail with UntrustedInstanceAccount
+    let erc20_err = claim_authenticated_store_u256(
+        &store,
+        &unpinned_pda,
+        None,
+        erc20_args,
+        &mut erc20_nullifiers,
+        &config,
+    )
+    .expect_err("erc20-receiver must reject unpinned light-client instance PDA");
+    assert!(
+        matches!(erc20_err, ReceiverError::UntrustedInstanceAccount(pda) if pda == unpinned_pda)
+    );
+
+    let eth_args = AtomicEtherClaimArgs {
+        instance: unpinned_instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_address: [0x11; 20],
+        recipient: [0xaa; 32],
+        min_wei: 0,
+    };
+
+    let mut eth_nullifiers = EtherNullifierSet::new();
+
+    // Ether receiver must also strictly reject unpinned instance PDA
+    let eth_err = claim_native_eth_deposit_authenticated_store_with_config(
+        &store,
+        &unpinned_pda,
+        None,
+        eth_args,
+        &mut eth_nullifiers,
+        &config,
+    )
+    .expect_err("ether-receiver must reject unpinned light-client instance PDA");
+    assert!(
+        matches!(eth_err, EtherReceiverError::UntrustedInstanceAccount(pda) if pda == unpinned_pda)
+    );
+
+    // Also verify: even if instance PDA is pinned, if bootstrap checkpoint root differs from pinned root, it fails
+    let mut rogue_checkpoint_instance = unpinned_instance;
+    rogue_checkpoint_instance.instance_id = approved_pda;
+    rogue_checkpoint_instance.bootstrap_header_hash = [0x99; 32]; // Rogue checkpoint
+
+    let eth_args_bad_cp = AtomicEtherClaimArgs {
+        instance: rogue_checkpoint_instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_address: [0x11; 20],
+        recipient: [0xaa; 32],
+        min_wei: 0,
+    };
+
+    let eth_cp_err = claim_native_eth_deposit_authenticated_store_with_config(
+        &store,
+        &approved_pda,
+        None,
+        eth_args_bad_cp,
+        &mut eth_nullifiers,
+        &config,
+    )
+    .expect_err(
+        "ether-receiver must reject instance whose checkpoint does not match pinned checkpoint",
+    );
+    assert!(matches!(
+        eth_cp_err,
+        EtherReceiverError::AttestationFailed(_)
+    ));
+}
+
+/// Attack 41: Attacker manufactures an account whose owner is not MOSOO_PROGRAM_ID.
+/// Verifies that `verify_instance_account_authenticity` and `handle_attest_state_authenticated`
+/// strictly verify account owner and reject rogue accounts with DomainSeparationFailed.
+#[test]
+fn test_mutation_attack_41_account_store_rejects_unowned_instance_account() {
+    let mut store = ProgramAccountStore::new();
+
+    let fake_instance = InstanceAccount {
+        instance_id: [0x11; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0x22; 32],
+        current_state_root: [0x33; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 9_900_000,
+        bootstrap_header_hash: [0x11; 32],
+        initialized: true,
+        current_execution_block_hash: [0x33; 32],
+        current_execution_state_root: [0x44; 32],
+        current_receipts_root: [0x55; 32],
+    };
+    let canonical_pda = fake_instance.pda_address();
+    let serialized = serde_json::to_vec(&fake_instance).unwrap();
+
+    // Insert account with rogue program owner (not MOSOO_PROGRAM_ID)
+    let rogue_program_owner = [0x77; 32];
+    store.insert_program_account(canonical_pda, serialized, rogue_program_owner);
+
+    // 1. verify_instance_account_authenticity must strictly reject unowned account
+    let err_auth = verify_instance_account_authenticity(&store, &canonical_pda)
+        .expect_err("verify_instance_account_authenticity must reject account not owned by Mosoo");
+    assert!(matches!(err_auth, MosooError::DomainSeparationFailed));
+
+    // 2. handle_attest_state_authenticated must also strictly reject unowned account
+    let header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0x22; 32],
+        execution_block_hash: [0x33; 32],
+        execution_state_root: [0x44; 32],
+        receipts_root: [0x55; 32],
+    };
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x42),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+    let attest_args = AttestStateArgs {
+        instance: fake_instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    };
+
+    let err_attest = handle_attest_state_authenticated(&store, &canonical_pda, None, attest_args)
+        .expect_err("handle_attest_state_authenticated must reject account not owned by Mosoo");
+    assert!(matches!(err_attest, MosooError::DomainSeparationFailed));
 }

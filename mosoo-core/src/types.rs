@@ -36,7 +36,19 @@ pub const fn get_canonical_trusted_locker(chain_id: u64) -> Option<[u8; 20]> {
     }
 }
 
-/// Authenticated program-owned configuration specifying trusted locker contracts and allowed tokens per chain.
+/// Canonical Mosoo program ID on Logos Execution Zone (LEZ)
+pub const MOSOO_PROGRAM_ID: [u8; 32] = [
+    0x01, 0xab, 0x35, 0xfd, 0xa4, 0x34, 0xbd, 0xfe, 0x7a, 0xf6, 0x01, 0xea, 0xbc, 0x14, 0x99, 0x2b,
+    0x9c, 0xa8, 0x07, 0xbc, 0x4d, 0xdf, 0xec, 0x46, 0xc8, 0x96, 0xd8, 0x1d, 0xc4, 0x96, 0x1e, 0x1c,
+];
+
+/// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Sepolia.
+pub const CANONICAL_SEPOLIA_MOSOO_INSTANCE: [u8; 32] = [
+    0x5e, 0x90, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+    0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+];
+
+/// Authenticated program-owned configuration specifying trusted locker contracts, approved light-client instances, and allowed tokens per chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedBridgeConfig {
     /// Optional administrative authority key (32 bytes) authorized to update lockers or token allowlists.
@@ -45,6 +57,10 @@ pub struct TrustedBridgeConfig {
     pub trusted_lockers: HashMap<u64, [u8; 20]>,
     /// Strict token allowlist per chain ID (default-deny: tokens must be explicitly allowlisted)
     pub allowed_tokens: HashMap<u64, HashSet<[u8; 20]>>,
+    /// Approved light-client instance PDA per chain ID (Finding M-01: pins consumers to authentic light-client instances)
+    pub trusted_instances: HashMap<u64, [u8; 32]>,
+    /// Approved root-of-trust beacon checkpoint root per chain ID (authenticates bootstrap header hash)
+    pub trusted_checkpoints: HashMap<u64, [u8; 32]>,
 }
 
 impl Default for TrustedBridgeConfig {
@@ -54,7 +70,7 @@ impl Default for TrustedBridgeConfig {
 }
 
 impl TrustedBridgeConfig {
-    /// Initialize with canonical production and testnet locker contracts and verified token allowlists.
+    /// Initialize with canonical production and testnet locker contracts, approved instances, and verified token allowlists.
     pub fn canonical() -> Self {
         let mut trusted_lockers = HashMap::new();
         // Register authentic deployed Sepolia testnet locker
@@ -75,10 +91,17 @@ impl TrustedBridgeConfig {
         ]);
         allowed_tokens.insert(ETH_SEPOLIA_CHAIN_ID, sepolia_tokens);
 
+        let mut trusted_instances = HashMap::new();
+        trusted_instances.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+
+        let trusted_checkpoints = HashMap::new();
+
         Self {
             admin_authority: None,
             trusted_lockers,
             allowed_tokens,
+            trusted_instances,
+            trusted_checkpoints,
         }
     }
 
@@ -167,6 +190,71 @@ impl TrustedBridgeConfig {
             Some(set) => set.contains(token),
         }
     }
+
+    /// Registers or updates the trusted light-client instance PDA for a given chain ID.
+    /// Strictly rejects the zero PDA.
+    pub fn register_trusted_instance(&mut self, chain_id: u64, instance_pda: [u8; 32]) -> bool {
+        if instance_pda == [0u8; 32] {
+            return false;
+        }
+        self.trusted_instances.insert(chain_id, instance_pda);
+        true
+    }
+
+    /// Registers or updates the trusted light-client instance PDA with administrative authorization.
+    pub fn register_trusted_instance_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        instance_pda: [u8; 32],
+    ) -> bool {
+        let Some(expected_admin) = self.admin_authority else {
+            return false;
+        };
+        if *caller != expected_admin {
+            return false;
+        }
+        self.register_trusted_instance(chain_id, instance_pda)
+    }
+
+    /// Returns the registered trusted light-client instance PDA for a given chain ID, if configured.
+    pub fn get_trusted_instance(&self, chain_id: u64) -> Option<[u8; 32]> {
+        self.trusted_instances.get(&chain_id).copied()
+    }
+
+    /// Returns true if candidate PDA is non-zero and matches the registered trusted light-client instance.
+    pub fn is_trusted_instance(&self, chain_id: u64, candidate: &[u8; 32]) -> bool {
+        if *candidate == [0u8; 32] {
+            return false;
+        }
+        self.trusted_instances.get(&chain_id) == Some(candidate)
+    }
+
+    /// Registers or updates the approved root-of-trust beacon checkpoint root for a chain ID.
+    pub fn register_trusted_checkpoint(
+        &mut self,
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+    ) -> bool {
+        if checkpoint_root == [0u8; 32] {
+            return false;
+        }
+        self.trusted_checkpoints.insert(chain_id, checkpoint_root);
+        true
+    }
+
+    /// Returns the approved root-of-trust beacon checkpoint root for a given chain ID.
+    pub fn get_trusted_checkpoint(&self, chain_id: u64) -> Option<[u8; 32]> {
+        self.trusted_checkpoints.get(&chain_id).copied()
+    }
+
+    /// Returns true if candidate checkpoint root matches the configured trusted checkpoint.
+    pub fn is_trusted_checkpoint(&self, chain_id: u64, candidate: &[u8; 32]) -> bool {
+        if *candidate == [0u8; 32] {
+            return false;
+        }
+        self.trusted_checkpoints.get(&chain_id) == Some(candidate)
+    }
 }
 
 /// A single beacon block header (Ethereum Altair / Bellatrix+).
@@ -234,12 +322,6 @@ impl SyncAggregate {
         Some(arr)
     }
 }
-
-/// Canonical Mosoo program ID on Logos Execution Zone (LEZ)
-pub const MOSOO_PROGRAM_ID: [u8; 32] = [
-    0x01, 0xab, 0x35, 0xfd, 0xa4, 0x34, 0xbd, 0xfe, 0x7a, 0xf6, 0x01, 0xea, 0xbc, 0x14, 0x99, 0x2b,
-    0x9c, 0xa8, 0x07, 0xbc, 0x4d, 0xdf, 0xec, 0x46, 0xc8, 0x96, 0xd8, 0x1d, 0xc4, 0x96, 0x1e, 0x1c,
-];
 
 /// Execution payload header for Bellatrix/Capella/Deneb/Electra consensus specs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -402,6 +484,15 @@ impl InstanceAccount {
 pub trait AccountStore {
     fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>>;
     fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>);
+    /// Program ownership of the account (LEZ AccountInfo.owner).
+    /// Defaults to MOSOO_PROGRAM_ID for default mock implementations.
+    fn get_account_owner(&self, _address: &[u8; 32]) -> Option<[u8; 32]> {
+        Some(MOSOO_PROGRAM_ID)
+    }
+    /// Write account data with an explicit program owner.
+    fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, _owner: [u8; 32]) {
+        self.set_account(address, data);
+    }
     fn has_account(&self, address: &[u8; 32]) -> bool {
         self.get_account(address).is_some()
     }
@@ -413,6 +504,54 @@ impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
     }
     fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>) {
         self.insert(*address, data);
+    }
+}
+
+/// Program-owned account record on LEZ (matching runtime AccountInfo).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgramAccount {
+    pub owner: [u8; 32],
+    pub data: Vec<u8>,
+}
+
+/// In-memory LEZ AccountStore with program ownership enforcement.
+#[derive(Debug, Clone, Default)]
+pub struct ProgramAccountStore {
+    pub accounts: HashMap<[u8; 32], ProgramAccount>,
+}
+
+impl ProgramAccountStore {
+    pub fn new() -> Self {
+        Self {
+            accounts: HashMap::new(),
+        }
+    }
+
+    pub fn insert_program_account(&mut self, address: [u8; 32], data: Vec<u8>, owner: [u8; 32]) {
+        self.accounts
+            .insert(address, ProgramAccount { owner, data });
+    }
+}
+
+impl AccountStore for ProgramAccountStore {
+    fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>> {
+        self.accounts.get(address).map(|a| a.data.clone())
+    }
+    fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>) {
+        self.accounts.insert(
+            *address,
+            ProgramAccount {
+                owner: MOSOO_PROGRAM_ID,
+                data,
+            },
+        );
+    }
+    fn get_account_owner(&self, address: &[u8; 32]) -> Option<[u8; 32]> {
+        self.accounts.get(address).map(|a| a.owner)
+    }
+    fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, owner: [u8; 32]) {
+        self.accounts
+            .insert(*address, ProgramAccount { owner, data });
     }
 }
 

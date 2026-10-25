@@ -36,6 +36,7 @@ function parseArgs() {
     rpc: null,
     privateKey: process.env.DEPLOYER_PRIVATE_KEY || null,
     attester: null,
+    guardian: process.env.GUARDIAN_ADDRESS || ethers.ZeroAddress,
     dryRun: false
   };
 
@@ -48,6 +49,8 @@ function parseArgs() {
       options.privateKey = args[++i];
     } else if (args[i] === '--attester' && args[i + 1]) {
       options.attester = args[++i];
+    } else if (args[i] === '--guardian' && args[i + 1]) {
+      options.guardian = args[++i];
     } else if (args[i] === '--dry-run') {
       options.dryRun = true;
     }
@@ -110,12 +113,14 @@ async function main() {
 
   console.log(`Deployer Address    : ${deployerAddress}`);
   console.log(`Attester Authority  : ${attesterAuthority}`);
+  const guardianAddress = options.guardian || ethers.ZeroAddress;
+  console.log(`Guardian Address    : ${guardianAddress === ethers.ZeroAddress ? 'Deployer (default)' : guardianAddress}`);
 
   const balance = await provider.getBalance(deployerAddress);
   console.log(`Deployer Balance    : ${ethers.formatEther(balance)} ETH`);
 
   const factory = new ethers.ContractFactory(abi, bin, wallet);
-  const deployTx = await factory.getDeployTransaction(attesterAuthority);
+  const deployTx = await factory.getDeployTransaction(attesterAuthority, guardianAddress);
 
   const estimatedGas = await provider.estimateGas(deployTx);
   const feeData = await provider.getFeeData();
@@ -139,7 +144,7 @@ async function main() {
   console.log('\nBroadcasting deployment transaction...');
   // Add 10% gas buffer to estimatedGas to prevent out-of-gas under block variation
   const gasLimit = (estimatedGas * 110n) / 100n;
-  const contract = await factory.deploy(attesterAuthority, { gasLimit });
+  const contract = await factory.deploy(attesterAuthority, guardianAddress, { gasLimit });
 
   console.log(`Transaction Hash    : ${contract.deploymentTransaction().hash}`);
   console.log('Waiting for block confirmation...');
