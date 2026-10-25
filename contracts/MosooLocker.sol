@@ -210,12 +210,14 @@ contract MosooLocker {
         attesterCount = 1;
         requiredQuorum = 1;
         tokenAllowlistEnabled = true; // Enabled by default for strict production safety
+        dailyWithdrawalLimitETH = 100 ether; // Safe default daily withdrawal rate limit (Finding M-05 hardening)
         _status = _NOT_ENTERED;
         emit OwnershipTransferred(address(0), msg.sender);
         emit AttesterAuthorityUpdated(address(0), _attesterAuthority);
         emit AttesterAdded(_attesterAuthority);
         emit QuorumUpdated(0, 1);
         emit TokenAllowlistToggled(true);
+        emit DailyWithdrawalLimitUpdatedETH(0, 100 ether);
     }
 
     // --- Deposit Functions (ETH -> LEZ) ---

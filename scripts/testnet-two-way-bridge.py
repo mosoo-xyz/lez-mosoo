@@ -311,21 +311,33 @@ def main():
                 topics = log.get("topics", [])
                 if log_contract == f"0x{locker_address.hex()}".lower() and topics:
                     if topics[0].lower() == topic_deposit_eth.lower():
+                        if len(topics) < 4:
+                            print(f"  [-] Fatal: Malformed DepositETH event (expected 4 topics, got {len(topics)}) in tx {deposit_tx_to_verify}")
+                            sys.exit(1)
+                        data_hex = log.get("data", "0x")[2:]
+                        if len(data_hex) < 64:
+                            print(f"  [-] Fatal: Malformed DepositETH event data (expected at least 64 hex chars, got {len(data_hex)}) in tx {deposit_tx_to_verify}")
+                            sys.exit(1)
                         eth_depositor = bytes.fromhex(topics[1][-40:])
                         alice_lez = bytes.fromhex(topics[2][2:])
-                        data_hex = log.get("data", "0x")[2:]
-                        deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
-                        deposit_nonce = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 1
+                        deposit_nonce = int(topics[3], 16)
+                        deposit_wei = int(data_hex[:64], 16)
                         deposit_amount_eth = deposit_wei / 10**18
                         found_event = True
                         print(f"  [+] Live On-Chain DepositETH Log Verified from Tx: {deposit_tx_to_verify}")
                         break
                     elif topics[0].lower() == topic_deposit_erc20.lower():
+                        if len(topics) < 4:
+                            print(f"  [-] Fatal: Malformed DepositERC20 event (expected 4 topics, got {len(topics)}) in tx {deposit_tx_to_verify}")
+                            sys.exit(1)
+                        data_hex = log.get("data", "0x")[2:]
+                        if len(data_hex) < 128:
+                            print(f"  [-] Fatal: Malformed DepositERC20 event data (expected at least 128 hex chars, got {len(data_hex)}) in tx {deposit_tx_to_verify}")
+                            sys.exit(1)
                         eth_depositor = bytes.fromhex(topics[2][-40:])
                         alice_lez = bytes.fromhex(topics[3][2:])
-                        data_hex = log.get("data", "0x")[2:]
-                        deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
-                        deposit_nonce = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 1
+                        deposit_wei = int(data_hex[:64], 16)
+                        deposit_nonce = int(data_hex[64:128], 16)
                         deposit_amount_eth = deposit_wei / 10**18
                         found_event = True
                         print(f"  [+] Live On-Chain DepositERC20 Log Verified from Tx: {deposit_tx_to_verify}")

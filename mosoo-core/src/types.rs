@@ -82,6 +82,11 @@ impl TrustedBridgeConfig {
         }
     }
 
+    /// Configures or updates the administrative authority key.
+    pub fn set_admin_authority(&mut self, admin: [u8; 32]) {
+        self.admin_authority = Some(admin);
+    }
+
     /// Registers or updates the trusted locker contract for a given chain ID.
     /// Strictly rejects the zero address.
     pub fn register_trusted_locker(&mut self, chain_id: u64, locker: [u8; 20]) -> bool {
@@ -93,16 +98,18 @@ impl TrustedBridgeConfig {
     }
 
     /// Registers or updates the trusted locker contract if caller matches the authorized administrative authority.
+    /// Strictly fail-closed: If `admin_authority` is not configured (`None`), all mutations are strictly rejected.
     pub fn register_trusted_locker_authorized(
         &mut self,
         caller: &[u8; 32],
         chain_id: u64,
         locker: [u8; 20],
     ) -> bool {
-        if let Some(expected_admin) = self.admin_authority {
-            if *caller != expected_admin {
-                return false;
-            }
+        let Some(expected_admin) = self.admin_authority else {
+            return false; // Fail-closed: unconfigured admin authority strictly rejects registration
+        };
+        if *caller != expected_admin {
+            return false;
         }
         self.register_trusted_locker(chain_id, locker)
     }
@@ -133,16 +140,18 @@ impl TrustedBridgeConfig {
     }
 
     /// Whitelists an ERC-20 token contract if caller matches the authorized administrative authority.
+    /// Strictly fail-closed: If `admin_authority` is not configured (`None`), all mutations are strictly rejected.
     pub fn allow_token_authorized(
         &mut self,
         caller: &[u8; 32],
         chain_id: u64,
         token: [u8; 20],
     ) -> bool {
-        if let Some(expected_admin) = self.admin_authority {
-            if *caller != expected_admin {
-                return false;
-            }
+        let Some(expected_admin) = self.admin_authority else {
+            return false; // Fail-closed: unconfigured admin authority strictly rejects allowlist changes
+        };
+        if *caller != expected_admin {
+            return false;
         }
         self.allow_token(chain_id, token)
     }
@@ -366,6 +375,27 @@ impl InstanceAccount {
         hasher.update(self.instance_id);
         hasher.finalize().into()
     }
+
+    /// Validates the internal authenticity invariants of this instance account.
+    /// Strictly rejects uninitialized instances, missing bootstrap roots, or inverted slot ordering.
+    pub fn validate_authenticity(&self) -> Result<(), &'static str> {
+        if !self.initialized {
+            return Err("Instance account is not initialized");
+        }
+        if self.bootstrap_slot == 0 {
+            return Err("Instance account bootstrap_slot cannot be zero");
+        }
+        if self.bootstrap_header_hash == [0u8; 32] {
+            return Err("Instance account bootstrap_header_hash cannot be zero");
+        }
+        if self.current_sync_committee.pubkeys.len() != 512 {
+            return Err("Instance account sync committee must have exactly 512 validator keys");
+        }
+        if self.current_slot < self.bootstrap_slot {
+            return Err("Instance account current_slot cannot be earlier than bootstrap_slot");
+        }
+        Ok(())
+    }
 }
 
 /// Persistent storage abstraction for LEZ Program-Derived Accounts (PDAs).
@@ -490,6 +520,11 @@ pub struct InitializeArgs {
     pub chain_id: u64,
     /// Beacon block header of the weak-subjectivity trusted checkpoint.
     pub bootstrap_header: BeaconBlockHeader,
+    /// Weak-subjectivity trusted beacon block root anchor.
+    /// In accordance with Ethereum light client specifications and Logos RFP-021,
+    /// when specified, handle_initialize asserts that hash_tree_root(bootstrap_header) == trusted_checkpoint_root.
+    #[serde(default)]
+    pub trusted_checkpoint_root: [u8; 32],
     /// Sync committee active at the bootstrap slot (512 BLS pubkeys).
     pub current_sync_committee: SyncCommittee,
     /// SSZ Merkle branch proving `current_sync_committee` at generalized index (54 for Altair/Deneb, 86 for Electra/Fulu, 2945 for Gloas).
@@ -773,3 +808,82 @@ pub fn derive_statement_pda(chain_id: u64, statement_id: &[u8; 32]) -> [u8; 32] 
 }
 
 pub use crate::verifier::{AttestStateArgs, InstructionOutput};
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_trusted_bridge_config_fail_closed_authorization() {
+        let mut config = TrustedBridgeConfig::canonical();
+        assert_eq!(config.admin_authority, None);
+
+        let random_caller = [0x42u8; 32];
+        let test_locker = [0x55u8; 20];
+        let test_token = [0x77u8; 20];
+
+        // 1. Without admin_authority configured, authorized mutations MUST fail-closed
+        assert!(!config.register_trusted_locker_authorized(&random_caller, 11155111, test_locker));
+        assert!(!config.allow_token_authorized(&random_caller, 11155111, test_token));
+
+        // 2. Configure admin authority
+        let admin = [0xaau8; 32];
+        config.set_admin_authority(admin);
+
+        // Unauthorized caller is rejected
+        assert!(!config.register_trusted_locker_authorized(&random_caller, 11155111, test_locker));
+        assert!(!config.allow_token_authorized(&random_caller, 11155111, test_token));
+
+        // Authorized caller succeeds
+        assert!(config.register_trusted_locker_authorized(&admin, 1, test_locker));
+        assert_eq!(config.get_trusted_locker(1), Some(test_locker));
+
+        assert!(config.allow_token_authorized(&admin, 1, test_token));
+        assert!(config.is_token_allowed(1, &test_token));
+    }
+
+    #[test]
+    fn test_instance_account_validate_authenticity() {
+        let mut instance = InstanceAccount {
+            instance_id: [1u8; 32],
+            chain_id: 11155111,
+            current_header_hash: [2u8; 32],
+            current_state_root: [3u8; 32],
+            current_slot: 100,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 100,
+            bootstrap_header_hash: [4u8; 32],
+            initialized: true,
+            current_execution_block_hash: [0u8; 32],
+            current_execution_state_root: [0u8; 32],
+            current_receipts_root: [0u8; 32],
+            network_config: None,
+        };
+
+        assert!(instance.validate_authenticity().is_ok());
+
+        // Uninitialized rejects
+        instance.initialized = false;
+        assert!(instance.validate_authenticity().is_err());
+        instance.initialized = true;
+
+        // Zero bootstrap slot rejects
+        instance.bootstrap_slot = 0;
+        assert!(instance.validate_authenticity().is_err());
+        instance.bootstrap_slot = 100;
+
+        // Zero bootstrap header hash rejects
+        instance.bootstrap_header_hash = [0u8; 32];
+        assert!(instance.validate_authenticity().is_err());
+        instance.bootstrap_header_hash = [4u8; 32];
+
+        // Slot progression inverted rejects
+        instance.current_slot = 50;
+        instance.bootstrap_slot = 100;
+        assert!(instance.validate_authenticity().is_err());
+    }
+}

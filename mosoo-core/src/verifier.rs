@@ -130,6 +130,14 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
 
     let header_hash = crypto::hash_tree_root_beacon_header(&args.bootstrap_header);
 
+    // Cryptographic validation: verify bootstrap header hash matches trusted_checkpoint_root anchor.
+    // If trusted_checkpoint_root is specified (non-zero), strict equality is enforced.
+    if args.trusted_checkpoint_root != [0u8; 32] && header_hash != args.trusted_checkpoint_root {
+        return Err(MosooError::InvalidBootstrap(
+            "bootstrap header root does not match trusted_checkpoint_root anchor".into(),
+        ));
+    }
+
     let instance = InstanceAccount {
         instance_id: args.instance_id,
         chain_id: args.chain_id,

@@ -1015,6 +1015,13 @@ pub fn claim_ether_atomic_u256(
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
 
+    // Provenance & Authenticity verification on instance account
+    if let Err(why) = args.instance.validate_authenticity() {
+        return Err(EtherReceiverError::AttestationFailed(format!(
+            "unauthenticated instance account: {why}"
+        )));
+    }
+
     let attest_args = mosoo_core::verifier::AttestStateArgs {
         instance: args.instance,
         header: args.header,
@@ -1155,6 +1162,13 @@ pub fn claim_account_balance_atomic(
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
 
+    // Provenance & Authenticity verification on instance account
+    if let Err(why) = args.instance.validate_authenticity() {
+        return Err(EtherReceiverError::AttestationFailed(format!(
+            "unauthenticated instance account: {why}"
+        )));
+    }
+
     let header_slot = args.header.slot;
     let header_exec_hash = args.header.execution_block_hash;
 
@@ -1250,6 +1264,13 @@ pub fn claim_native_eth_deposit_atomic_with_config(
 ) -> Result<EthDepositReceipt, EtherReceiverError> {
     if !is_supported_chain_id(args.instance.chain_id) {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+    }
+
+    // Provenance & Authenticity verification on instance account
+    if let Err(why) = args.instance.validate_authenticity() {
+        return Err(EtherReceiverError::AttestationFailed(format!(
+            "unauthenticated instance account: {why}"
+        )));
     }
     if args.expected_address == [0u8; 20] {
         return Err(EtherReceiverError::DepositBackingRequired);

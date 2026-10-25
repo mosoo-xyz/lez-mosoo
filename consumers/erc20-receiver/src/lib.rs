@@ -1190,6 +1190,13 @@ pub fn claim_atomic_u256(
         return Err(ReceiverError::WrongChain(args.instance.chain_id));
     }
 
+    // Provenance & Authenticity verification on instance account
+    if let Err(why) = args.instance.validate_authenticity() {
+        return Err(ReceiverError::AttestationFailed(format!(
+            "unauthenticated instance account: {why}"
+        )));
+    }
+
     let attest_args = mosoo_core::verifier::AttestStateArgs {
         instance: args.instance,
         header: args.header,

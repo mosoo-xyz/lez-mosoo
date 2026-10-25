@@ -1025,6 +1025,7 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
+        trusted_checkpoint_root: [0u8; 32],
         current_sync_committee: committee.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -1048,6 +1049,7 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
+        trusted_checkpoint_root: [0u8; 32],
         current_sync_committee: committee.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -1082,6 +1084,7 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: new_bootstrap_header,
+        trusted_checkpoint_root: [0u8; 32],
         current_sync_committee: committee,
         current_sync_committee_branch: branch,
         initial_next_committee: None,
@@ -1220,4 +1223,62 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
         replay_err,
         Err(erc20_receiver::ReceiverError::AlreadyClaimed)
     ));
+}
+
+#[test]
+fn test_bootstrap_trusted_checkpoint_root_matching_and_rejection() {
+    let committee = SyncCommittee {
+        pubkeys: vec![vec![0u8; 48]; 512],
+        aggregate_pubkey: vec![0u8; 48],
+    };
+    let leaf = hash_tree_root_sync_committee(&committee).unwrap();
+    let branch = vec![[0u8; 32]; 5];
+    let state_root = compute_branch_root(leaf, &branch, 54);
+
+    let header = BeaconBlockHeader {
+        slot: 1_000_000,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root,
+        body_root: [0; 32],
+    };
+    let genuine_header_hash = hash_tree_root_beacon_header(&header);
+
+    // 1. When trusted_checkpoint_root matches header hash, bootstrap succeeds
+    let init_args_matching = InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header.clone(),
+        trusted_checkpoint_root: genuine_header_hash,
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050_000,
+    };
+    let res = mosoo_core::verifier::handle_initialize(init_args_matching);
+    assert!(
+        res.is_ok(),
+        "Bootstrap with matching trusted_checkpoint_root must succeed"
+    );
+
+    // 2. When trusted_checkpoint_root does NOT match header hash, bootstrap strictly fails
+    let init_args_mismatch = InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: header,
+        trusted_checkpoint_root: [0xffu8; 32],
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050_000,
+    };
+    let err = mosoo_core::verifier::handle_initialize(init_args_mismatch);
+    assert!(
+        matches!(err, Err(MosooError::InvalidBootstrap(msg)) if msg.contains("trusted_checkpoint_root")),
+        "Bootstrap with mismatched trusted_checkpoint_root must be strictly rejected"
+    );
 }
