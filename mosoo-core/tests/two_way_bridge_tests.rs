@@ -75,6 +75,8 @@ struct MockEthereumLocker {
     pub add_attester_timelock_unlock: u64,
     pub pending_remove_attester: Option<[u8; 20]>,
     pub remove_attester_timelock_unlock: u64,
+    pub pending_guardian: Option<[u8; 20]>,
+    pub guardian_timelock_unlock: u64,
 }
 
 pub const AUTHORITY_CHANGE_DELAY: u64 = 86_400; // 1 day in seconds
@@ -130,6 +132,8 @@ impl MockEthereumLocker {
             add_attester_timelock_unlock: 0,
             pending_remove_attester: None,
             remove_attester_timelock_unlock: 0,
+            pending_guardian: None,
+            guardian_timelock_unlock: 0,
         }
     }
 
@@ -466,7 +470,8 @@ impl MockEthereumLocker {
             return Err("GovernanceTimelockActive");
         }
         self.pending_daily_withdrawal_limit_erc20.remove(&token);
-        self.daily_withdrawal_limit_erc20_timelock_unlock.remove(&token);
+        self.daily_withdrawal_limit_erc20_timelock_unlock
+            .remove(&token);
         self.daily_withdrawal_limit_erc20.insert(token, proposed);
         Ok(proposed)
     }
@@ -480,6 +485,46 @@ impl MockEthereumLocker {
         _token: [u8; 20],
         _limit: u128,
     ) -> Result<(), &'static str> {
+        Err("DirectGovernanceDeprecated")
+    }
+
+    fn propose_guardian(
+        &mut self,
+        caller: [u8; 20],
+        new_guardian: [u8; 20],
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        if caller != self.owner {
+            return Err("Unauthorized");
+        }
+        if new_guardian == [0u8; 20] {
+            return Err("ZeroAddress");
+        }
+        self.pending_guardian = Some(new_guardian);
+        let unlock = current_time + GOVERNANCE_TIMELOCK_DELAY;
+        self.guardian_timelock_unlock = unlock;
+        Ok(unlock)
+    }
+
+    fn execute_guardian(
+        &mut self,
+        caller: [u8; 20],
+        current_time: u64,
+    ) -> Result<[u8; 20], &'static str> {
+        if caller != self.owner {
+            return Err("Unauthorized");
+        }
+        let proposed = self.pending_guardian.ok_or("NoPendingGovernanceAction")?;
+        if current_time < self.guardian_timelock_unlock {
+            return Err("GovernanceTimelockActive");
+        }
+        self.pending_guardian = None;
+        self.guardian_timelock_unlock = 0;
+        self.guardian = proposed;
+        Ok(proposed)
+    }
+
+    fn set_guardian(&mut self, _new_guardian: [u8; 20]) -> Result<(), &'static str> {
         Err("DirectGovernanceDeprecated")
     }
 
@@ -1774,4 +1819,51 @@ fn test_mosoo_locker_bounded_pruning_gas_defense() {
     // Verify bounded cleanup: head only advanced by MAX_CLEANUP_BATCH (32), NOT all 50
     assert_eq!(locker.eth_withdrawal_head, MAX_CLEANUP_BATCH);
     assert_eq!(locker.eth_withdrawal_head, 32);
+}
+
+#[test]
+fn test_mosoo_locker_guardian_timelock_governance() {
+    let locker_addr = [0x11; 20];
+    let owner = [0xee; 20];
+    let initial_guardian = [0x99; 20];
+    let new_guardian = [0x88; 20];
+    let mut locker = MockEthereumLocker::new_with_guardian(locker_addr, initial_guardian);
+
+    // Direct set_guardian is deprecated and rejected
+    assert_eq!(
+        locker.set_guardian(new_guardian),
+        Err("DirectGovernanceDeprecated")
+    );
+
+    // Proposing zero address is rejected
+    assert_eq!(
+        locker.propose_guardian(owner, [0u8; 20], 1000),
+        Err("ZeroAddress")
+    );
+
+    // Non-owner cannot propose guardian
+    assert_eq!(
+        locker.propose_guardian([0x12; 20], new_guardian, 1000),
+        Err("Unauthorized")
+    );
+
+    // Owner proposes valid new guardian
+    let unlock = locker
+        .propose_guardian(owner, new_guardian, 1000)
+        .expect("propose failed");
+    assert_eq!(unlock, 1000 + GOVERNANCE_TIMELOCK_DELAY);
+
+    // Premature execution fails
+    assert_eq!(
+        locker.execute_guardian(owner, unlock - 1),
+        Err("GovernanceTimelockActive")
+    );
+
+    // Execution after timelock succeeds
+    let executed = locker
+        .execute_guardian(owner, unlock)
+        .expect("execute failed");
+    assert_eq!(executed, new_guardian);
+    assert_eq!(locker.guardian, new_guardian);
+    assert_eq!(locker.pending_guardian, None);
 }

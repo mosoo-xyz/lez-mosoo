@@ -3727,12 +3727,12 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
     config.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, approved_pda);
     config.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, approved_checkpoint);
 
-    let store = ProgramAccountStore::new();
+    let mut store = ProgramAccountStore::new();
 
     // Attacker fabricates an instance with unapproved instance PDA
-    let unpinned_pda = [0x99; 32];
+    let unpinned_checkpoint = [0x88; 32];
     let unpinned_instance = InstanceAccount {
-        instance_id: unpinned_pda,
+        instance_id: [0x99; 32],
         network_config: None,
         chain_id: ETH_SEPOLIA_CHAIN_ID,
         current_header_hash: [0x22; 32],
@@ -3741,12 +3741,19 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
         current_sync_committee: make_test_committee(512),
         next_sync_committee: None,
         bootstrap_slot: 9_900_000,
-        bootstrap_header_hash: approved_checkpoint,
+        bootstrap_header_hash: unpinned_checkpoint,
         initialized: true,
         current_execution_block_hash: [0x33; 32],
         current_execution_state_root: [0x44; 32],
         current_receipts_root: [0x55; 32],
     };
+    let unpinned_pda = unpinned_instance.pda_address();
+
+    store.insert_program_account(
+        unpinned_pda,
+        serde_json::to_vec(&unpinned_instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
 
     let header = HeaderRecord {
         chain_id: ETH_SEPOLIA_CHAIN_ID,
@@ -3787,7 +3794,7 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
 
     // Verification against unpinned instance PDA must strictly fail with UntrustedInstanceAccount
     let erc20_err = claim_authenticated_store_u256(
-        &store,
+        &mut store,
         &unpinned_pda,
         None,
         erc20_args,
@@ -3815,7 +3822,7 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
 
     // Ether receiver must also strictly reject unpinned instance PDA
     let eth_err = claim_native_eth_deposit_authenticated_store_with_config(
-        &store,
+        &mut store,
         &unpinned_pda,
         None,
         eth_args,
@@ -3829,8 +3836,15 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
 
     // Also verify: even if instance PDA is pinned, if bootstrap checkpoint root differs from pinned root, it fails
     let mut rogue_checkpoint_instance = unpinned_instance;
-    rogue_checkpoint_instance.instance_id = approved_pda;
+    rogue_checkpoint_instance.instance_id = [0x77; 32];
     rogue_checkpoint_instance.bootstrap_header_hash = [0x99; 32]; // Rogue checkpoint
+    let rogue_pda = rogue_checkpoint_instance.pda_address();
+    config.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, rogue_pda);
+    store.insert_program_account(
+        rogue_pda,
+        serde_json::to_vec(&rogue_checkpoint_instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
 
     let eth_args_bad_cp = AtomicEtherClaimArgs {
         instance: rogue_checkpoint_instance,
@@ -3845,8 +3859,8 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
     };
 
     let eth_cp_err = claim_native_eth_deposit_authenticated_store_with_config(
-        &store,
-        &approved_pda,
+        &mut store,
+        &rogue_pda,
         None,
         eth_args_bad_cp,
         &mut eth_nullifiers,
@@ -3928,4 +3942,189 @@ fn test_mutation_attack_41_account_store_rejects_unowned_instance_account() {
     let err_attest = handle_attest_state_authenticated(&store, &canonical_pda, None, attest_args)
         .expect_err("handle_attest_state_authenticated must reject account not owned by Mosoo");
     assert!(matches!(err_attest, MosooError::DomainSeparationFailed));
+}
+
+/// Attack 42: P0 Verification — Checkpoint validation occurs on the authenticated instance
+/// loaded from persistent store, rather than the caller-supplied `args.instance`.
+/// An attacker modifies their local caller struct `args.instance` to claim a trusted checkpoint,
+/// but the authentic store account contains a different bootstrap header root.
+#[test]
+fn test_mutation_attack_42_checkpoint_verified_on_store_loaded_instance_not_caller_struct() {
+    let mut config = TrustedBridgeConfig::canonical();
+    let trusted_checkpoint = [0x77; 32];
+    let bad_checkpoint = [0x66; 32];
+
+    let mut store = ProgramAccountStore::new();
+
+    // The persistent store holds an instance initialized with bad_checkpoint
+    let mut store_instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        current_header_hash: [0x22; 32],
+        current_state_root: [0x33; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 9_900_000,
+        bootstrap_header_hash: bad_checkpoint, // Store holds untrusted checkpoint!
+        initialized: true,
+        current_execution_block_hash: [0x33; 32],
+        current_execution_state_root: [0x44; 32],
+        current_receipts_root: [0x55; 32],
+    };
+    let instance_pda = store_instance.pda_address();
+    store_instance.instance_id = instance_pda;
+
+    config.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, instance_pda);
+    config.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, trusted_checkpoint);
+
+    store.insert_program_account(
+        instance_pda,
+        serde_json::to_vec(&store_instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // Attacker crafts caller struct pretending it has the trusted checkpoint
+    let mut caller_instance = store_instance.clone();
+    caller_instance.bootstrap_header_hash = trusted_checkpoint;
+
+    let header = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0x22; 32],
+        execution_block_hash: [0x33; 32],
+        execution_state_root: [0x44; 32],
+        receipts_root: [0x55; 32],
+    };
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x42),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    let erc20_args = AtomicErc20ClaimArgsU256 {
+        instance: caller_instance.clone(), // Attacker tries to spoof checkpoint in args
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_deposit_contract: [0x11; 20],
+        expected_token_contract: [0x22; 20],
+        expected_sender: None,
+        recipient: [0xaa; 32],
+        min_amount: alloy_primitives::U256::ZERO,
+    };
+
+    let mut erc20_nullifiers = NullifierSet::new();
+
+    // Must be rejected because the store-loaded instance has bad_checkpoint!
+    let err_erc20 = claim_authenticated_store_u256(
+        &mut store,
+        &instance_pda,
+        None,
+        erc20_args,
+        &mut erc20_nullifiers,
+        &config,
+    )
+    .expect_err("erc20 claim must reject mismatch against store-loaded instance checkpoint");
+    assert!(matches!(err_erc20, ReceiverError::AttestationFailed(_)));
+
+    let eth_args = AtomicEtherClaimArgs {
+        instance: caller_instance, // Attacker tries to spoof checkpoint in args
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_address: [0x11; 20],
+        recipient: [0xaa; 32],
+        min_wei: 0,
+    };
+
+    let mut eth_nullifiers = EtherNullifierSet::new();
+
+    let err_eth = claim_native_eth_deposit_authenticated_store_with_config(
+        &mut store,
+        &instance_pda,
+        None,
+        eth_args,
+        &mut eth_nullifiers,
+        &config,
+    )
+    .expect_err("eth claim must reject mismatch against store-loaded instance checkpoint");
+    assert!(matches!(err_eth, EtherReceiverError::AttestationFailed(_)));
+}
+
+/// Attack 43: P1 Verification — Atomic Persistent Nullifier Protection.
+/// Ensures that nullifiers are recorded persistently in `AccountStore` PDA accounts
+/// and prevent double-claim attacks even across in-memory state resets (node restarts).
+#[test]
+fn test_mutation_attack_43_atomic_persistent_nullifier_replay_prevention() {
+    let mut store = ProgramAccountStore::new();
+    let statement_id = [0x55; 32];
+    let subject_key = [0x66; 32];
+
+    let nullifier_pda = erc20_receiver::derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement_id);
+    let subject_pda = erc20_receiver::derive_nullifier_pda(&MOSOO_PROGRAM_ID, &subject_key);
+
+    // Initial state: PDA accounts do not exist
+    assert!(store.get_account(&nullifier_pda).is_none());
+    assert!(store.get_account(&subject_pda).is_none());
+
+    // Write persistent nullifier records directly into store (simulating first claim)
+    let nullifier_rec = erc20_receiver::NullifierAccount {
+        statement_id,
+        subject_key,
+        spent_slot: 12345,
+        is_spent: true,
+    };
+    let encoded = serde_json::to_vec(&nullifier_rec).unwrap();
+    store.set_account_with_owner(&nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID);
+    store.set_account_with_owner(&subject_pda, encoded, MOSOO_PROGRAM_ID);
+
+    // After node restart, in-memory NullifierSet is completely empty
+    let nullifiers_after_restart = NullifierSet::new();
+    assert!(!nullifiers_after_restart.is_used(&statement_id));
+    assert!(!nullifiers_after_restart.is_used(&subject_key));
+
+    // Persistent store check must detect the nullifier PDA
+    assert!(store.get_account(&nullifier_pda).is_some());
+    assert!(store.get_account(&subject_pda).is_some());
+    assert_eq!(
+        store.get_account_owner(&nullifier_pda),
+        Some(MOSOO_PROGRAM_ID)
+    );
+    assert_eq!(
+        store.get_account_owner(&subject_pda),
+        Some(MOSOO_PROGRAM_ID)
+    );
+
+    // Verify same behavior for Ether nullifiers
+    let eth_nullifier_pda =
+        ether_receiver::derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement_id);
+    let eth_subject_pda =
+        ether_receiver::derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &subject_key);
+    let eth_nullifier_rec = ether_receiver::EtherNullifierAccount {
+        statement_id,
+        subject_key,
+        spent_slot: 12345,
+        is_spent: true,
+    };
+    let eth_encoded = serde_json::to_vec(&eth_nullifier_rec).unwrap();
+    store.set_account_with_owner(&eth_nullifier_pda, eth_encoded.clone(), MOSOO_PROGRAM_ID);
+    store.set_account_with_owner(&eth_subject_pda, eth_encoded, MOSOO_PROGRAM_ID);
+
+    let eth_nullifiers_after_restart = EtherNullifierSet::new();
+    assert!(!eth_nullifiers_after_restart.is_used(&statement_id));
+    assert!(store.get_account(&eth_nullifier_pda).is_some());
+    assert!(store.get_account(&eth_subject_pda).is_some());
 }

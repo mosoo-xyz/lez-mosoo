@@ -1398,27 +1398,33 @@ pub fn claim_native_eth_deposit_atomic_with_config(
 pub fn claim_native_eth_deposit_authenticated_store_with_config<
     S: mosoo_core::types::AccountStore,
 >(
-    store: &S,
+    store: &mut S,
     instance_pda: &[u8; 32],
     header_pda: Option<&[u8; 32]>,
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
     config: &TrustedBridgeConfig,
 ) -> Result<EthDepositReceipt, EtherReceiverError> {
-    if !is_supported_chain_id(args.instance.chain_id) {
-        return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+    // 1. Strictly load authentic InstanceAccount from persistent store first (Finding P0)
+    let authentic_instance =
+        mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
+            .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+
+    if !is_supported_chain_id(authentic_instance.chain_id) {
+        return Err(EtherReceiverError::WrongChain(authentic_instance.chain_id));
     }
 
-    // 1. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
-    if !config.is_trusted_instance(args.instance.chain_id, instance_pda) {
+    // 2. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
+    if !config.is_trusted_instance(authentic_instance.chain_id, instance_pda) {
         return Err(EtherReceiverError::UntrustedInstanceAccount(*instance_pda));
     }
 
-    // 2. Guard: If a trusted checkpoint root is registered, verify instance's bootstrap matches it
-    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(args.instance.chain_id) {
-        if args.instance.bootstrap_header_hash != expected_checkpoint {
+    // 3. Guard: Verify authentic stored instance's bootstrap root matches pinned trusted checkpoint (Finding P0)
+    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(authentic_instance.chain_id) {
+        if authentic_instance.bootstrap_header_hash != expected_checkpoint {
             return Err(EtherReceiverError::AttestationFailed(
-                "instance bootstrap root does not match pinned trusted checkpoint".into(),
+                "authenticated instance bootstrap root does not match pinned trusted checkpoint"
+                    .into(),
             ));
         }
     }
@@ -1427,8 +1433,10 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
         return Err(EtherReceiverError::DepositBackingRequired);
     }
     let trusted_locker = config
-        .get_trusted_locker(args.instance.chain_id)
-        .ok_or(EtherReceiverError::UntrustedLocker(args.instance.chain_id))?;
+        .get_trusted_locker(authentic_instance.chain_id)
+        .ok_or(EtherReceiverError::UntrustedLocker(
+            authentic_instance.chain_id,
+        ))?;
     if args.expected_address != trusted_locker {
         return Err(EtherReceiverError::ContractMismatch {
             expected: trusted_locker,
@@ -1437,7 +1445,7 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
     }
 
     let attest_args = mosoo_core::verifier::AttestStateArgs {
-        instance: args.instance,
+        instance: authentic_instance,
         header: args.header,
         header_history_branch: args.header_history_branch,
         historical_execution_proof: args.historical_execution_proof,
@@ -1514,11 +1522,40 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
         });
     }
 
+    let nullifier_pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_pda = if statement.subject_key != [0u8; 32] {
+        Some(derive_ether_nullifier_pda(
+            &MOSOO_PROGRAM_ID,
+            &statement.subject_key,
+        ))
+    } else {
+        None
+    };
+
     if nullifiers.is_used(&statement.statement_id)
         || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+        || store.get_account(&nullifier_pda).is_some()
+        || subject_pda
+            .as_ref()
+            .is_some_and(|p| store.get_account(p).is_some())
     {
         return Err(EtherReceiverError::AlreadyClaimed);
     }
+
+    // Atomically persist nullifier PDA to LEZ AccountStore (Finding P1)
+    let nullifier_rec = EtherNullifierAccount {
+        statement_id: statement.statement_id,
+        subject_key: statement.subject_key,
+        spent_slot: slot,
+        is_spent: true,
+    };
+    if let Ok(encoded) = serde_json::to_vec(&nullifier_rec) {
+        store.set_account_with_owner(&nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID);
+        if let Some(sub_pda) = subject_pda {
+            store.set_account_with_owner(&sub_pda, encoded, MOSOO_PROGRAM_ID);
+        }
+    }
+
     nullifiers.mark_used(statement.statement_id);
     if statement.subject_key != [0u8; 32] {
         nullifiers.mark_used(statement.subject_key);

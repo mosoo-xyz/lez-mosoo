@@ -71,9 +71,8 @@ contract MosooLockerTest is Test {
 
     function setUp() public {
         attesterAuthority = vm.addr(attesterPk);
-        locker = new MosooLocker(attesterAuthority);
+        locker = new MosooLocker(attesterAuthority, guardian);
         token = new MockERC20();
-        locker.setGuardian(guardian);
         locker.setTokenAllowed(address(token), true);
         vm.deal(user, 100 ether);
         token.mint(user, 1_000_000 ether);
@@ -238,5 +237,32 @@ contract MosooLockerTest is Test {
         locker.unlockETHWithQuorum(burnId, recipient, amount, lezOwner, burnNonce, lezSlot, validQuorumSigs);
         assertTrue(locker.executedBurns(burnId), "burnId must be marked executed");
         assertEq(locker.totalUnlockedETH(), amount, "unlocked ETH mismatch");
+    }
+
+    function test_direct_set_guardian_deprecated() public {
+        try locker.setGuardian(address(0x1234)) {
+            revert("Expected revert with DirectGovernanceDeprecated");
+        } catch {
+            // Success
+        }
+    }
+
+    function test_guardian_timelock_governance() public {
+        address newGuardian = address(0x9999);
+        locker.proposeGuardian(newGuardian);
+        assertEq(locker.pendingGuardian(), newGuardian, "pending guardian mismatch");
+
+        // Attempting to execute immediately must fail due to 2-day timelock
+        try locker.executeGuardian() {
+            revert("Expected revert due to active timelock");
+        } catch {
+            // Success
+        }
+
+        // Warp past 2-day timelock delay
+        vm.warp(block.timestamp + 2 days);
+        locker.executeGuardian();
+        assertEq(locker.guardian(), newGuardian, "guardian update failed");
+        assertEq(locker.pendingGuardian(), address(0), "pending guardian not cleared");
     }
 }

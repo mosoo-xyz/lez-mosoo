@@ -1382,29 +1382,36 @@ pub fn claim_atomic(
 /// Execute atomic same-transaction ERC-20 token claim backed by an authenticated InstanceAccount
 /// loaded directly from the persistent LEZ AccountStore and verified against pinned TrustedBridgeConfig.
 pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
-    store: &S,
+    store: &mut S,
     instance_pda: &[u8; 32],
     header_pda: Option<&[u8; 32]>,
     args: AtomicErc20ClaimArgsU256,
     nullifiers: &mut NullifierSet,
     config: &TrustedBridgeConfig,
 ) -> Result<U256, ReceiverError> {
-    // 1. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
-    if !config.is_trusted_instance(args.instance.chain_id, instance_pda) {
+    // 1. Strictly load authentic InstanceAccount from persistent store first (Finding P0)
+    let authentic_instance =
+        mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
+            .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
+
+    // 2. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
+    if !config.is_trusted_instance(authentic_instance.chain_id, instance_pda) {
         return Err(ReceiverError::UntrustedInstanceAccount(*instance_pda));
     }
 
-    // 2. Guard: If a trusted checkpoint root is registered, verify instance's bootstrap matches it
-    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(args.instance.chain_id) {
-        if args.instance.bootstrap_header_hash != expected_checkpoint {
+    // 3. Guard: Verify authentic stored instance's bootstrap root matches pinned trusted checkpoint (Finding P0)
+    if let Some(expected_checkpoint) = config.get_trusted_checkpoint(authentic_instance.chain_id) {
+        if authentic_instance.bootstrap_header_hash != expected_checkpoint {
             return Err(ReceiverError::AttestationFailed(
-                "instance bootstrap root does not match pinned trusted checkpoint".into(),
+                "authenticated instance bootstrap root does not match pinned trusted checkpoint"
+                    .into(),
             ));
         }
     }
 
+    let current_slot = authentic_instance.current_slot;
     let attest_args = mosoo_core::verifier::AttestStateArgs {
-        instance: args.instance,
+        instance: authentic_instance,
         header: args.header,
         header_history_branch: args.header_history_branch,
         historical_execution_proof: args.historical_execution_proof,
@@ -1530,11 +1537,40 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
         });
     }
 
+    let nullifier_pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_pda = if statement.subject_key != [0u8; 32] {
+        Some(derive_nullifier_pda(
+            &MOSOO_PROGRAM_ID,
+            &statement.subject_key,
+        ))
+    } else {
+        None
+    };
+
     if nullifiers.is_used(&statement.statement_id)
         || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+        || store.get_account(&nullifier_pda).is_some()
+        || subject_pda
+            .as_ref()
+            .is_some_and(|p| store.get_account(p).is_some())
     {
         return Err(ReceiverError::AlreadyClaimed);
     }
+
+    // Atomically persist nullifier PDA to LEZ AccountStore (Finding P1)
+    let nullifier_rec = NullifierAccount {
+        statement_id: statement.statement_id,
+        subject_key: statement.subject_key,
+        spent_slot: current_slot,
+        is_spent: true,
+    };
+    if let Ok(encoded) = serde_json::to_vec(&nullifier_rec) {
+        store.set_account_with_owner(&nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID);
+        if let Some(sub_pda) = subject_pda {
+            store.set_account_with_owner(&sub_pda, encoded, MOSOO_PROGRAM_ID);
+        }
+    }
+
     nullifiers.mark_used(statement.statement_id);
     if statement.subject_key != [0u8; 32] {
         nullifiers.mark_used(statement.subject_key);

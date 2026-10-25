@@ -773,6 +773,8 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
 
     println!("[*] Constructing authenticated Merkle-Patricia Trie (MPT) inclusion proof...");
 
+    let mut live_balance: Option<U256> = None;
+
     // Live RPC state interrogation when --rpc-url or --logos-core-rpc is configured
     if let Some(endpoint) = active_rpc {
         let http = reqwest::blocking::Client::builder()
@@ -814,6 +816,20 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             "    \x1b[32m[ok] Live node query succeeded: eth_getBalance -> {}\x1b[0m",
             bal_hex
         );
+
+        let bal_clean = bal_hex.trim_start_matches("0x");
+        let parsed_bal = if bal_clean.is_empty() {
+            U256::ZERO
+        } else {
+            U256::from_str_radix(bal_clean, 16).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to parse live eth_getBalance result '{}': {}",
+                    bal_hex,
+                    e
+                )
+            })?
+        };
+        live_balance = Some(parsed_bal);
     }
 
     let (proof, execution_state_root, receipts_root) = match args.target.to_lowercase().as_str() {
@@ -878,9 +894,11 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         _ => {
             // Default: "balance" (Account native ETH balance)
             println!("    Target Type:      AccountBalance (Account Trie Leaf)");
-            let test_balance = U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
+            let actual_balance = live_balance.unwrap_or_else(|| {
+                U256::from(args.min_value.saturating_add(500_000_000_000_000_000))
+            });
             let (state_root, proof_nodes, account_rlp) =
-                build_test_account_balance_proof(target_addr, test_balance);
+                build_test_account_balance_proof(target_addr, actual_balance);
 
             println!("    MPT State Root:   0x{}", hex::encode(state_root.0));
             println!("    Account Proof:    {} trie nodes", proof_nodes.len());
@@ -983,19 +1001,77 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
 
 fn run_dry_run(chain_id: u64, update_file: Option<&str>) -> anyhow::Result<()> {
     println!("\x1b[1;34m=== Mosoo Consensus & Execution Dry-Run Verification (RFP-021) ===\x1b[0m");
+    println!("Execution Mode: \x1b[1;33m[SIMULATION / DRY-RUN MODE: Verification Only, No On-Chain Dispatch]\x1b[0m");
     println!("Chain ID:       {}", chain_id);
-    println!(
-        "Update Source:  {}",
-        update_file.unwrap_or(
-            "test_vectors/period_1884_canonical_fixture.json (Canonical Altair Period 1884)"
-        )
-    );
+
+    let default_paths = [
+        "test_vectors/period_1884_canonical_fixture.json",
+        "../test_vectors/period_1884_canonical_fixture.json",
+        "../../test_vectors/period_1884_canonical_fixture.json",
+    ];
+    let resolved_path = update_file.or_else(|| {
+        default_paths
+            .iter()
+            .find(|p| std::path::Path::new(p).exists())
+            .copied()
+    });
+
+    let (finalized_slot, part_count, total_validators) = if let Some(path) = resolved_path {
+        println!("Update Source:  {}", path);
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("Failed to read update file {}: {}", path, e))?;
+        if let Ok(lcu) = serde_json::from_str::<mosoo_core::types::LightClientUpdate>(&content) {
+            let part: u64 = lcu
+                .sync_aggregate
+                .sync_committee_bits
+                .iter()
+                .map(|b| b.count_ones() as u64)
+                .sum();
+            (lcu.finalized_header.slot, part, 512u64)
+        } else if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+            let upd = val
+                .get("update")
+                .ok_or_else(|| anyhow::anyhow!("Missing 'update' field in fixture JSON"))?;
+            let slot = upd
+                .get("finalized_slot")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow::anyhow!("Missing finalized_slot in update"))?;
+            let part = upd
+                .get("participation_count")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow::anyhow!("Missing participation_count in update"))?;
+            let total = upd
+                .get("total_validators")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow::anyhow!("Missing total_validators in update"))?;
+            (slot, part, total)
+        } else {
+            anyhow::bail!(
+                "Failed to parse update file {} as LightClientUpdate or fixture JSON",
+                path
+            );
+        }
+    } else {
+        println!("Update Source:  Canonical Altair Period 1884 (Built-in Simulated Fixture)");
+        (15_433_760, 498, 512)
+    };
     println!();
 
     println!("[*] Step 1/3: Participation & BLS Signature Check (BeginUpdate)");
-    println!("    Active Sync Committee:   512 / 512 validators participated (100.0%)");
+    let pct = (part_count as f64 / total_validators as f64) * 100.0;
+    println!(
+        "    Active Sync Committee:   {} / {} validators participated ({:.1}%)",
+        part_count, total_validators, pct
+    );
     println!("    Threshold Required:      342 / 512 validators (66.7% supermajority)");
-    println!("    Status:                  \x1b[1;32mPASSED (Supermajority Satisfied)\x1b[0m");
+    if part_count >= 342 {
+        println!("    Status:                  \x1b[1;32mPASSED (Supermajority Satisfied)\x1b[0m");
+    } else {
+        anyhow::bail!(
+            "Supermajority threshold not met: {} / 512 (required >= 342)",
+            part_count
+        );
+    }
     println!("    Gas Used (Simulated):    5,380,000 gas");
 
     println!("[*] Step 2/3: Miller Loop Pairings (MillerUpdate)");
@@ -1007,7 +1083,7 @@ fn run_dry_run(chain_id: u64, update_file: Option<&str>) -> anyhow::Result<()> {
 
     println!("[*] Step 3/3: Final Exponentiation & State Root Authentication (FinishUpdate)");
     println!("    Final Exponentiation:    e(...) == 1 in GT");
-    println!("    Finalized Slot:          15,433,760");
+    println!("    Finalized Slot:          {}", finalized_slot);
     println!("    Execution State Root:    0xd522b10a2f7d391f1a5f4a7c87c0827170e4be605333dfd7561848bb2089b37a");
     println!("    Execution Block Hash:    0x1c37b6c59bbf6292ae249e083c0764121e78ebfe11bc0412140232490dfbfd0e");
     println!("    Receipts Root:           0xa4f29df5bcfd658241bda27f717ab1ba3c6c9a87ea958d4e929fbda0214c7c88");
@@ -1064,30 +1140,46 @@ fn run_submit_update(
     let parsed_json: serde_json::Value = serde_json::from_str(&file_content)
         .map_err(|e| anyhow::anyhow!("Failed to parse JSON from {}: {}", resolved_path, e))?;
 
-    let (target_slot, participation_count, total_validators) =
-        if let Some(upd) = parsed_json.get("update") {
-            let slot = upd
-                .get("finalized_slot")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(15_433_760);
-            let part = upd
-                .get("participation_count")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(498);
-            let total = upd
-                .get("total_validators")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(512);
-            (slot, part, total)
-        } else if let Some(fin) = parsed_json.get("finalized_header") {
-            let slot = fin
-                .get("slot")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(15_433_760);
-            (slot, 512, 512)
-        } else {
-            (15_433_760, 498, 512)
-        };
+    let (target_slot, participation_count, total_validators) = if let Some(upd) =
+        parsed_json.get("update")
+    {
+        let slot = upd
+            .get("finalized_slot")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'finalized_slot' in update JSON payload"))?;
+        let part = upd
+            .get("participation_count")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Missing 'participation_count' in update JSON payload")
+            })?;
+        let total = upd
+            .get("total_validators")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'total_validators' in update JSON payload"))?;
+        (slot, part, total)
+    } else if let Some(fin) = parsed_json.get("finalized_header") {
+        let slot = fin
+            .get("slot")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| anyhow::anyhow!("Missing 'slot' in finalized_header"))?;
+        (slot, 512, 512)
+    } else if let Ok(lcu) =
+        serde_json::from_str::<mosoo_core::types::LightClientUpdate>(&file_content)
+    {
+        let part: u64 = lcu
+            .sync_aggregate
+            .sync_committee_bits
+            .iter()
+            .map(|b| b.count_ones() as u64)
+            .sum();
+        (lcu.finalized_header.slot, part, 512u64)
+    } else {
+        anyhow::bail!(
+            "Invalid update payload in {}: missing 'update' section or valid LightClientUpdate",
+            resolved_path
+        );
+    };
 
     println!("[*] Validating update integrity & consensus quorum...");
     println!("    Finalized Slot:      {}", target_slot);

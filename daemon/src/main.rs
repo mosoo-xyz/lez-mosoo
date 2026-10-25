@@ -976,6 +976,7 @@ pub async fn submit_miller(
             b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
         );
         sha2::Digest::update(&mut hasher, b"miller_update");
+        sha2::Digest::update(&mut hasher, cli.eth_chain_id.to_be_bytes());
         sha2::Digest::update(&mut hasher, job_nonce.to_be_bytes());
         alloy::primitives::B256::from_slice(&sha2::Digest::finalize(hasher))
     };
@@ -991,6 +992,7 @@ pub async fn submit_miller(
         "params": [{
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "miller_update",
+            "chain_id": cli.eth_chain_id,
             "job_nonce": job_nonce,
             "from": format!("{:#x}", sender_address),
             "signature": format!("0x{}", hex::encode(sig.as_bytes())),
@@ -1053,6 +1055,7 @@ pub async fn submit_finish(
             b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
         );
         sha2::Digest::update(&mut hasher, b"finish_update");
+        sha2::Digest::update(&mut hasher, cli.eth_chain_id.to_be_bytes());
         sha2::Digest::update(&mut hasher, job_nonce.to_be_bytes());
         alloy::primitives::B256::from_slice(&sha2::Digest::finalize(hasher))
     };
@@ -1068,6 +1071,7 @@ pub async fn submit_finish(
         "params": [{
             "to": "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
             "instruction": "finish_update",
+            "chain_id": cli.eth_chain_id,
             "job_nonce": job_nonce,
             "from": format!("{:#x}", sender_address),
             "signature": format!("0x{}", hex::encode(sig.as_bytes())),
@@ -1682,5 +1686,43 @@ mod tests {
         let res: FinalityUpdateResponse = serde_json::from_str(json_data).unwrap();
         let err = parse_beacon_update(res);
         assert!(err.is_err(), "Non-32-byte branch node must be rejected");
+    }
+
+    #[test]
+    fn test_pipeline_transaction_digests_enforce_chain_id_domain_separation() {
+        let chain_a: u64 = 1;
+        let chain_b: u64 = 11155111;
+        let job_nonce: u64 = 42;
+
+        let digest_a = {
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, b"lez_tx_v1");
+            sha2::Digest::update(
+                &mut hasher,
+                b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+            );
+            sha2::Digest::update(&mut hasher, b"miller_update");
+            sha2::Digest::update(&mut hasher, chain_a.to_be_bytes());
+            sha2::Digest::update(&mut hasher, job_nonce.to_be_bytes());
+            sha2::Digest::finalize(hasher)
+        };
+
+        let digest_b = {
+            let mut hasher = sha2::Sha256::new();
+            sha2::Digest::update(&mut hasher, b"lez_tx_v1");
+            sha2::Digest::update(
+                &mut hasher,
+                b"0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c",
+            );
+            sha2::Digest::update(&mut hasher, b"miller_update");
+            sha2::Digest::update(&mut hasher, chain_b.to_be_bytes());
+            sha2::Digest::update(&mut hasher, job_nonce.to_be_bytes());
+            sha2::Digest::finalize(hasher)
+        };
+
+        assert_ne!(
+            digest_a, digest_b,
+            "Digests on different chains must differ due to domain separation"
+        );
     }
 }

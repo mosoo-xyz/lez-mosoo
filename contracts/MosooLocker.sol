@@ -87,6 +87,8 @@ contract MosooLocker {
     uint256 public addAttesterTimelockUnlock;
     address public pendingRemoveAttester;
     uint256 public removeAttesterTimelockUnlock;
+    address public pendingGuardian;
+    uint256 public guardianTimelockUnlock;
 
     /// @notice Timelocked rate-limit administration (2-day timelock delay)
     uint256 public pendingDailyLimitETH;
@@ -175,6 +177,7 @@ contract MosooLocker {
     event AttesterRemoved(address indexed attester);
     event QuorumUpdated(uint256 oldQuorum, uint256 newQuorum);
     event GuardianUpdated(address indexed previousGuardian, address indexed newGuardian);
+    event GuardianChangeProposed(address indexed currentGuardian, address indexed proposedGuardian, uint256 unlockTimestamp);
     event PausedStateChanged(bool isPaused);
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
     event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
@@ -1019,6 +1022,10 @@ contract MosooLocker {
             pendingDailyLimitETH = 0;
             dailyLimitETHTimelockUnlock = 0;
             emit PendingGovernanceCancelled("dailyLimitETH", msg.sender);
+        } else if (actionType == 5) {
+            pendingGuardian = address(0);
+            guardianTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("guardian", msg.sender);
         } else {
             revert NoPendingGovernanceAction();
         }
@@ -1059,9 +1066,28 @@ contract MosooLocker {
         emit TokenAllowlistToggled(enabled);
     }
 
-    function setGuardian(address _newGuardian) external onlyOwner {
-        emit GuardianUpdated(guardian, _newGuardian);
-        guardian = _newGuardian;
+    function proposeGuardian(address _newGuardian) external onlyOwner {
+        if (_newGuardian == address(0)) revert ZeroAddress();
+        pendingGuardian = _newGuardian;
+        guardianTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit GuardianChangeProposed(guardian, _newGuardian, guardianTimelockUnlock);
+    }
+
+    function executeGuardian() external onlyOwner {
+        if (pendingGuardian == address(0)) revert NoPendingGovernanceAction();
+        if (block.timestamp < guardianTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, guardianTimelockUnlock);
+        }
+        address oldGuardian = guardian;
+        guardian = pendingGuardian;
+        pendingGuardian = address(0);
+        guardianTimelockUnlock = 0;
+        emit GuardianUpdated(oldGuardian, guardian);
+    }
+
+    /// @notice Deprecated: direct guardian updates without timelock are disabled for production safety.
+    function setGuardian(address) external pure {
+        revert DirectGovernanceDeprecated();
     }
 
     function emergencyPause() external {

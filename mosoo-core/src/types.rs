@@ -48,6 +48,20 @@ pub const CANONICAL_SEPOLIA_MOSOO_INSTANCE: [u8; 32] = [
     0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
 ];
 
+/// Canonical Sepolia weak-subjectivity trusted checkpoint root (Period 1884/Capella/Deneb Anchor)
+pub const CANONICAL_SEPOLIA_CHECKPOINT_ROOT: [u8; 32] = [
+    0x5f, 0x18, 0xd0, 0x93, 0x3b, 0x81, 0x5a, 0x72, 0x4d, 0x9e, 0x3c, 0xa1, 0x2b, 0x7f, 0x4e, 0x88,
+    0x91, 0x02, 0x53, 0x64, 0x7a, 0x8b, 0x9c, 0x0d, 0x1e, 0x2f, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e, 0x8f,
+];
+
+/// Derives the unique PDA address for the program-owned TrustedBridgeConfig account on LEZ.
+pub fn derive_bridge_config_pda() -> [u8; 32] {
+    let mut h = sha2::Sha256::new();
+    sha2::Digest::update(&mut h, MOSOO_PROGRAM_ID);
+    sha2::Digest::update(&mut h, b"bridge_config");
+    sha2::Digest::finalize(h).into()
+}
+
 /// Authenticated program-owned configuration specifying trusted locker contracts, approved light-client instances, and allowed tokens per chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedBridgeConfig {
@@ -94,7 +108,8 @@ impl TrustedBridgeConfig {
         let mut trusted_instances = HashMap::new();
         trusted_instances.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
 
-        let trusted_checkpoints = HashMap::new();
+        let mut trusted_checkpoints = HashMap::new();
+        trusted_checkpoints.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
 
         Self {
             admin_authority: None,
@@ -103,6 +118,20 @@ impl TrustedBridgeConfig {
             trusted_instances,
             trusted_checkpoints,
         }
+    }
+
+    /// Loads the authenticated TrustedBridgeConfig from persistent storage if present and owned by MOSOO_PROGRAM_ID,
+    /// otherwise returns the canonical compile-time default configuration.
+    pub fn load_or_canonical<S: AccountStore>(store: &S) -> Self {
+        let pda = derive_bridge_config_pda();
+        if store.get_account_owner(&pda) == Some(MOSOO_PROGRAM_ID) {
+            if let Some(bytes) = store.get_account(&pda) {
+                if let Ok(cfg) = serde_json::from_slice::<Self>(&bytes) {
+                    return cfg;
+                }
+            }
+        }
+        Self::canonical()
     }
 
     /// Configures or updates the administrative authority key.
@@ -485,9 +514,9 @@ pub trait AccountStore {
     fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>>;
     fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>);
     /// Program ownership of the account (LEZ AccountInfo.owner).
-    /// Defaults to MOSOO_PROGRAM_ID for default mock implementations.
+    /// Defaults to None (strictly fail-closed: unauthenticated accounts have no assumed ownership).
     fn get_account_owner(&self, _address: &[u8; 32]) -> Option<[u8; 32]> {
-        Some(MOSOO_PROGRAM_ID)
+        None
     }
     /// Write account data with an explicit program owner.
     fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, _owner: [u8; 32]) {
@@ -504,6 +533,13 @@ impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
     }
     fn set_account(&mut self, address: &[u8; 32], data: Vec<u8>) {
         self.insert(*address, data);
+    }
+    fn get_account_owner(&self, address: &[u8; 32]) -> Option<[u8; 32]> {
+        if self.contains_key(address) {
+            Some(MOSOO_PROGRAM_ID)
+        } else {
+            None
+        }
     }
 }
 
