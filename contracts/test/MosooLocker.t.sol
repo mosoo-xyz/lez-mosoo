@@ -636,4 +636,92 @@ contract MosooLockerTest is Test {
             revert("Duplicate unlock must revert");
         } catch {}
     }
+
+    function test_instance_v2_quorum_m_of_n() public {
+        uint256 attester2Pk = 0xB22CE;
+        uint256 attester3Pk = 0xC33CE;
+        address attester2 = vm.addr(attester2Pk);
+        address attester3 = vm.addr(attester3Pk);
+
+        locker.proposeAddAttester(attester2);
+        vm.warp(locker.addAttesterTimelockUnlock());
+        locker.executeAddAttester();
+
+        locker.proposeAddAttester(attester3);
+        vm.warp(locker.addAttesterTimelockUnlock());
+        locker.executeAddAttester();
+
+        locker.proposeQuorum(2);
+        vm.warp(locker.quorumTimelockUnlock());
+        locker.executeQuorum();
+
+        vm.prank(user);
+        locker.depositETH{value: 10 ether}(bytes32(uint256(0xAA)));
+
+        bytes32 sourceInstanceA = bytes32(uint256(0x7777));
+        bytes32 sourceInstanceB = bytes32(uint256(0x8888));
+        bytes32 lezOwner = bytes32(uint256(0xAA));
+        address payable recipient = payable(user);
+        uint256 amount = 2 ether;
+        uint64 burnNonce = 15;
+        uint64 lezSlot = 700;
+
+        bytes32 burnIdA = keccak256(
+            abi.encodePacked("mosoo_burn_v2", block.chainid, sourceInstanceA, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        bytes32 structHashA = keccak256(
+            abi.encode(
+                locker.BURN_ETH_V2_TYPEHASH(),
+                burnIdA,
+                sourceInstanceA,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        bytes32 digestA = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHashA));
+
+        // Two valid signatures in strictly ascending signer order
+        address addr1 = attesterAuthority;
+        address addr2 = attester2;
+        uint256 pkFirst = attesterPk;
+        uint256 pkSecond = attester2Pk;
+        if (addr1 > addr2) {
+            pkFirst = attester2Pk;
+            pkSecond = attesterPk;
+        }
+
+        bytes[] memory validQuorumSigs = new bytes[](2);
+        (uint8 va, bytes32 ra, bytes32 sa) = vm.sign(pkFirst, digestA);
+        (uint8 vb, bytes32 rb, bytes32 sb) = vm.sign(pkSecond, digestA);
+        validQuorumSigs[0] = abi.encodePacked(ra, sa, va);
+        validQuorumSigs[1] = abi.encodePacked(rb, sb, vb);
+
+        // 1. Cross-instance attack with quorum: Replaying signatures for sourceInstanceA on sourceInstanceB
+        bytes32 burnIdB = keccak256(
+            abi.encodePacked("mosoo_burn_v2", block.chainid, sourceInstanceB, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        try locker.unlockETHWithInstanceAndQuorum(burnIdB, sourceInstanceB, amount, recipient, lezOwner, burnNonce, lezSlot, validQuorumSigs) {
+            revert("Cross-instance quorum replay MUST revert");
+        } catch {}
+
+        // 2. Sub-threshold quorum (only 1 sig provided)
+        bytes[] memory subSigs = new bytes[](1);
+        subSigs[0] = validQuorumSigs[0];
+        try locker.unlockETHWithInstanceAndQuorum(burnIdA, sourceInstanceA, amount, recipient, lezOwner, burnNonce, lezSlot, subSigs) {
+            revert("Sub-threshold quorum MUST revert");
+        } catch {}
+
+        // 3. Authentic instance + quorum unlock succeeds
+        locker.unlockETHWithInstanceAndQuorum(burnIdA, sourceInstanceA, amount, recipient, lezOwner, burnNonce, lezSlot, validQuorumSigs);
+        assertTrue(locker.executedBurns(burnIdA), "burnIdA must be marked executed");
+        assertEq(locker.totalUnlockedETH(), amount, "unlocked ETH mismatch");
+
+        // 4. Duplicate replay MUST revert
+        try locker.unlockETHWithInstanceAndQuorum(burnIdA, sourceInstanceA, amount, recipient, lezOwner, burnNonce, lezSlot, validQuorumSigs) {
+            revert("Duplicate quorum unlock MUST revert");
+        } catch {}
+    }
 }

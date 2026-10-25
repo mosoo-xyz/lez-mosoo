@@ -2531,7 +2531,7 @@ fn test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_withou
         excess_blob_gas: None,
     };
 
-    let gloas_slot = 7_077_888u64; // Sepolia Gloas fork
+    let gloas_slot = 11_296_768u64; // Sepolia Gloas fork (official EF activation Oct 6, 2026)
 
     // 29A: Conflicting state_root MUST be rejected with ExecutionPayloadBranchInvalid
     let err_state = verify_execution_roots_binding(
@@ -4342,5 +4342,168 @@ fn test_mutation_attack_47_batch_rollback_failure_detection() {
             Err(mosoo_core::types::StoreError::BatchRollbackPartialFailure { .. })
         ),
         "Storage engine must report BatchRollbackPartialFailure when rollback removal fails"
+    );
+}
+
+/// Attack 48: Consensus Update State Transition Authentication (P0 Audit Resolution).
+/// Verifies that `handle_begin_update_authenticated`, `handle_miller_update_authenticated`,
+/// and `handle_finish_update_authenticated` strictly reject accounts with missing or non-program ownership.
+#[test]
+fn test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts() {
+    use mosoo_core::verifier::{
+        handle_begin_update_authenticated, handle_finish_update_authenticated,
+        handle_miller_update_authenticated, BeginUpdateArgs, FinishUpdateArgs, MillerUpdateArgs,
+    };
+
+    let mut store = ProgramAccountStore::new();
+    let committee = make_test_committee(512);
+    let instance = InstanceAccount {
+        instance_id: [0u8; 32],
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        current_header_hash: [0x55; 32],
+        current_state_root: [0x66; 32],
+        current_slot: 100,
+        current_sync_committee: committee,
+        next_sync_committee: None,
+        bootstrap_slot: 100,
+        bootstrap_header_hash: [0x55; 32],
+        initialized: true,
+        current_execution_block_hash: [0u8; 32],
+        current_execution_state_root: [0u8; 32],
+        current_receipts_root: [0u8; 32],
+    };
+    let instance_pda = instance.pda_address();
+    let instance_bytes = serde_json::to_vec(&instance).unwrap();
+
+    let dummy_update = LightClientUpdate {
+        attested_header: BeaconBlockHeader {
+            slot: 101,
+            proposer_index: 10,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: BeaconBlockHeader {
+            slot: 101,
+            proposer_index: 10,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        },
+        finality_branch: vec![[0u8; 32]; 7],
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0x11; 96],
+        },
+        signature_slot: 101,
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+    };
+    let dummy_job = JobAccount {
+        instance_id: instance.instance_id,
+        instance_chain_id: instance.chain_id,
+        instance_slot: instance.current_slot,
+        stage: JobStage::Miller,
+        update_digest: [0x12; 32],
+        update: dummy_update.clone(),
+        miller_input: None,
+        miller_output: None,
+        nonce: 1,
+    };
+
+    // 1. Unregistered instance PDA in store -> NotInitialized
+    let begin_args = BeginUpdateArgs {
+        instance: instance.clone(),
+        update: dummy_update.clone(),
+        nonce: 1,
+    };
+    let err_unregistered =
+        handle_begin_update_authenticated(&mut store, &instance_pda, begin_args.clone());
+    assert!(matches!(err_unregistered, Err(MosooError::NotInitialized)));
+
+    // 2. Instance in store with foreign owner -> DomainSeparationFailed
+    let foreign_owner = [0xde; 32];
+    store.set_account_with_owner(&instance_pda, instance_bytes.clone(), foreign_owner);
+    let err_foreign = handle_begin_update_authenticated(&mut store, &instance_pda, begin_args);
+    assert!(matches!(
+        err_foreign,
+        Err(MosooError::DomainSeparationFailed)
+    ));
+
+    // 3. Register genuine instance with MOSOO_PROGRAM_ID
+    store.set_account_with_owner(&instance_pda, instance_bytes, MOSOO_PROGRAM_ID);
+
+    // 4. Miller and Finish with uninitialized or wrong-owner job PDA -> NotInitialized / UnauthorizedAccount
+    let fake_job_pda = [0xaa; 32];
+    let miller_args = MillerUpdateArgs {
+        instance: instance.clone(),
+        job: dummy_job.clone(),
+    };
+    let err_unregistered_job = handle_miller_update_authenticated(
+        &mut store,
+        &instance_pda,
+        &fake_job_pda,
+        miller_args.clone(),
+    );
+    assert!(matches!(
+        err_unregistered_job,
+        Err(MosooError::NotInitialized)
+    ));
+
+    store.set_account_with_owner(&fake_job_pda, vec![1, 2, 3], foreign_owner);
+    let err_foreign_job =
+        handle_miller_update_authenticated(&mut store, &instance_pda, &fake_job_pda, miller_args);
+    assert!(matches!(
+        err_foreign_job,
+        Err(MosooError::UnauthorizedAccount)
+    ));
+
+    let finish_args = FinishUpdateArgs {
+        instance,
+        job: dummy_job,
+    };
+    let err_finish_foreign_job =
+        handle_finish_update_authenticated(&mut store, &instance_pda, &fake_job_pda, finish_args);
+    assert!(matches!(
+        err_finish_foreign_job,
+        Err(MosooError::UnauthorizedAccount)
+    ));
+}
+
+/// Attack 49: Dynamic NetworkConfig Propagation to BLS Signing Domain (P1 Audit Resolution).
+/// Verifies that custom NetworkConfig overrides the genesis_validators_root and fork versions
+/// without requiring code modification.
+#[test]
+fn test_mutation_attack_49_network_config_propagation_custom_signing_domain() {
+    let custom_chain_id = 123456789u64;
+    let custom_gvr = [0x42; 32];
+    let custom_config = NetworkConfig {
+        chain_id: custom_chain_id,
+        genesis_validators_root: custom_gvr,
+        altair_fork_version: [0xaa, 0xbb, 0xcc, 0xdd],
+        bellatrix_fork_version: [0; 4],
+        capella_fork_version: [0; 4],
+        deneb_fork_version: [0; 4],
+        electra_fork_version: [0; 4],
+        fulu_fork_version: [0; 4],
+        gloas_fork_version: [0x11, 0x22, 0x33, 0x44],
+    };
+
+    let domain_with_config = mosoo_core::crypto::compute_sync_committee_domain_with_config(
+        custom_chain_id,
+        100,
+        Some(&custom_config),
+    );
+    let domain_without_config =
+        mosoo_core::crypto::compute_sync_committee_domain_with_config(custom_chain_id, 100, None);
+
+    // Custom configuration MUST yield a distinct domain from the zero-default fallback
+    assert_ne!(
+        domain_with_config, domain_without_config,
+        "NetworkConfig genesis validators root and custom fork version MUST dynamically propagate"
     );
 }

@@ -15,13 +15,13 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 254 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 256 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the full Two-Way Bridge integration test suite (22 passing tests)
 cargo test --test two_way_bridge_tests
 
-# 3. Run the 47 adversarial mutation attack tests
+# 3. Run the 49 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
 # 4. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)

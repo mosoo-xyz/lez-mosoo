@@ -421,7 +421,7 @@ fn test_sequencer_full_lifecycle_e2e() {
 fn test_sequencer_sepolia_gloas_lifecycle_e2e() {
     let mut sequencer = MockLezSequencer::new();
     let sepolia_chain = ETH_SEPOLIA_CHAIN_ID;
-    let gloas_slot = 7_077_888u64; // Sepolia Gloas hard fork activation slot
+    let gloas_slot = 11_296_768u64; // Sepolia Gloas hard fork activation slot (official EF activation Oct 6, 2026)
 
     // 1. Initialize Sepolia instance
     let initial_committee = make_committee_512();

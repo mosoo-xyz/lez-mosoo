@@ -189,6 +189,12 @@ pub enum MosooError {
     #[error("domain separation check failed")]
     DomainSeparationFailed,
 
+    #[error("unauthorized account or owner: account does not belong to program")]
+    UnauthorizedAccount,
+
+    #[error("persistent storage write failed: {0}")]
+    StorageWriteFailed(String),
+
     #[error("serialization error: {0}")]
     Serialization(String),
 

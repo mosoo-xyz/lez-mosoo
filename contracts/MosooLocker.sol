@@ -670,6 +670,176 @@ contract MosooLocker {
      * @param lezSlot The LEZ block/slot height at which the burn occurred.
      * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
      */
+    
+    /**
+     * @notice Release locked native ETH back to an Ethereum address with multi-signer threshold quorum AND cross-instance domain separation.
+     * @dev Strictly binds sourceInstance into canonical V2 burnId and EIP-712 structured data with M-of-N threshold quorum.
+     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
+     * @param sourceInstance The unique 32-byte instance ID of the LEZ light-client instance.
+     * @param amount The ETH amount to unlock in wei.
+     * @param recipient The Ethereum recipient address.
+     * @param lezOwner The LEZ account that performed the burn.
+     * @param burnNonce The sequential burn counter from the LEZ bridge.
+     * @param lezSlot The LEZ block/slot height at which the burn occurred.
+     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
+     */
+    function unlockETHWithInstanceAndQuorum(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        uint256 amount,
+        address payable recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes[] calldata signatures
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        if (recipient == address(0)) revert ZeroAddress();
+        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
+
+        // 1. Verify burnId canonical derivation strictly binding sourceInstance (Finding P2 / Cross-Instance Domain Separation)
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_v2",
+                block.chainid,
+                sourceInstance,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        // 2. Verify M-of-N threshold signatures using EIP-712 structured data strictly binding sourceInstance
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ETH_V2_TYPEHASH,
+                burnId,
+                sourceInstance,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (!_verifyQuorumSignatures(structHash, signatures)) {
+            revert InvalidBurnProof();
+        }
+
+        // 3. Timelock delay for large withdrawals
+        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
+            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
+            if (unlockTime == 0) {
+                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
+                queuedWithdrawalUnlockTime[burnId] = unlockTime;
+                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
+                return;
+            }
+            if (block.timestamp < unlockTime) {
+                revert LargeWithdrawalPending(unlockTime);
+            }
+        }
+
+        // 4. Rolling limit check
+        _checkAndRecordRollingWithdrawalETH(amount);
+
+        // 5. Mark burn nullifier as spent
+        executedBurns[burnId] = true;
+        totalUnlockedETH += amount;
+        totalLockedETH -= amount;
+
+        // 6. Transfer ETH to recipient
+        (bool sent, ) = recipient.call{value: amount}("");
+        if (!sent) revert ETHTransferFailed();
+
+        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+    }
+
+    /**
+     * @notice Release locked ERC-20 tokens back to an Ethereum address with multi-signer threshold quorum AND cross-instance domain separation.
+     * @dev Strictly binds sourceInstance into canonical V2 ERC-20 burnId and EIP-712 structured data with M-of-N threshold quorum.
+     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
+     * @param sourceInstance The unique 32-byte instance ID of the LEZ light-client instance.
+     * @param token The ERC-20 token contract address.
+     * @param amount The token amount to unlock.
+     * @param recipient The Ethereum recipient address.
+     * @param lezOwner The LEZ account that performed the burn.
+     * @param burnNonce The sequential burn counter from the LEZ bridge.
+     * @param lezSlot The LEZ block/slot height at which the burn occurred.
+     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
+     */
+    function unlockERC20WithInstanceAndQuorum(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        address token,
+        uint256 amount,
+        address recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes[] calldata signatures
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
+        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        if (token.code.length == 0) revert ZeroAddress();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+
+        // 1. Verify burnId canonical derivation strictly binding sourceInstance
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_erc20_v2",
+                block.chainid,
+                sourceInstance,
+                token,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        // 2. Verify M-of-N threshold signatures using EIP-712 structured data strictly binding sourceInstance
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ERC20_V2_TYPEHASH,
+                burnId,
+                sourceInstance,
+                token,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (!_verifyQuorumSignatures(structHash, signatures)) {
+            revert InvalidBurnProof();
+        }
+
+        // 3. Rolling limit check
+        _checkAndRecordRollingWithdrawalERC20(token, amount);
+
+        // 4. Mark burn nullifier as spent
+        executedBurns[burnId] = true;
+        totalLockedERC20[token] -= amount;
+
+        // 5. Transfer ERC-20 tokens to recipient
+        _safeTransfer(token, recipient, amount);
+
+        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+    }
+
     function unlockETHWithQuorum(
         bytes32 burnId,
         address payable recipient,

@@ -263,11 +263,12 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
     // Compute deterministic update digest binding this update across all 3 transactions.
     let update_digest = crypto::compute_update_digest(update);
 
-    // Compute the signing root for the attested header.
-    let signing_root = crypto::compute_signing_root(
+    // Compute the signing root for the attested header with optional instance network configuration.
+    let signing_root = crypto::compute_signing_root_with_config(
         &update.attested_header,
         instance.chain_id,
         update.signature_slot,
+        instance.network_config.as_ref(),
     )?;
 
     // Aggregate the participating validators' public keys using the authenticated signing committee.
@@ -864,6 +865,135 @@ pub fn verify_instance_account_authenticity<S: AccountStore>(
         return Err(MosooError::DomainSeparationFailed);
     }
     Ok(instance)
+}
+
+/// Authenticate a JobAccount loaded from persistent LEZ storage.
+/// Verifies the job account is owned by MOSOO_PROGRAM_ID and matches canonical PDA derivation.
+pub fn verify_job_account_authenticity<S: AccountStore>(
+    store: &S,
+    expected_pda: &[u8; 32],
+) -> Result<JobAccount, MosooError> {
+    if let Some(owner) = store.get_account_owner(expected_pda) {
+        if owner != MOSOO_PROGRAM_ID {
+            return Err(MosooError::UnauthorizedAccount);
+        }
+    } else {
+        return Err(MosooError::NotInitialized);
+    }
+
+    let data = store
+        .get_account(expected_pda)
+        .ok_or(MosooError::NotInitialized)?;
+    let job: JobAccount = serde_json::from_slice(&data).map_err(|e| {
+        MosooError::Internal(format!(
+            "Failed to deserialize JobAccount from persistent store: {e}"
+        ))
+    })?;
+    let derived_pda = job.pda_address();
+    let alt_pda = JobAccount::derive_pda(&job.instance_pda(), job.nonce);
+    if derived_pda != *expected_pda && alt_pda != *expected_pda {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+    Ok(job)
+}
+
+/// Authenticated BeginUpdate entrypoint that loads and authenticates the InstanceAccount
+/// from persistent LEZ storage, performs participation checks and hash_to_G2,
+/// and stores the newly created JobAccount with MOSOO_PROGRAM_ID ownership.
+pub fn handle_begin_update_authenticated<S: AccountStore>(
+    store: &mut S,
+    instance_pda: &[u8; 32],
+    args: BeginUpdateArgs,
+) -> Result<InstructionOutput, MosooError> {
+    let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
+    let mut args = args;
+    args.instance = authentic_instance;
+    let out = handle_begin_update(args)?;
+    if let InstructionOutput::JobCreated(ref job) = out {
+        let job_pda = job.pda_address();
+        let job_bytes = serde_json::to_vec(job)
+            .map_err(|e| MosooError::Internal(format!("Failed to serialize JobAccount: {e}")))?;
+        store
+            .try_set_account_with_owner(&job_pda, job_bytes, MOSOO_PROGRAM_ID)
+            .map_err(|e| {
+                MosooError::StorageWriteFailed(format!("Failed to persist JobAccount: {e}"))
+            })?;
+    }
+    Ok(out)
+}
+
+/// Authenticated MillerUpdate entrypoint that loads and authenticates both the InstanceAccount
+/// and JobAccount from persistent LEZ storage, executes the pairing Miller loops,
+/// and updates the JobAccount in persistent storage with MOSOO_PROGRAM_ID ownership.
+pub fn handle_miller_update_authenticated<S: AccountStore>(
+    store: &mut S,
+    instance_pda: &[u8; 32],
+    job_pda: &[u8; 32],
+    args: MillerUpdateArgs,
+) -> Result<InstructionOutput, MosooError> {
+    let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
+    let authentic_job = verify_job_account_authenticity(store, job_pda)?;
+    let mut args = args;
+    args.instance = authentic_instance;
+    args.job = authentic_job;
+    let out = handle_miller_update(args)?;
+    if let InstructionOutput::JobMillerDone(ref job) = out {
+        let job_bytes = serde_json::to_vec(job)
+            .map_err(|e| MosooError::Internal(format!("Failed to serialize JobAccount: {e}")))?;
+        store
+            .try_set_account_with_owner(job_pda, job_bytes, MOSOO_PROGRAM_ID)
+            .map_err(|e| {
+                MosooError::StorageWriteFailed(format!("Failed to update JobAccount: {e}"))
+            })?;
+    }
+    Ok(out)
+}
+
+/// Authenticated FinishUpdate entrypoint that loads and authenticates both the InstanceAccount
+/// and JobAccount from persistent LEZ storage, executes final exponentiation and SSZ branch checks,
+/// atomically commits the updated InstanceAccount and HeaderRecord to persistent storage,
+/// and updates the completed JobAccount to Done state.
+pub fn handle_finish_update_authenticated<S: AccountStore>(
+    store: &mut S,
+    instance_pda: &[u8; 32],
+    job_pda: &[u8; 32],
+    args: FinishUpdateArgs,
+) -> Result<InstructionOutput, MosooError> {
+    let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
+    let authentic_job = verify_job_account_authenticity(store, job_pda)?;
+    let mut args = args;
+    args.instance = authentic_instance;
+    args.job = authentic_job;
+    let out = handle_finish_update(args)?;
+    if let InstructionOutput::UpdateFinished {
+        ref updated_instance,
+        ref header_record,
+        ref closed_job,
+    } = out
+    {
+        let inst_bytes = serde_json::to_vec(updated_instance).map_err(|e| {
+            MosooError::Internal(format!("Failed to serialize InstanceAccount: {e}"))
+        })?;
+        let header_pda = header_record.pda_address();
+        let header_bytes = serde_json::to_vec(header_record)
+            .map_err(|e| MosooError::Internal(format!("Failed to serialize HeaderRecord: {e}")))?;
+        let done_job_bytes = serde_json::to_vec(closed_job).map_err(|e| {
+            MosooError::Internal(format!("Failed to serialize Closed JobAccount: {e}"))
+        })?;
+
+        let entries = vec![
+            (*instance_pda, inst_bytes, MOSOO_PROGRAM_ID),
+            (header_pda, header_bytes, MOSOO_PROGRAM_ID),
+            (*job_pda, done_job_bytes, MOSOO_PROGRAM_ID),
+        ];
+
+        store
+            .try_set_accounts_batch_with_owner(&entries)
+            .map_err(|e| {
+                MosooError::StorageWriteFailed(format!("Atomic batch commit failed: {e}"))
+            })?;
+    }
+    Ok(out)
 }
 
 /// Authenticated state attestation entrypoint that loads and authenticates the InstanceAccount

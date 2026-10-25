@@ -811,6 +811,36 @@ pub struct JobAccount {
     pub nonce: u64,
 }
 
+impl JobAccount {
+    /// Computes the deterministic 32-byte PDA address of this job account on LEZ.
+    pub fn pda_address(&self) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"mosoo_job");
+        hasher.update(self.instance_chain_id.to_le_bytes());
+        hasher.update(self.instance_id);
+        hasher.update(self.nonce.to_le_bytes());
+        hasher.finalize().into()
+    }
+
+    /// Computes the corresponding InstanceAccount PDA address for this job.
+    pub fn instance_pda(&self) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"mosoo_instance");
+        hasher.update(self.instance_chain_id.to_le_bytes());
+        hasher.update(self.instance_id);
+        hasher.finalize().into()
+    }
+
+    /// Computes the deterministic 32-byte PDA address using an instance PDA and nonce.
+    pub fn derive_pda(instance_pda: &[u8; 32], nonce: u64) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"mosoo_job");
+        hasher.update(instance_pda);
+        hasher.update(nonce.to_le_bytes());
+        hasher.finalize().into()
+    }
+}
+
 /// Processing stages for a verification job.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum JobStage {

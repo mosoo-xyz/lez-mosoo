@@ -153,3 +153,61 @@ Mosoo implements a two-tier **Dual-Nullifier & Subject-Key Binding Protocol**:
 ### Security Properties
 - Complete immunity against statement ID malleability (tested in Attack 18).
 - Complete immunity against duplicate event log claims across different blocks or identical slots (tested in Attacks 9, 13, and 18).
+
+---
+
+## ADR-006: Consensus Update Pipeline State Authentication (P0)
+
+### Context & Problem Statement
+In pure off-chain verification functions (`handle_begin_update`, `handle_miller_update`, `handle_finish_update`), caller-supplied structs are validated internally for cryptographic invariants. However, an adversarial host or RPC relayer could fabricate uncommitted in-memory `InstanceAccount` or `JobAccount` states to spoof light-client progression or bypass committee handoffs.
+
+### Decision
+Mosoo implements authenticated persistent transaction entrypoints:
+- `handle_begin_update_authenticated(store, instance_pda, args)`
+- `handle_miller_update_authenticated(store, instance_pda, job_pda, args)`
+- `handle_finish_update_authenticated(store, instance_pda, job_pda, args)`
+
+Each entrypoint strictly enforces:
+1. **Program Ownership**: `store.get_account_owner(pda) == Some(MOSOO_PROGRAM_ID)`.
+2. **Canonical PDA Derivation**: Recomputed SHA-256 PDA address matches the storage address.
+3. **State Invariants**: Monotonically advancing slots, authentic bootstrap checkpoints, and valid stage sequencing.
+4. **Atomic Batch Commit**: Updates to `InstanceAccount`, `HeaderRecord`, and `JobAccount` are committed atomically via `try_set_accounts_batch_with_owner`.
+
+---
+
+## ADR-007: Sepolia Glamsterdam / Gloas Hard Fork Alignment (P1)
+
+### Context & Problem Statement
+Sepolia activated the Glamsterdam / Gloas upgrade on October 6, 2026. Preliminary testing used an arbitrary test slot `7,077,888`. Using a misaligned fork boundary causes BLS signing domain divergence and consensus update rejection.
+
+### Decision
+Aligned `SEPOLIA_GLOAS_FORK_SLOT` with the official Ethereum Foundation Glamsterdam activation slot:
+- Activation Slot: **`11,296,768`** (Epoch `353,024`, Oct 6, 2026)
+- Fork Version: `[0x90, 0x00, 0x00, 0x77]`
+- Generalized Indices: GINDEX 2945 (current sync committee), 2946 (next sync committee), 735 (finalized root), 2856 (execution block hash).
+- Hoodi Testnet: Postponed on Oct 22, 2026; unscheduled Gloas boundary, remaining on Fulu until official replacement schedule is published.
+
+---
+
+## ADR-008: Dynamic `NetworkConfig` Propagation (P1)
+
+### Context & Problem Statement
+Logos RFP-021 mandates support for "any Ethereum-consensus chain without code modification." While `NetworkConfig` was defined in `types.rs`, BLS domain derivation previously fell back solely to hardcoded chain IDs.
+
+### Decision
+`compute_sync_committee_domain_with_config`, `compute_signing_root_with_config`, and `verify_sync_committee_signature_with_config` dynamically consume `Option<&NetworkConfig>`:
+- If provided and non-zero, `config.genesis_validators_root` and custom fork versions directly override defaults.
+- Backward-compatible standard entrypoints delegate with `None`.
+
+---
+
+## ADR-009: Historical Attestation Window (8,192-Slot Ring Buffer) (P2)
+
+### Context & Problem Statement
+Ethereum's consensus `BeaconState` maintains `block_roots: Vector[Root, 8192]`. Historical block headers older than 8,192 slots ($\approx 27.3$ hours) wrap around the circular ring buffer and cannot be proven solely from the active beacon state root.
+
+### Decision
+Mosoo enforces a strict fail-closed boundary:
+1. Proofs for blocks within the 8,192-slot window ($0 < \text{current\_slot} - \text{header\_slot} \le 8192$) are verified against `state_root.block_roots` using depth-13 Merkle branches.
+2. Requests for blocks older than 8,192 slots return a typed `MosooError::HistoricalSummariesWindowExceeded` error, preventing false attestations from overwritten ring buffer slots.
+

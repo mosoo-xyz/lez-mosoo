@@ -8,7 +8,8 @@ use blst::BLST_ERROR;
 
 use crate::error::MosooError;
 use crate::types::{
-    BeaconBlockHeader, ExecutionPayloadHeader, LightClientUpdate, SyncAggregate, SyncCommittee,
+    BeaconBlockHeader, ExecutionPayloadHeader, LightClientUpdate, NetworkConfig, SyncAggregate,
+    SyncCommittee,
 };
 
 /// Domain separation tag for Ethereum BLS signatures (EIP-2335 / BLS spec).
@@ -88,6 +89,27 @@ pub fn aggregate_participating_pubkeys(
     Ok(agg.to_public_key().to_bytes())
 }
 
+/// Compute the BLS signing root for a beacon block header with optional network configuration.
+///
+/// signing_root = sha256(hash_tree_root(header) || domain)
+pub fn compute_signing_root_with_config(
+    header: &BeaconBlockHeader,
+    chain_id: u64,
+    signature_slot: u64,
+    network_config: Option<&NetworkConfig>,
+) -> Result<[u8; 32], MosooError> {
+    use sha2::{Digest, Sha256};
+
+    let header_root = hash_tree_root_beacon_header(header);
+    let domain =
+        compute_sync_committee_domain_with_config(chain_id, signature_slot, network_config);
+
+    let mut hasher = Sha256::new();
+    hasher.update(header_root);
+    hasher.update(domain);
+    Ok(hasher.finalize().into())
+}
+
 /// Compute the BLS signing root for a beacon block header.
 ///
 /// signing_root = sha256(hash_tree_root(header) || domain)
@@ -96,24 +118,59 @@ pub fn compute_signing_root(
     chain_id: u64,
     signature_slot: u64,
 ) -> Result<[u8; 32], MosooError> {
-    use sha2::{Digest, Sha256};
+    compute_signing_root_with_config(header, chain_id, signature_slot, None)
+}
 
-    let header_root = hash_tree_root_beacon_header(header);
-    let domain = compute_sync_committee_domain(chain_id, signature_slot);
-
-    let mut hasher = Sha256::new();
-    hasher.update(header_root);
-    hasher.update(domain);
-    Ok(hasher.finalize().into())
+/// Compute the BLS domain for DOMAIN_SYNC_COMMITTEE with optional network configuration.
+pub fn compute_sync_committee_domain_with_config(
+    chain_id: u64,
+    slot: u64,
+    network_config: Option<&NetworkConfig>,
+) -> [u8; 32] {
+    // DOMAIN_SYNC_COMMITTEE = 0x07000000
+    let domain_type: [u8; 4] = [0x07, 0x00, 0x00, 0x00];
+    let (fork, gvr) = if let Some(config) = network_config {
+        let gvr = if config.genesis_validators_root != [0u8; 32] {
+            config.genesis_validators_root
+        } else {
+            genesis_validators_root(chain_id)
+        };
+        let fork_kind = ethereum_fork(chain_id, slot);
+        let fork_v = match fork_kind {
+            EthereumFork::Gloas if config.gloas_fork_version != [0u8; 4] => {
+                config.gloas_fork_version
+            }
+            EthereumFork::Fulu if config.fulu_fork_version != [0u8; 4] => config.fulu_fork_version,
+            EthereumFork::Electra if config.electra_fork_version != [0u8; 4] => {
+                config.electra_fork_version
+            }
+            EthereumFork::Deneb if config.deneb_fork_version != [0u8; 4] => {
+                config.deneb_fork_version
+            }
+            EthereumFork::Capella if config.capella_fork_version != [0u8; 4] => {
+                config.capella_fork_version
+            }
+            EthereumFork::Bellatrix if config.bellatrix_fork_version != [0u8; 4] => {
+                config.bellatrix_fork_version
+            }
+            EthereumFork::Altair if config.altair_fork_version != [0u8; 4] => {
+                config.altair_fork_version
+            }
+            _ => fork_version(chain_id, slot),
+        };
+        (fork_v, gvr)
+    } else {
+        (
+            fork_version(chain_id, slot),
+            genesis_validators_root(chain_id),
+        )
+    };
+    compute_domain(domain_type, fork, gvr)
 }
 
 /// Compute the BLS domain for DOMAIN_SYNC_COMMITTEE on the given chain.
 pub fn compute_sync_committee_domain(chain_id: u64, slot: u64) -> [u8; 32] {
-    // DOMAIN_SYNC_COMMITTEE = 0x07000000
-    let domain_type: [u8; 4] = [0x07, 0x00, 0x00, 0x00];
-    let fork = fork_version(chain_id, slot);
-    let gvr = genesis_validators_root(chain_id);
-    compute_domain(domain_type, fork, gvr)
+    compute_sync_committee_domain_with_config(chain_id, slot, None)
 }
 
 /// Compute 32-byte BLS domain per Ethereum consensus specs: domain_type + fork_data_root[:28].
@@ -177,8 +234,8 @@ pub fn fork_version(chain_id: u64, slot: u64) -> [u8; 4] {
         }
         // Sepolia Testnet (Chain ID 11155111)
         11_155_111 => {
-            // SEPOLIA_GLOAS_FORK_EPOCH = 221184 (slot 7,077,888, activated Oct 6, 2026)
-            if slot >= 7_077_888 {
+            // SEPOLIA_GLOAS_FORK_EPOCH = 353024 (slot 11,296,768, official EF Glamsterdam activation Oct 6, 2026)
+            if slot >= 11_296_768 {
                 [0x90, 0x00, 0x00, 0x77] // SEPOLIA_GLOAS_FORK_VERSION
             } else if slot >= 6_189_056 {
                 [0x90, 0x00, 0x00, 0x75] // SEPOLIA_ELECTRA_FORK_VERSION
@@ -190,14 +247,9 @@ pub fn fork_version(chain_id: u64, slot: u64) -> [u8; 4] {
                 [0x90, 0x00, 0x00, 0x70] // SEPOLIA_ALTAIR_FORK_VERSION
             }
         }
-        // Hoodi Testnet (Chain ID 560048)
+        // Hoodi Testnet (Chain ID 560048) - Gloas upgrade postponed on Oct 22, 2026; remaining on Fulu until official replacement schedule
         560_048 => {
-            // HOODI_GLOAS_FORK_EPOCH = 24576 (slot 786,432, activating Oct 26, 2026)
-            if slot >= 786_432 {
-                [0x10, 0x00, 0x09, 0x10] // HOODI_GLOAS_FORK_VERSION
-            } else {
-                [0x10, 0x00, 0x09, 0x00] // HOODI_FULU_FORK_VERSION
-            }
+            [0x10, 0x00, 0x09, 0x00] // HOODI_FULU_FORK_VERSION
         }
         // Holesky Testnet (Chain ID 17000 - Deprecated)
         17_000 => {
@@ -266,7 +318,7 @@ pub fn ethereum_fork(chain_id: u64, slot: u64) -> EthereumFork {
             }
         }
         11_155_111 => {
-            if slot >= 7_077_888 {
+            if slot >= 11_296_768 {
                 EthereumFork::Gloas
             } else if slot >= 6_189_056 {
                 EthereumFork::Electra
@@ -278,13 +330,8 @@ pub fn ethereum_fork(chain_id: u64, slot: u64) -> EthereumFork {
                 EthereumFork::Altair
             }
         }
-        560_048 => {
-            if slot >= 786_432 {
-                EthereumFork::Gloas
-            } else {
-                EthereumFork::Fulu
-            }
-        }
+        // Hoodi Testnet (Chain ID 560048) - Gloas postponed, remaining on Fulu
+        560_048 => EthereumFork::Fulu,
         17_000 => {
             if slot >= 2_000_000 {
                 EthereumFork::Fulu
@@ -802,13 +849,14 @@ pub fn blst_final_exp_and_verify(miller_result: &[u8]) -> Result<bool, MosooErro
     }
 }
 
-/// Verify a complete sync-committee signature in one call.
-pub fn verify_sync_committee_signature(
+/// Verify a complete sync-committee signature in one call with optional network configuration.
+pub fn verify_sync_committee_signature_with_config(
     committee: &SyncCommittee,
     aggregate: &SyncAggregate,
     header: &BeaconBlockHeader,
     chain_id: u64,
     signature_slot: u64,
+    network_config: Option<&NetworkConfig>,
 ) -> Result<(), MosooError> {
     let participation = count_participation(&aggregate.sync_committee_bits);
     let threshold = (512usize * 2).div_ceil(3); // 342 validators (2/3 quorum)
@@ -818,7 +866,8 @@ pub fn verify_sync_committee_signature(
             required: threshold,
         });
     }
-    let signing_root = compute_signing_root(header, chain_id, signature_slot)?;
+    let signing_root =
+        compute_signing_root_with_config(header, chain_id, signature_slot, network_config)?;
     let agg_pubkey_bytes =
         aggregate_participating_pubkeys(committee, &aggregate.sync_committee_bits)?;
     let agg_pubkey = PublicKey::from_bytes(&agg_pubkey_bytes)
@@ -831,6 +880,24 @@ pub fn verify_sync_committee_signature(
     }
 
     Ok(())
+}
+
+/// Verify a complete sync-committee signature in one call.
+pub fn verify_sync_committee_signature(
+    committee: &SyncCommittee,
+    aggregate: &SyncAggregate,
+    header: &BeaconBlockHeader,
+    chain_id: u64,
+    signature_slot: u64,
+) -> Result<(), MosooError> {
+    verify_sync_committee_signature_with_config(
+        committee,
+        aggregate,
+        header,
+        chain_id,
+        signature_slot,
+        None,
+    )
 }
 
 fn hex_to_bytes32(s: &str) -> [u8; 32] {
@@ -1141,23 +1208,24 @@ mod tests {
             [0x90, 0x00, 0x00, 0x75]
         );
 
-        // Sepolia Electra -> Gloas boundary (slot 7,077,888, activated Oct 6, 2026)
+        // Sepolia Electra -> Gloas boundary (slot 11,296,768, official EF Glamsterdam activation Oct 6, 2026)
         assert_eq!(
-            fork_version(11_155_111, 7_077_887),
+            fork_version(11_155_111, 11_296_767),
             [0x90, 0x00, 0x00, 0x75]
         );
         assert_eq!(
-            fork_version(11_155_111, 7_077_888),
+            fork_version(11_155_111, 11_296_768),
             [0x90, 0x00, 0x00, 0x77]
         );
         assert_eq!(
-            fork_version(11_155_111, 7_077_889),
+            fork_version(11_155_111, 11_296_769),
             [0x90, 0x00, 0x00, 0x77]
         );
 
-        // Hoodi testnet (chain_id: 560048) Gloas boundary (slot 786,432)
+        // Hoodi testnet (chain_id: 560048) remaining on Fulu (Gloas postponed on Oct 22, 2026)
         assert_eq!(fork_version(560_048, 786_431), [0x10, 0x00, 0x09, 0x00]);
-        assert_eq!(fork_version(560_048, 786_432), [0x10, 0x00, 0x09, 0x10]);
+        assert_eq!(fork_version(560_048, 786_432), [0x10, 0x00, 0x09, 0x00]);
+        assert_eq!(fork_version(560_048, 1_000_000), [0x10, 0x00, 0x09, 0x00]);
     }
 
     #[test]
