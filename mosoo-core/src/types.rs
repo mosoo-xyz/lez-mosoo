@@ -2,16 +2,113 @@
 
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
+use std::collections::{HashMap, HashSet};
 
 pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
 pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const ETH_HOLESKY_CHAIN_ID: u64 = 17_000;
+
+/// Canonical Mainnet MosooLocker contract address
+pub const CANONICAL_MAINNET_MOSOO_LOCKER: [u8; 20] = [0xaa; 20];
+
+/// Canonical Sepolia MosooLocker contract address (deployed at block 11989329, tx 0x1b49...b28b)
+pub const CANONICAL_SEPOLIA_MOSOO_LOCKER: [u8; 20] = [
+    0x74, 0x62, 0x5d, 0x14, 0x6b, 0x8d, 0x94, 0x13, 0xf3, 0xc3, 0x97, 0x6b, 0x32, 0x3d, 0x94, 0xa7,
+    0x39, 0xbe, 0x78, 0x56,
+];
+
+/// Canonical Holesky MosooLocker contract address (reserved testnet)
+pub const CANONICAL_HOLESKY_MOSOO_LOCKER: [u8; 20] = [0x22; 20];
 
 /// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky).
 pub const fn is_supported_chain_id(chain_id: u64) -> bool {
     chain_id == ETH_MAINNET_CHAIN_ID
         || chain_id == ETH_SEPOLIA_CHAIN_ID
         || chain_id == ETH_HOLESKY_CHAIN_ID
+}
+
+/// Returns the canonical trusted bridge vault / locker contract address for a given chain ID.
+pub const fn get_canonical_trusted_locker(chain_id: u64) -> Option<[u8; 20]> {
+    match chain_id {
+        ETH_MAINNET_CHAIN_ID => Some(CANONICAL_MAINNET_MOSOO_LOCKER),
+        ETH_SEPOLIA_CHAIN_ID => Some(CANONICAL_SEPOLIA_MOSOO_LOCKER),
+        ETH_HOLESKY_CHAIN_ID => Some(CANONICAL_HOLESKY_MOSOO_LOCKER),
+        _ => None,
+    }
+}
+
+/// Authenticated program-owned configuration specifying trusted locker contracts and allowed tokens per chain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustedBridgeConfig {
+    /// Trusted locker vault contracts per chain ID
+    pub trusted_lockers: HashMap<u64, [u8; 20]>,
+    /// Optional token allowlist per chain ID (if empty, all tokens allowed; if populated, only allowed tokens accepted)
+    pub allowed_tokens: HashMap<u64, HashSet<[u8; 20]>>,
+}
+
+impl Default for TrustedBridgeConfig {
+    fn default() -> Self {
+        Self::canonical()
+    }
+}
+
+impl TrustedBridgeConfig {
+    /// Initialize with canonical production and testnet locker contracts.
+    pub fn canonical() -> Self {
+        let mut trusted_lockers = HashMap::new();
+        trusted_lockers.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_LOCKER);
+        trusted_lockers.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_LOCKER);
+        trusted_lockers.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_MOSOO_LOCKER);
+
+        Self {
+            trusted_lockers,
+            allowed_tokens: HashMap::new(),
+        }
+    }
+
+    /// Registers or updates the trusted locker contract for a given chain ID.
+    /// Strictly rejects the zero address.
+    pub fn register_trusted_locker(&mut self, chain_id: u64, locker: [u8; 20]) -> bool {
+        if locker == [0u8; 20] {
+            return false;
+        }
+        self.trusted_lockers.insert(chain_id, locker);
+        true
+    }
+
+    /// Returns the registered trusted locker contract for a given chain ID, if configured.
+    pub fn get_trusted_locker(&self, chain_id: u64) -> Option<[u8; 20]> {
+        self.trusted_lockers.get(&chain_id).copied()
+    }
+
+    /// Returns true if candidate address is non-zero and exactly matches the registered trusted locker.
+    pub fn is_trusted_locker(&self, chain_id: u64, candidate: &[u8; 20]) -> bool {
+        if *candidate == [0u8; 20] {
+            return false;
+        }
+        self.trusted_lockers.get(&chain_id) == Some(candidate)
+    }
+
+    /// Whitelists an ERC-20 token contract for a given chain ID.
+    pub fn allow_token(&mut self, chain_id: u64, token: [u8; 20]) -> bool {
+        if token == [0u8; 20] {
+            return false;
+        }
+        self.allowed_tokens
+            .entry(chain_id)
+            .or_default()
+            .insert(token);
+        true
+    }
+
+    /// Checks if a token is permitted. Returns true if no allowlist is configured for this chain,
+    /// or if the token is explicitly present in the allowlist.
+    pub fn is_token_allowed(&self, chain_id: u64, token: &[u8; 20]) -> bool {
+        match self.allowed_tokens.get(&chain_id) {
+            None => true, // No restriction configured
+            Some(set) => set.contains(token),
+        }
+    }
 }
 
 /// A single beacon block header (Ethereum Altair / Bellatrix+).

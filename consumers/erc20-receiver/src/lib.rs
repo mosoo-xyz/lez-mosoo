@@ -25,9 +25,10 @@ pub use mosoo_core::predicate::{
 };
 pub use mosoo_core::types::derive_statement_pda;
 pub use mosoo_core::types::{
-    is_supported_chain_id, AccountStore, StatementAccount, StatementBinding, VerifiedStatement,
-    ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
+    get_canonical_trusted_locker, is_supported_chain_id, AccountStore, StatementAccount,
+    StatementBinding, TrustedBridgeConfig, VerifiedStatement, ETH_HOLESKY_CHAIN_ID,
+    ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT,
+    PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -100,6 +101,12 @@ pub enum ReceiverError {
 
     #[error("deposit backing required: deposit minting strictly requires authentic escrow deposit proof (DepositERC20)")]
     DepositBackingRequired,
+
+    #[error("token contract {0:?} is not permitted on chain {1} by the authenticated bridge token allowlist")]
+    TokenNotAllowed([u8; 20], u64),
+
+    #[error("untrusted chain or locker: chain {0} has no authenticated locker vault configured")]
+    UntrustedLocker(u64),
 
     #[error("arithmetic overflow in token operation")]
     Overflow,
@@ -1219,9 +1226,10 @@ pub fn claim_atomic_u256(
             recipient,
             ..
         } => {
-            if args.expected_deposit_contract != [0u8; 20]
-                && *deposit_contract != args.expected_deposit_contract
-            {
+            if args.expected_deposit_contract == [0u8; 20] {
+                return Err(ReceiverError::DepositBackingRequired);
+            }
+            if *deposit_contract != args.expected_deposit_contract {
                 return Err(ReceiverError::DepositContractMismatch {
                     expected: args.expected_deposit_contract,
                     actual: *deposit_contract,
@@ -1288,6 +1296,8 @@ pub fn claim_atomic(
     args: AtomicErc20ClaimArgs,
     nullifiers: &mut NullifierSet,
 ) -> Result<u64, ReceiverError> {
+    let expected_deposit_contract =
+        get_canonical_trusted_locker(args.instance.chain_id).unwrap_or([0u8; 20]);
     let u256_args = AtomicErc20ClaimArgsU256 {
         instance: args.instance,
         header: args.header,
@@ -1295,7 +1305,7 @@ pub fn claim_atomic(
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
-        expected_deposit_contract: [0u8; 20],
+        expected_deposit_contract,
         expected_token_contract: args.expected_token_contract,
         expected_sender: args.expected_sender,
         recipient: args.recipient,
@@ -1371,17 +1381,51 @@ pub struct Erc20BurnReceipt {
 }
 
 /// The multi-token state ledger for synthetic ERC-20 tokens on LEZ.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Erc20Ledger {
     accounts: HashMap<([u8; 20], [u8; 32]), Erc20Account>,
     total_supplies: HashMap<[u8; 20], u128>,
     total_burned: HashMap<[u8; 20], u128>,
     burn_receipts: HashMap<[u8; 32], Erc20BurnReceipt>,
+    /// Authenticated program-owned bridge configuration (trusted lockers & token allowlist per chain)
+    pub config: TrustedBridgeConfig,
+}
+
+impl Default for Erc20Ledger {
+    fn default() -> Self {
+        Self {
+            accounts: HashMap::new(),
+            total_supplies: HashMap::new(),
+            total_burned: HashMap::new(),
+            burn_receipts: HashMap::new(),
+            config: TrustedBridgeConfig::canonical(),
+        }
+    }
 }
 
 impl Erc20Ledger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Registers or updates the trusted locker contract for a given chain ID in the ledger's configuration.
+    pub fn register_trusted_locker(&mut self, chain_id: u64, locker: [u8; 20]) -> bool {
+        self.config.register_trusted_locker(chain_id, locker)
+    }
+
+    /// Returns the trusted locker contract for a given chain ID from the ledger's configuration.
+    pub fn get_trusted_locker(&self, chain_id: u64) -> Option<[u8; 20]> {
+        self.config.get_trusted_locker(chain_id)
+    }
+
+    /// Whitelists an ERC-20 token contract for bridging on a given chain ID.
+    pub fn allow_token(&mut self, chain_id: u64, token: [u8; 20]) -> bool {
+        self.config.allow_token(chain_id, token)
+    }
+
+    /// Checks if a token is permitted on a given chain ID.
+    pub fn is_token_allowed(&self, chain_id: u64, token: &[u8; 20]) -> bool {
+        self.config.is_token_allowed(chain_id, token)
     }
 
     pub fn get_balance(&self, token: &[u8; 20], owner: &[u8; 32]) -> u128 {
@@ -1399,6 +1443,15 @@ impl Erc20Ledger {
     }
 
     /// Mint synthetic tokens upon verification of an ERC-20 deposit to `MosooLocker.sol`.
+    ///
+    /// # Security Warning
+    /// This is a legacy helper that processes an in-memory `VerifiedStatement`. In-memory statements
+    /// can be fabricated by callers if exposed as an unauthenticated entrypoint.
+    /// For production LEZ bridging, always invoke [`Erc20Ledger::mint_deposit_atomic_u256`] (atomic in-guest verification)
+    /// or [`Erc20Ledger::mint_deposit_authenticated_pda_u256`] (on-chain StatementAccount PDA verification).
+    #[deprecated(
+        note = "Legacy test helper: In-memory VerifiedStatement can be forged. Use `mint_deposit_atomic_u256` or `mint_deposit_authenticated_pda_u256` in production"
+    )]
     pub fn mint_tokens(
         &mut self,
         claim: &Erc20TransferClaim,
@@ -1430,7 +1483,8 @@ impl Erc20Ledger {
 
     /// Mint synthetic tokens from an in-guest atomic execution proof with full 256-bit validation.
     /// Strictly requires an authentic `StatementBinding::Erc20Deposit` binding and validates the
-    /// trusted bridge locker address, token contract, depositor, and recipient before state mutation.
+    /// trusted bridge locker address from program configuration, token contract allowlist, depositor,
+    /// and recipient before state mutation.
     /// Validates checked U256-to-u128 conversion and balance additions BEFORE consuming nullifiers.
     pub fn mint_deposit_atomic_u256(
         &mut self,
@@ -1444,8 +1498,20 @@ impl Erc20Ledger {
             return Err(ReceiverError::DepositBackingRequired);
         }
 
+        let trusted_locker = self
+            .config
+            .get_trusted_locker(args.instance.chain_id)
+            .ok_or(ReceiverError::UntrustedLocker(args.instance.chain_id))?;
+
+        if args.expected_deposit_contract != trusted_locker {
+            return Err(ReceiverError::DepositContractMismatch {
+                expected: trusted_locker,
+                actual: args.expected_deposit_contract,
+            });
+        }
+
         let attest_args = mosoo_core::verifier::AttestStateArgs {
-            instance: args.instance,
+            instance: args.instance.clone(),
             header: args.header,
             header_history_branch: args.header_history_branch,
             historical_execution_proof: args.historical_execution_proof,
@@ -1483,9 +1549,9 @@ impl Erc20Ledger {
             }
         };
 
-        if deposit_contract != args.expected_deposit_contract {
+        if deposit_contract != trusted_locker {
             return Err(ReceiverError::DepositContractMismatch {
-                expected: args.expected_deposit_contract,
+                expected: trusted_locker,
                 actual: deposit_contract,
             });
         }
@@ -1494,6 +1560,15 @@ impl Erc20Ledger {
                 expected: args.expected_token_contract,
                 actual: token_contract,
             });
+        }
+        if !self
+            .config
+            .is_token_allowed(args.instance.chain_id, &token_contract)
+        {
+            return Err(ReceiverError::TokenNotAllowed(
+                token_contract,
+                args.instance.chain_id,
+            ));
         }
         if let Some(expected_sender) = args.expected_sender {
             if sender != expected_sender {
@@ -1562,9 +1637,9 @@ impl Erc20Ledger {
 
     /// Mint synthetic tokens from an authentic on-chain StatementAccount PDA.
     /// Strictly verifies canonical PDA derivation from Mosoo program ID, enforces
-    /// `StatementBinding::Erc20Deposit` proof type, validates expected locker contract,
-    /// performs checked U256-to-u128 conversion, and guards against balance overflow
-    /// before nullifier mutation.
+    /// `StatementBinding::Erc20Deposit` proof type, validates expected locker contract
+    /// against program-owned configuration, checks token allowlist, performs checked
+    /// U256-to-u128 conversion, and guards against balance overflow before nullifier mutation.
     pub fn mint_deposit_authenticated_pda_u256(
         &mut self,
         statement_account: &StatementAccount,
@@ -1582,6 +1657,23 @@ impl Erc20Ledger {
             return Err(ReceiverError::UnauthenticatedAttester);
         }
 
+        if expected_deposit_contract == [0u8; 20] {
+            return Err(ReceiverError::DepositBackingRequired);
+        }
+
+        let chain_id = statement_account.statement.chain_id;
+        let trusted_locker = self
+            .config
+            .get_trusted_locker(chain_id)
+            .ok_or(ReceiverError::UntrustedLocker(chain_id))?;
+
+        if expected_deposit_contract != trusted_locker {
+            return Err(ReceiverError::DepositContractMismatch {
+                expected: trusted_locker,
+                actual: expected_deposit_contract,
+            });
+        }
+
         let (deposit_contract, token, recipient) = match &statement_account.statement.binding {
             StatementBinding::Erc20Deposit {
                 deposit_contract,
@@ -1594,11 +1686,15 @@ impl Erc20Ledger {
             }
         };
 
-        if expected_deposit_contract != [0u8; 20] && deposit_contract != expected_deposit_contract {
+        if deposit_contract != trusted_locker {
             return Err(ReceiverError::DepositContractMismatch {
-                expected: expected_deposit_contract,
+                expected: trusted_locker,
                 actual: deposit_contract,
             });
+        }
+
+        if !self.config.is_token_allowed(chain_id, &token) {
+            return Err(ReceiverError::TokenNotAllowed(token, chain_id));
         }
 
         let amount_u256 = statement_account.statement.value_as_u256();
@@ -3041,6 +3137,7 @@ mod tests {
     fn test_erc20_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected() {
         let mut ledger = Erc20Ledger::new();
         let mut nullifiers = NullifierSet::new();
+        ledger.register_trusted_locker(ETH_SEPOLIA_CHAIN_ID, [0xaa; 20]);
 
         let token = [0x11; 20];
         let sender = [0x22; 20];
@@ -3068,19 +3165,24 @@ mod tests {
             ledger.mint_deposit_authenticated_pda_u256(&fabricated, [0xaa; 20], &mut nullifiers);
         assert_eq!(err, Err(ReceiverError::UnauthenticatedAttester));
 
-        // 2. Mismatched expected deposit contract rejected
+        // 2. Zero address bypass strictly rejected
         let authentic = StatementAccount::new_authentic(statement);
+        let zero_addr_err =
+            ledger.mint_deposit_authenticated_pda_u256(&authentic, [0u8; 20], &mut nullifiers);
+        assert_eq!(zero_addr_err, Err(ReceiverError::DepositBackingRequired));
+
+        // 3. Mismatched expected deposit contract rejected
         let mismatch =
             ledger.mint_deposit_authenticated_pda_u256(&authentic, [0xee; 20], &mut nullifiers);
         assert_eq!(
             mismatch,
             Err(ReceiverError::DepositContractMismatch {
-                expected: [0xee; 20],
-                actual: [0xaa; 20],
+                expected: [0xaa; 20],
+                actual: [0xee; 20],
             })
         );
 
-        // 3. Authentic account mints tokens successfully
+        // 4. Authentic account mints tokens successfully
         let minted = ledger
             .mint_deposit_authenticated_pda_u256(&authentic, [0xaa; 20], &mut nullifiers)
             .expect("Authentic StatementAccount PDA mint must succeed");
@@ -3088,7 +3190,7 @@ mod tests {
         assert_eq!(ledger.get_balance(&token, &recipient), amount);
         assert_eq!(ledger.get_total_supply(&token), amount);
 
-        // 4. Double-mint replay rejected
+        // 5. Double-mint replay rejected
         let replay =
             ledger.mint_deposit_authenticated_pda_u256(&authentic, [0xaa; 20], &mut nullifiers);
         assert_eq!(replay, Err(ReceiverError::AlreadyClaimed));
@@ -3566,5 +3668,220 @@ mod tests {
         // Verify nullifiers remain clean (no burned or orphan nullifier state)
         assert!(!nullifiers.is_used(&[0u8; 32]));
         assert_eq!(ledger.get_balance(&token_addr, &recipient), 0);
+    }
+
+    #[test]
+    fn test_erc20_mint_deposit_atomic_rejects_untrusted_locker_and_zero_address() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_deposit_erc20_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let authentic_locker = [0xaa; 20]; // Default Mainnet canonical locker
+        let fake_locker = [0x77; 20];
+        let token_addr = [0x11; 20];
+        let depositor = [0x22; 20];
+        let recipient = [0x33; 32];
+        let amount = U256::from(500_000u64);
+        let nonce = 1u64;
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_erc20_proof(
+            Address::from(authentic_locker),
+            Address::from(token_addr),
+            Address::from(depositor),
+            recipient,
+            amount,
+            nonce,
+        );
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: [0x88; 32],
+            current_receipts_root: receipts_root.0,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::Erc20Deposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract: Address::from(authentic_locker),
+                token_contract: Address::from(token_addr),
+                sender: Address::from(depositor),
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        // 1. Zero address expected_deposit_contract strictly rejected (no bypass)
+        let zero_addr_args = AtomicErc20ClaimArgsU256 {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_deposit_contract: [0u8; 20],
+            expected_token_contract: token_addr,
+            expected_sender: Some(depositor),
+            recipient,
+            min_amount: U256::from(100u64),
+        };
+        let err_zero = ledger.mint_deposit_atomic_u256(zero_addr_args, &mut nullifiers);
+        assert_eq!(err_zero, Err(ReceiverError::DepositBackingRequired));
+
+        // 2. Caller-supplied fake expected locker rejected against program-owned configuration
+        let fake_args = AtomicErc20ClaimArgsU256 {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_deposit_contract: fake_locker,
+            expected_token_contract: token_addr,
+            expected_sender: Some(depositor),
+            recipient,
+            min_amount: U256::from(100u64),
+        };
+        let err_fake = ledger.mint_deposit_atomic_u256(fake_args, &mut nullifiers);
+        assert_eq!(
+            err_fake,
+            Err(ReceiverError::DepositContractMismatch {
+                expected: authentic_locker,
+                actual: fake_locker,
+            })
+        );
+    }
+
+    #[test]
+    fn test_erc20_mint_deposit_atomic_enforces_token_allowlist() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_deposit_erc20_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let authentic_locker = [0xaa; 20];
+        let allowed_token = [0x11; 20];
+        let forbidden_token = [0x99; 20];
+        let depositor = [0x22; 20];
+        let recipient = [0x33; 32];
+        let amount = U256::from(500_000u64);
+        let nonce = 1u64;
+
+        // Configure allowlist: only allowed_token is permitted on Mainnet
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, allowed_token);
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_erc20_proof(
+            Address::from(authentic_locker),
+            Address::from(forbidden_token),
+            Address::from(depositor),
+            recipient,
+            amount,
+            nonce,
+        );
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: [0x88; 32],
+            current_receipts_root: receipts_root.0,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::Erc20Deposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract: Address::from(authentic_locker),
+                token_contract: Address::from(forbidden_token),
+                sender: Address::from(depositor),
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let forbidden_args = AtomicErc20ClaimArgsU256 {
+            instance,
+            header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof,
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_deposit_contract: authentic_locker,
+            expected_token_contract: forbidden_token,
+            expected_sender: Some(depositor),
+            recipient,
+            min_amount: U256::from(100u64),
+        };
+
+        let err = ledger.mint_deposit_atomic_u256(forbidden_args, &mut nullifiers);
+        assert_eq!(
+            err,
+            Err(ReceiverError::TokenNotAllowed(
+                forbidden_token,
+                ETH_MAINNET_CHAIN_ID
+            ))
+        );
+        assert_eq!(ledger.get_balance(&forbidden_token, &recipient), 0);
     }
 }

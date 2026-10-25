@@ -15,7 +15,7 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 224 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 229 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the full Two-Way Bridge integration test suite
@@ -72,16 +72,16 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Direct Consumer Fact Derivation (`mosoo-core/src/inclusion.rs`, `verifier.rs`)**:
   `handle_attest_state` extracts transfer and deposit event parameters directly from verified MPT receipt proofs. Emits `StatementBinding::Erc20Transfer` (token, sender, recipient, amount) and `StatementBinding::NativeEthDeposit` (vault, sender, recipient, amount) directly into `VerifiedStatement` nullifiers. Consuming contracts verify bound parameters and derive mints directly from verified values.
 
-- **Weak-Subjectivity Bounds & Recovery**:
-  Enforces 1,728,000 slot (~240 days bound, 14–30 days operational) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Provides `handle_recover_instance` to re-anchor stalled instances after consensus network partitions without breaking consumer compatibility.
+- **Weak-Subjectivity Bounds & Instance Immutability**:
+  Enforces 1,728,000 slot (~240 days bound, 14–30 days operational) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Per ADR-004, instances are strictly immutable and never rewritten in place. Stalled instances after network partitions are retired and replaced with fresh instances initialized via `bootstrap_instance` with `verify_anchored_checkpoint`.
 
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
-- **Complete Two-Way Bridge & Ethereum Locker (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
-- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
+- **Two-Way Bridge & Asymmetric Trust Architecture (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Inbound bridging (Ethereum -> LEZ) is 100% trustless zkVM consensus and MPT state verification (RFP-021 target); Outbound settlement (LEZ -> Ethereum) is witness-attested via an M-of-N multisig committee with rolling daily limits, 24h timelock for large withdrawals, and Guardian cancellation veto (leaving reverse zkVM L1 verification for RFP-022). Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
+- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting both atomic same-transaction verification (`claim_atomic_u256`, `mint_deposit_atomic_u256`) and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **224 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix**: Includes 38 adversarial mutation tests, 10 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 14 daemon tests, 21 light-client tests, 4 sequencer E2E tests, 2 e2e consumer tests, 40 ERC-20 receiver tests, 37 Ether receiver tests, 43 core unit tests, 5 CLI tests, and 3 doc tests.
+- **229 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix**: Includes 38 adversarial mutation tests, 10 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 14 daemon tests, 21 light-client tests, 4 sequencer E2E tests, 2 e2e consumer tests, 42 ERC-20 receiver tests, 38 Ether receiver tests, 43 core unit tests, 5 CLI tests, and 3 doc tests.
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
 
@@ -98,7 +98,7 @@ To ensure absolute transparency regarding what is functioning today versus what 
 
 | Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
 | :--- | :---: | :--- | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (224/224 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (229/229 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
 | **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | M0 (Delivered) | 38 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |

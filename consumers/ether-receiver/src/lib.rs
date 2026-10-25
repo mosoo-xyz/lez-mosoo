@@ -3,9 +3,10 @@ pub use mosoo_core::predicate::derive_eth_deposit_subject_key;
 pub use mosoo_core::types::derive_statement_pda;
 pub use mosoo_core::types::StatementAccount as EtherStatementAccount;
 pub use mosoo_core::types::{
-    is_supported_chain_id, AccountStore, StatementAccount, StatementBinding, VerifiedStatement,
-    ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
+    get_canonical_trusted_locker, is_supported_chain_id, AccountStore, StatementAccount,
+    StatementBinding, TrustedBridgeConfig, VerifiedStatement, ETH_HOLESKY_CHAIN_ID,
+    ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE,
+    PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -74,6 +75,9 @@ pub enum EtherReceiverError {
 
     #[error("deposit backing required: ordinary Ethereum account balance cannot be credited as bridge-minted tokens without escrow lock in MosooLocker")]
     DepositBackingRequired,
+
+    #[error("untrusted chain or locker: chain {0} has no authenticated locker vault configured")]
+    UntrustedLocker(u64),
 }
 
 /// A persistent Program-Derived Account (PDA) nullifier record for Native ETH on Logos Execution Zone.
@@ -837,6 +841,10 @@ pub fn claim_native_eth_deposit(
         return Err(EtherReceiverError::WrongChain(claim.statement.chain_id));
     }
 
+    if claim.expected_deposit_contract == [0u8; 20] {
+        return Err(EtherReceiverError::DepositBackingRequired);
+    }
+
     // Authenticate the attester program identity
     if claim.statement.attester_program_id != MOSOO_PROGRAM_ID {
         return Err(EtherReceiverError::UnauthenticatedAttester);
@@ -1373,17 +1381,46 @@ pub struct BurnReceipt {
 
 /// The state ledger for `mETH` synthetic ether on LEZ, tracking user balances,
 /// total supply, and emitted burn receipts.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MethLedger {
     accounts: HashMap<[u8; 32], MethAccount>,
     pub total_supply_wei: u128,
     pub total_burned_wei: u128,
     burn_receipts: HashMap<[u8; 32], BurnReceipt>,
+    /// Authenticated program-owned bridge configuration (trusted lockers per chain)
+    pub config: TrustedBridgeConfig,
+}
+
+impl Default for MethLedger {
+    fn default() -> Self {
+        Self {
+            accounts: HashMap::new(),
+            total_supply_wei: 0,
+            total_burned_wei: 0,
+            burn_receipts: HashMap::new(),
+            config: TrustedBridgeConfig::canonical(),
+        }
+    }
 }
 
 impl MethLedger {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Registers or updates the trusted locker contract for a given chain ID in the ledger's configuration.
+    pub fn register_trusted_locker(&mut self, chain_id: u64, locker: [u8; 20]) -> bool {
+        self.config.register_trusted_locker(chain_id, locker)
+    }
+
+    /// Returns the trusted locker contract for a given chain ID from the ledger's configuration.
+    pub fn get_trusted_locker(&self, chain_id: u64) -> Option<[u8; 20]> {
+        self.config.get_trusted_locker(chain_id)
+    }
+
+    /// Checks if candidate address matches the configured trusted locker contract for a chain ID.
+    pub fn is_trusted_locker(&self, chain_id: u64, candidate: &[u8; 20]) -> bool {
+        self.config.is_trusted_locker(chain_id, candidate)
     }
 
     pub fn get_balance(&self, owner: &[u8; 32]) -> u128 {
@@ -1395,8 +1432,14 @@ impl MethLedger {
     }
 
     /// Mint synthetic `mETH` upon verification of a native ETH deposit to `MosooLocker.sol`.
+    ///
+    /// # Security Warning
+    /// This is a legacy helper that processes an in-memory `VerifiedStatement`. In-memory statements
+    /// can be fabricated by callers if exposed as an unauthenticated entrypoint.
+    /// For production LEZ bridging, always invoke [`MethLedger::mint_meth_atomic`] (atomic in-guest verification)
+    /// or [`MethLedger::mint_deposit_authenticated_pda_u256`] (on-chain StatementAccount PDA verification).
     #[deprecated(
-        note = "In-memory VerifiedStatement can be forged. Use `mint_meth_atomic` for in-guest atomic execution or `mint_deposit_authenticated_pda_u256` for on-chain StatementAccount PDA verification"
+        note = "Legacy test helper: In-memory VerifiedStatement can be forged. Use `mint_meth_atomic` or `mint_deposit_authenticated_pda_u256` in production"
     )]
     pub fn mint_meth(
         &mut self,
@@ -1451,6 +1494,22 @@ impl MethLedger {
             return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
         }
 
+        if args.expected_address == [0u8; 20] {
+            return Err(EtherReceiverError::DepositBackingRequired);
+        }
+
+        let trusted_locker = self
+            .config
+            .get_trusted_locker(args.instance.chain_id)
+            .ok_or(EtherReceiverError::UntrustedLocker(args.instance.chain_id))?;
+
+        if args.expected_address != trusted_locker {
+            return Err(EtherReceiverError::ContractMismatch {
+                expected: trusted_locker,
+                actual: args.expected_address,
+            });
+        }
+
         let attest_args = mosoo_core::verifier::AttestStateArgs {
             instance: args.instance,
             header: args.header,
@@ -1487,9 +1546,9 @@ impl MethLedger {
             }
         };
 
-        if deposit_contract != args.expected_address {
+        if deposit_contract != trusted_locker {
             return Err(EtherReceiverError::ContractMismatch {
-                expected: args.expected_address,
+                expected: trusted_locker,
                 actual: deposit_contract,
             });
         }
@@ -1571,6 +1630,23 @@ impl MethLedger {
             return Err(EtherReceiverError::UnauthenticatedAttester);
         }
 
+        if expected_deposit_contract == [0u8; 20] {
+            return Err(EtherReceiverError::DepositBackingRequired);
+        }
+
+        let chain_id = statement_account.statement.chain_id;
+        let trusted_locker = self
+            .config
+            .get_trusted_locker(chain_id)
+            .ok_or(EtherReceiverError::UntrustedLocker(chain_id))?;
+
+        if expected_deposit_contract != trusted_locker {
+            return Err(EtherReceiverError::ContractMismatch {
+                expected: trusted_locker,
+                actual: expected_deposit_contract,
+            });
+        }
+
         let (deposit_contract, recipient) = match &statement_account.statement.binding {
             StatementBinding::NativeEthDeposit {
                 deposit_contract,
@@ -1584,9 +1660,9 @@ impl MethLedger {
             }
         };
 
-        if expected_deposit_contract != [0u8; 20] && deposit_contract != expected_deposit_contract {
+        if deposit_contract != trusted_locker {
             return Err(EtherReceiverError::ContractMismatch {
-                expected: expected_deposit_contract,
+                expected: trusted_locker,
                 actual: deposit_contract,
             });
         }
@@ -2935,6 +3011,113 @@ mod tests {
     }
 
     #[test]
+    fn test_meth_ledger_mint_atomic_rejects_zero_address_and_untrusted_locker() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_deposit_eth_canonical_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let authentic_locker = [0xaa; 20]; // Default Mainnet canonical locker
+        let fake_locker = [0x77; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let amount_wei = U256::from(5_000_000_000_000_000_000u64); // 5 ETH
+        let nonce = 1u64;
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_eth_canonical_proof(
+            Address::from(authentic_locker),
+            Address::from(sender),
+            recipient,
+            amount_wei,
+            nonce,
+        );
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: [0x88; 32],
+            current_receipts_root: receipts_root.0,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::NativeEthDeposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract: Address::from(authentic_locker),
+                sender: Address::from(sender),
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        // 1. Zero address expected_address strictly rejected (no bypass)
+        let zero_args = AtomicEtherClaimArgs {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_address: [0u8; 20],
+            recipient,
+            min_wei: 1_000_000,
+        };
+        let err_zero = ledger.mint_meth_atomic(zero_args, &mut nullifiers);
+        assert_eq!(err_zero, Err(EtherReceiverError::DepositBackingRequired));
+
+        // 2. Caller-supplied fake expected locker rejected against program-owned configuration
+        let fake_args = AtomicEtherClaimArgs {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_address: fake_locker,
+            recipient,
+            min_wei: 1_000_000,
+        };
+        let err_fake = ledger.mint_meth_atomic(fake_args, &mut nullifiers);
+        assert_eq!(
+            err_fake,
+            Err(EtherReceiverError::ContractMismatch {
+                expected: authentic_locker,
+                actual: fake_locker,
+            })
+        );
+    }
+
+    #[test]
     fn test_derive_burn_id_deterministic() {
         let id1 = derive_burn_id(1, &[0x11; 32], &[0x22; 20], 1_000_000, 1, 100);
         let id2 = derive_burn_id(1, &[0x11; 32], &[0x22; 20], 1_000_000, 1, 100);
@@ -3174,8 +3357,9 @@ mod tests {
     fn test_meth_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected() {
         let mut ledger = MethLedger::new();
         let mut nullifiers = EtherNullifierSet::new();
-
         let deposit_contract = [0x11; 20];
+        ledger.register_trusted_locker(ETH_SEPOLIA_CHAIN_ID, deposit_contract);
+
         let sender = [0x22; 20];
         let recipient = [0x33; 32];
         let block_hash = [0x44; 32];
@@ -3232,15 +3416,20 @@ mod tests {
         );
         assert_eq!(err, Err(EtherReceiverError::UnauthenticatedAttester));
 
-        // 2. Mismatched deposit vault rejected
+        // 2. Zero address bypass strictly rejected
         let authentic = StatementAccount::new_authentic(statement);
+        let zero_err =
+            ledger.mint_deposit_authenticated_pda_u256(&authentic, [0u8; 20], &mut nullifiers);
+        assert_eq!(zero_err, Err(EtherReceiverError::DepositBackingRequired));
+
+        // 3. Mismatched deposit vault rejected
         let mismatch =
             ledger.mint_deposit_authenticated_pda_u256(&authentic, [0xee; 20], &mut nullifiers);
         assert_eq!(
             mismatch,
             Err(EtherReceiverError::ContractMismatch {
-                expected: [0xee; 20],
-                actual: deposit_contract,
+                expected: deposit_contract,
+                actual: [0xee; 20],
             })
         );
 

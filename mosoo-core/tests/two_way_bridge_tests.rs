@@ -409,6 +409,7 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     // 1. Initialize Ethereum Locker & LEZ Ledger
     let mut eth_locker = MockEthereumLocker::new(locker_addr);
     let mut lez_ledger = MethLedger::new();
+    lez_ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, locker_addr);
     let mut lez_nullifiers = EtherNullifierSet::new();
 
     // 2. User locks 10 ETH on Ethereum
@@ -562,6 +563,7 @@ fn test_two_way_bridge_adversarial_tampered_burn_id_rejected() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
     let locker_addr = [0x11; 20];
     let usdc_token = [0xA0; 20];

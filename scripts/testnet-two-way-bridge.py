@@ -129,6 +129,7 @@ def main():
     parser.add_argument("--eth-rpc", default=None, help="Ethereum L1 JSON-RPC URL (Sepolia or Mainnet)")
     parser.add_argument("--chain-id", type=int, default=11155111, help="Ethereum Chain ID (1 for Mainnet, 11155111 for Sepolia, etc.)")
     parser.add_argument("--locker", default=None, help="Ethereum MosooLocker contract address (0x...)")
+    parser.add_argument("--deposit-tx", default=None, help="Transaction hash of an on-chain deposit event (DepositETH/DepositERC20) on Ethereum/Sepolia")
     parser.add_argument("--private-key", default=None, help="Optional deployer/tester private key for live on-chain interaction")
     args = parser.parse_args()
 
@@ -276,12 +277,55 @@ def main():
                 print("      * Production Path: Invoke addAttester() and setQuorum(2) to transition to 2-of-3 multisig.")
         except Exception as e:
             print(f"  [-] Warning: Could not query contract on-chain state: {e}")
+
     eth_depositor = b"\x22" * 20
     alice_lez = b"\xaa" * 32
     deposit_amount_eth = 10
     deposit_wei = deposit_amount_eth * 10**18
     deposit_nonce = 1
     deposit_slot = 10_500_000
+
+    topic_deposit_eth = "0x" + keccak256(b"DepositETH(address,bytes32,uint256,uint64)").hex()
+    topic_deposit_erc20 = "0x" + keccak256(b"DepositERC20(address,address,bytes32,uint256,uint64)").hex()
+
+    if args.deposit_tx and args.mode == "live" and eth_rpc:
+        try:
+            dep_rec = call_rpc(eth_rpc, "eth_getTransactionReceipt", [args.deposit_tx]).get("result")
+            if dep_rec and dep_rec.get("status") == "0x1":
+                found_event = False
+                for log in dep_rec.get("logs", []):
+                    log_contract = log.get("address", "").lower()
+                    topics = log.get("topics", [])
+                    if log_contract == f"0x{locker_address.hex()}".lower() and topics:
+                        if topics[0].lower() == topic_deposit_eth.lower():
+                            eth_depositor = bytes.fromhex(topics[1][-40:])
+                            alice_lez = bytes.fromhex(topics[2][2:])
+                            deposit_nonce = int(topics[3], 16)
+                            data_hex = log.get("data", "0x")[2:]
+                            deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
+                            deposit_amount_eth = deposit_wei / 10**18
+                            found_event = True
+                            print(f"  [+] Live On-Chain DepositETH Log Verified from Tx: {args.deposit_tx}")
+                            break
+                        elif topics[0].lower() == topic_deposit_erc20.lower():
+                            eth_depositor = bytes.fromhex(topics[2][-40:])
+                            alice_lez = bytes.fromhex(topics[3][2:])
+                            data_hex = log.get("data", "0x")[2:]
+                            deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
+                            deposit_nonce = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 1
+                            deposit_amount_eth = deposit_wei / 10**18
+                            found_event = True
+                            print(f"  [+] Live On-Chain DepositERC20 Log Verified from Tx: {args.deposit_tx}")
+                            break
+                if not found_event:
+                    print(f"  [-] Warning: No DepositETH or DepositERC20 event found in tx {args.deposit_tx} for contract 0x{locker_address.hex()}")
+            else:
+                print(f"  [-] Warning: Could not verify receipt for --deposit-tx {args.deposit_tx}")
+        except Exception as e:
+            print(f"  [-] Warning: Error fetching deposit transaction receipt: {e}")
+    elif args.mode == "live":
+        print("  [+] Note: Dual-Mode Pipeline - live on-chain contract queried; using canonical parameters for math verification.")
+        print("      (Pass --deposit-tx <TX_HASH> to bind and verify a live on-chain deposit event receipt)")
 
     print(f"  [+] Contract       : MosooLocker.sol (0x{locker_address.hex()})")
     print(f"  [+] Depositor      : 0x{eth_depositor.hex()}")
