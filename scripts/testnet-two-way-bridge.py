@@ -129,7 +129,13 @@ def main():
     parser.add_argument("--eth-rpc", default=None, help="Ethereum L1 JSON-RPC URL (Sepolia or Mainnet)")
     parser.add_argument("--chain-id", type=int, default=1, help="Ethereum Chain ID (1 for Mainnet, 11155111 for Sepolia, etc.)")
     parser.add_argument("--locker", default=None, help="Ethereum MosooLocker contract address (0x...)")
+    parser.add_argument("--private-key", default=None, help="Optional deployer/tester private key for live on-chain interaction")
     args = parser.parse_args()
+
+    # Default Ethereum RPC for Sepolia if not provided
+    eth_rpc = args.eth_rpc
+    if not eth_rpc and args.chain_id == 11155111:
+        eth_rpc = "https://ethereum-sepolia-rpc.publicnode.com"
 
     print("=" * 80)
     if args.mode == "live":
@@ -165,9 +171,9 @@ def main():
             print("  [!] In strict live mode, failing immediately with non-zero exit code.")
             sys.exit(1)
 
-        if args.eth_rpc:
+        if eth_rpc:
             try:
-                eth_resp = call_rpc(args.eth_rpc, "eth_blockNumber", [])
+                eth_resp = call_rpc(eth_rpc, "eth_blockNumber", [])
                 if "result" in eth_resp:
                     eth_height = int(eth_resp["result"], 16)
                     print(f"  [+] Connected to live Ethereum RPC at block height: {eth_height}")
@@ -175,7 +181,7 @@ def main():
                     print(f"  [-] Fatal: Ethereum RPC returned unexpected payload: {eth_resp}")
                     sys.exit(1)
 
-                chain_resp = call_rpc(args.eth_rpc, "eth_chainId", [])
+                chain_resp = call_rpc(eth_rpc, "eth_chainId", [])
                 if "result" in chain_resp:
                     rpc_chain_id = int(chain_resp["result"], 16)
                     print(f"  [+] Live Ethereum RPC Chain ID: {rpc_chain_id}")
@@ -183,7 +189,7 @@ def main():
                         print(f"  [-] Fatal: Specified --chain-id ({args.chain_id}) does not match RPC ({rpc_chain_id})")
                         sys.exit(1)
             except Exception as e:
-                print(f"  [-] Fatal: Failed connecting to Ethereum RPC at {args.eth_rpc}: {e}")
+                print(f"  [-] Fatal: Failed connecting to Ethereum RPC at {eth_rpc}: {e}")
                 sys.exit(1)
     else:
         print("  [+] Mode: Local Verified Harness (Mock Sequencer State)")
@@ -206,6 +212,24 @@ def main():
             locker_address = b"\x11" * 20
     else:
         locker_address = b"\x11" * 20
+
+    if args.mode == "live" and eth_rpc:
+        try:
+            code_resp = call_rpc(eth_rpc, "eth_getCode", [f"0x{locker_address.hex()}", "latest"])
+            code = code_resp.get("result", "0x")
+            if len(code) <= 2:
+                print(f"  [-] Fatal: No contract bytecode found at 0x{locker_address.hex()} on Ethereum RPC!")
+                sys.exit(1)
+            print(f"  [+] Live Contract Bytecode: Verified on Ethereum ({len(code) // 2} bytes)")
+
+            # Query owner (0x8da5cb5b)
+            owner_resp = call_rpc(eth_rpc, "eth_call", [{"to": f"0x{locker_address.hex()}", "data": "0x8da5cb5b"}, "latest"])
+            owner_raw = owner_resp.get("result", "")
+            if len(owner_raw) >= 66:
+                live_owner = "0x" + owner_raw[-40:]
+                print(f"  [+] Live Contract Owner   : {live_owner}")
+        except Exception as e:
+            print(f"  [-] Warning: Could not query contract on-chain state: {e}")
     eth_depositor = b"\x22" * 20
     alice_lez = b"\xaa" * 32
     deposit_amount_eth = 10

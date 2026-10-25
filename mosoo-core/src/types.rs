@@ -7,6 +7,13 @@ pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
 pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const ETH_HOLESKY_CHAIN_ID: u64 = 17_000;
 
+/// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky).
+pub const fn is_supported_chain_id(chain_id: u64) -> bool {
+    chain_id == ETH_MAINNET_CHAIN_ID
+        || chain_id == ETH_SEPOLIA_CHAIN_ID
+        || chain_id == ETH_HOLESKY_CHAIN_ID
+}
+
 /// A single beacon block header (Ethereum Altair / Bellatrix+).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BeaconBlockHeader {

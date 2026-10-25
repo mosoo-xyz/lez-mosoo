@@ -10,16 +10,15 @@
 //! 7. Ethereum `MosooLocker.sol:unlockETH` verification & fund release
 //! 8. Cross-chain invariant and replay resistance enforcement
 
+use alloy_primitives::U256;
 use erc20_receiver::{
     derive_burn_erc20_id, Erc20Ledger, Erc20TransferClaim, NullifierSet as Erc20NullifierSet,
     ReceiverError,
 };
-use ether_receiver::{
-    derive_burn_id, EtherNullifierSet, EtherReceiverError, MethLedger, NativeEthDepositClaim,
-};
+use ether_receiver::{derive_burn_id, EtherNullifierSet, EtherReceiverError, MethLedger};
 use mosoo_core::predicate::{derive_erc20_transfer_subject_key, derive_eth_deposit_subject_key};
 use mosoo_core::types::{
-    StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
+    StatementAccount, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
     PROOF_TYPE_ERC20_TRANSFER, PROOF_TYPE_ETH_DEPOSIT,
 };
 use std::collections::HashMap;
@@ -457,17 +456,12 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     };
     statement.statement_id = statement.derive_canonical_id();
 
-    let claim = NativeEthDepositClaim {
-        statement,
-        expected_deposit_contract: locker_addr,
-        sender: eth_sender,
-        recipient: alice_lez,
-        min_wei: 1_000_000_000_000_000_000,
-    };
-
-    // 4. Mint 10 mETH on LEZ
-    let minted_balance = lez_ledger.mint_meth(&claim, &mut lez_nullifiers).unwrap();
-    assert_eq!(minted_balance, deposit_amount);
+    // 4. Mint 10 mETH on LEZ via authentic on-chain StatementAccount PDA
+    let statement_account = StatementAccount::new_authentic(statement);
+    let minted_u256 = lez_ledger
+        .mint_deposit_authenticated_pda_u256(&statement_account, &mut lez_nullifiers)
+        .unwrap();
+    assert_eq!(minted_u256, U256::from(deposit_amount));
     assert_eq!(lez_ledger.get_balance(&alice_lez), deposit_amount);
     assert_eq!(lez_ledger.total_supply_wei, deposit_amount);
 
@@ -534,7 +528,8 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     assert_eq!(replay_unlock.unwrap_err(), "BurnAlreadyExecuted");
 
     // 10. Replay Attack Prevention on LEZ: Repeating the same deposit mint is strictly rejected
-    let replay_mint = lez_ledger.mint_meth(&claim, &mut lez_nullifiers);
+    let replay_mint =
+        lez_ledger.mint_deposit_authenticated_pda_u256(&statement_account, &mut lez_nullifiers);
     assert!(matches!(
         replay_mint,
         Err(EtherReceiverError::AlreadyClaimed)

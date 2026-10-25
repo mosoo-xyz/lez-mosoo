@@ -2,9 +2,10 @@ use alloy_primitives::{keccak256, U256};
 pub use mosoo_core::predicate::derive_eth_deposit_subject_key;
 pub use mosoo_core::types::derive_statement_pda;
 pub use mosoo_core::types::StatementAccount as EtherStatementAccount;
-use mosoo_core::types::{
-    AccountStore, StatementAccount, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID,
-    MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
+pub use mosoo_core::types::{
+    is_supported_chain_id, AccountStore, StatementAccount, StatementBinding, VerifiedStatement,
+    ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -360,7 +361,7 @@ pub fn claim_ether_u256(
     nullifiers: &mut EtherNullifierSet,
     min_wei: U256,
 ) -> Result<U256, EtherReceiverError> {
-    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(statement.chain_id) {
         return Err(EtherReceiverError::WrongChain(statement.chain_id));
     }
     if statement.attester_program_id != MOSOO_PROGRAM_ID {
@@ -498,7 +499,7 @@ pub fn claim_ether_with_store<S: AccountStore>(
     min_wei: u64,
     current_slot: u64,
 ) -> Result<u64, EtherReceiverError> {
-    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(statement.chain_id) {
         return Err(EtherReceiverError::WrongChain(statement.chain_id));
     }
 
@@ -654,7 +655,7 @@ pub fn claim_ether_with_store_u256<S: AccountStore>(
     min_wei: U256,
     current_slot: u64,
 ) -> Result<U256, EtherReceiverError> {
-    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(statement.chain_id) {
         return Err(EtherReceiverError::WrongChain(statement.chain_id));
     }
     if statement.attester_program_id != MOSOO_PROGRAM_ID {
@@ -832,7 +833,7 @@ pub fn claim_native_eth_deposit(
     claim: &NativeEthDepositClaim,
     nullifiers: &mut EtherNullifierSet,
 ) -> Result<u64, EtherReceiverError> {
-    if claim.statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(claim.statement.chain_id) {
         return Err(EtherReceiverError::WrongChain(claim.statement.chain_id));
     }
 
@@ -990,7 +991,7 @@ pub fn claim_ether_atomic_u256(
     args: AtomicEtherClaimArgsU256,
     nullifiers: &mut EtherNullifierSet,
 ) -> Result<U256, EtherReceiverError> {
-    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(args.instance.chain_id) {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
 
@@ -1105,7 +1106,7 @@ pub struct EthDepositReceipt {
     pub deposit_contract: [u8; 20],
     pub sender: [u8; 20],
     pub recipient: [u8; 32],
-    pub amount_wei: u64,
+    pub amount_wei: U256,
     pub execution_block_hash: [u8; 32],
     pub slot: u64,
     pub tx_index: u64,
@@ -1130,7 +1131,7 @@ pub fn claim_account_balance_atomic(
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
 ) -> Result<AccountBalanceAttestation, EtherReceiverError> {
-    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(args.instance.chain_id) {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
 
@@ -1216,7 +1217,7 @@ pub fn claim_native_eth_deposit_atomic(
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
 ) -> Result<EthDepositReceipt, EtherReceiverError> {
-    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(args.instance.chain_id) {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
 
@@ -1285,13 +1286,11 @@ pub fn claim_native_eth_deposit_atomic(
             }
         };
 
-    let verified_wei = statement
-        .value_as_u64_checked()
-        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
-    if verified_wei < args.min_wei {
-        return Err(EtherReceiverError::BalanceTooLow {
-            actual: verified_wei as u128,
-            required: args.min_wei as u128,
+    let verified_wei = statement.value_as_u256();
+    if verified_wei < U256::from(args.min_wei) {
+        return Err(EtherReceiverError::BalanceTooLowU256 {
+            actual: verified_wei,
+            required: U256::from(args.min_wei),
         });
     }
 
@@ -1396,6 +1395,9 @@ impl MethLedger {
     }
 
     /// Mint synthetic `mETH` upon verification of a native ETH deposit to `MosooLocker.sol`.
+    #[deprecated(
+        note = "In-memory VerifiedStatement can be forged. Use `mint_meth_atomic` for in-guest atomic execution or `mint_deposit_authenticated_pda_u256` for on-chain StatementAccount PDA verification"
+    )]
     pub fn mint_meth(
         &mut self,
         claim: &NativeEthDepositClaim,
@@ -1445,7 +1447,10 @@ impl MethLedger {
 
         let deposit_receipt = claim_native_eth_deposit_atomic(args, nullifiers)?;
         let recipient = deposit_receipt.recipient;
-        let amount = deposit_receipt.amount_wei as u128;
+        let amount = deposit_receipt
+            .amount_wei
+            .try_into()
+            .map_err(|_| EtherReceiverError::Overflow)?;
 
         let entry = self
             .accounts
@@ -1469,6 +1474,50 @@ impl MethLedger {
             .ok_or(EtherReceiverError::Overflow)?;
 
         Ok(entry.balance_wei)
+    }
+
+    /// Mint synthetic `mETH` from an authentic on-chain StatementAccount PDA.
+    pub fn mint_deposit_authenticated_pda_u256(
+        &mut self,
+        statement_account: &StatementAccount,
+        nullifiers: &mut EtherNullifierSet,
+    ) -> Result<U256, EtherReceiverError> {
+        let amount_u256 =
+            claim_ether_authenticated_pda_u256(statement_account, nullifiers, U256::ZERO)?;
+        let recipient = match &statement_account.statement.binding {
+            StatementBinding::NativeEthDeposit { recipient, .. } => *recipient,
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement_account.statement.proof_type_tag,
+                ))
+            }
+        };
+        let amount_u128: u128 = amount_u256
+            .try_into()
+            .map_err(|_| EtherReceiverError::Overflow)?;
+
+        let entry = self
+            .accounts
+            .entry(recipient)
+            .or_insert_with(|| MethAccount {
+                owner: recipient,
+                balance_wei: 0,
+                deposit_count: 0,
+                burn_count: 0,
+            });
+
+        entry.balance_wei = entry
+            .balance_wei
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        self.total_supply_wei = self
+            .total_supply_wei
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        Ok(amount_u256)
     }
 
     /// Transfer synthetic `mETH` between LEZ accounts.
@@ -1711,6 +1760,16 @@ mod tests {
         let statement = make_statement(11_155_111, true, 0x30, 100, MOSOO_PROGRAM_ID);
         let result = claim_ether(&statement, &mut nullifiers, 100);
         assert!(matches!(result, Err(EtherReceiverError::WrongChain(_))));
+    }
+
+    #[test]
+    fn test_sepolia_chain_claim_succeeds() {
+        let mut nullifiers = EtherNullifierSet::new();
+        let statement = make_statement(ETH_SEPOLIA_CHAIN_ID, true, 0x30, 100, MOSOO_PROGRAM_ID);
+        let account = StatementAccount::new_authentic(statement);
+        let result =
+            claim_ether_authenticated_pda_u256(&account, &mut nullifiers, U256::from(100u64));
+        assert_eq!(result, Ok(U256::from(100u64)));
     }
 
     #[test]
@@ -1991,7 +2050,7 @@ mod tests {
     fn test_native_eth_deposit_wrong_chain_rejected() {
         let mut nullifiers = EtherNullifierSet::new();
         let statement = make_deposit_statement(
-            11_155_111, // Sepolia instead of Mainnet
+            999_999, // Unsupported chain ID
             true,
             0x59,
             1000,
@@ -2008,7 +2067,31 @@ mod tests {
             min_wei: 1000,
         };
         let result = claim_native_eth_deposit(&deposit_claim, &mut nullifiers);
-        assert_eq!(result, Err(EtherReceiverError::WrongChain(11_155_111)));
+        assert_eq!(result, Err(EtherReceiverError::WrongChain(999_999)));
+    }
+
+    #[test]
+    fn test_native_eth_deposit_sepolia_succeeds() {
+        let mut nullifiers = EtherNullifierSet::new();
+        let statement = make_deposit_statement(
+            ETH_SEPOLIA_CHAIN_ID, // Sepolia testnet
+            true,
+            0x59,
+            1000,
+            MOSOO_PROGRAM_ID,
+            [0xaa; 20],
+            [0xbb; 20],
+            [0xcc; 32],
+        );
+        let deposit_claim = NativeEthDepositClaim {
+            statement,
+            expected_deposit_contract: [0xaa; 20],
+            sender: [0xbb; 20],
+            recipient: [0xcc; 32],
+            min_wei: 1000,
+        };
+        let result = claim_native_eth_deposit(&deposit_claim, &mut nullifiers);
+        assert_eq!(result, Ok(1000));
     }
 
     #[test]
@@ -2979,5 +3062,77 @@ mod tests {
         )
         .expect_err("Replay claim on statement account must be rejected");
         assert_eq!(replay, EtherReceiverError::AlreadyClaimed);
+    }
+
+    #[test]
+    fn test_meth_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected() {
+        let mut ledger = MethLedger::new();
+        let mut nullifiers = EtherNullifierSet::new();
+
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let block_hash = [0x44; 32];
+        let slot = 10_500_000;
+        let tx_index = 1;
+        let log_index = 0;
+        let amount_wei = U256::from(50_000_000_000_000_000_000u128); // 50 ETH
+
+        let subject_key = derive_eth_deposit_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &deposit_contract,
+            &sender,
+            &recipient,
+        );
+        let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
+            ETH_SEPOLIA_CHAIN_ID,
+            &subject_key,
+            PROOF_TYPE_ETH_DEPOSIT,
+            &amount_wei.to_be_bytes::<32>(),
+        );
+
+        let statement = VerifiedStatement {
+            chain_id: ETH_SEPOLIA_CHAIN_ID,
+            attester_program_id: MOSOO_PROGRAM_ID,
+            statement_id,
+            predicate_holds: true,
+            verified_value: amount_wei.to_be_bytes::<32>(),
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+            binding: StatementBinding::NativeEthDeposit {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            },
+        };
+
+        // 1. Fabricated account rejected
+        let fabricated = StatementAccount {
+            owner: [0xfe; 32],
+            pda_address: [0xdd; 32],
+            statement: statement.clone(),
+        };
+        let err = ledger.mint_deposit_authenticated_pda_u256(&fabricated, &mut nullifiers);
+        assert_eq!(err, Err(EtherReceiverError::UnauthenticatedAttester));
+
+        // 2. Authentic account mints 50 ETH successfully
+        let authentic = StatementAccount::new_authentic(statement);
+        let minted = ledger
+            .mint_deposit_authenticated_pda_u256(&authentic, &mut nullifiers)
+            .expect("Authentic PDA mint must succeed");
+        assert_eq!(minted, amount_wei);
+        assert_eq!(ledger.get_balance(&recipient), amount_wei.to::<u128>());
+        assert_eq!(ledger.total_supply_wei, amount_wei.to::<u128>());
+
+        // 3. Double-mint replay rejected by nullifier
+        let replay = ledger.mint_deposit_authenticated_pda_u256(&authentic, &mut nullifiers);
+        assert_eq!(replay, Err(EtherReceiverError::AlreadyClaimed));
     }
 }

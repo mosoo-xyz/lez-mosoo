@@ -23,13 +23,15 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
 - **Trust Model & Security Guarantees**:
   - **Asymmetric Hybrid Trust Model**:
     - **Inbound (ETH -> LEZ)**: 100% trustless on-chain consensus tracking and MPT receipt inclusion proof verification inside the RISC Zero zkVM on LEZ.
-    - **Outbound (LEZ -> ETH)**: Multi-layered witness attestation with defense-in-depth:
-      1. EIP-712 structured data signing with strict domain separation and contract address binding.
-      2. Replay nullifier registry (`executedBurns[burnId]`).
-      3. Rolling 24-hour daily withdrawal limits (`dailyWithdrawalLimitETH`, `dailyWithdrawalLimitERC20`) bounding maximum outflow velocity.
-      4. Mandatory 24-hour timelock queue for large withdrawals ($\ge 10$ ETH).
-      5. Permanent Guardian & Owner cancellation veto (`cancelledBurns[burnId]`), strictly preventing re-queueing of vetoed withdrawals.
-      6. Inviolable 24-hour timelock on updating `attesterAuthority`.
+    - **Outbound (LEZ -> ETH)**: Multi-layered witness-attested committee settlement with defense-in-depth:
+      1. Multi-signer committee quorum (`unlockETHWithQuorum`, `unlockERC20WithQuorum`) requiring $M$-of-$N$ threshold signatures from authorized committee members.
+      2. EIP-712 structured data signing with strict domain separation and contract address binding.
+      3. Replay nullifier registry (`executedBurns[burnId]`).
+      4. Rolling 24-hour daily withdrawal limits (`dailyWithdrawalLimitETH`, `dailyWithdrawalLimitERC20`) bounding maximum outflow velocity.
+      5. Mandatory 24-hour timelock queue for large withdrawals ($\ge 10$ ETH).
+      6. Permanent Guardian & Owner cancellation veto (`cancelledBurns[burnId]`), strictly preventing re-queueing of vetoed withdrawals.
+      7. Inviolable 24-hour timelock on updating `attesterAuthority` or modifying committee quorum.
+    - **Trust Boundary Note**: Outbound withdrawals rely on the threshold attester committee ($M$-of-$N$ quorum). Verifying LEZ consensus and zk-state proofs directly on Ethereum L1 without attesters is slated for Milestone M2 (which requires deploying an on-chain zk-SNARK / Groth16 verifier contract on Ethereum).
   - `ReentrancyGuard` protection against recursive calls across deposit and unlock flows.
   - Safe token transfer checks: strict contract existence checks (`token.code.length > 0`) preventing phantom transfers on EOAs.
   - Fee-on-transfer protection via before/after balance differentials on `depositERC20`.

@@ -79,7 +79,7 @@ Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **215 automated tests** (212 unit/integration + 3 doc tests) passing with 0 warnings:
+The repository test suite consists of **219 automated tests** (216 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
@@ -104,7 +104,7 @@ The repository test suite consists of **215 automated tests** (212 unit/integrat
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 215 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 219 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.

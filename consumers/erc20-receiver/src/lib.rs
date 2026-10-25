@@ -24,9 +24,10 @@ pub use mosoo_core::predicate::{
     derive_erc20_deposit_subject_key, derive_erc20_transfer_subject_key,
 };
 pub use mosoo_core::types::derive_statement_pda;
-use mosoo_core::types::{
-    AccountStore, StatementAccount, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID,
-    MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
+pub use mosoo_core::types::{
+    is_supported_chain_id, AccountStore, StatementAccount, StatementBinding, VerifiedStatement,
+    ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -399,7 +400,7 @@ pub fn claim_u256(
     nullifiers: &mut NullifierSet,
     min_amount: U256,
 ) -> Result<U256, ReceiverError> {
-    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(statement.chain_id) {
         return Err(ReceiverError::WrongChain(statement.chain_id));
     }
     if statement.attester_program_id != MOSOO_PROGRAM_ID {
@@ -537,7 +538,7 @@ pub fn claim_with_store<S: AccountStore>(
     min_amount: u64,
     current_slot: u64,
 ) -> Result<u64, ReceiverError> {
-    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(statement.chain_id) {
         return Err(ReceiverError::WrongChain(statement.chain_id));
     }
 
@@ -679,7 +680,7 @@ pub fn claim_with_store_u256<S: AccountStore>(
     min_amount: U256,
     current_slot: u64,
 ) -> Result<U256, ReceiverError> {
-    if statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(statement.chain_id) {
         return Err(ReceiverError::WrongChain(statement.chain_id));
     }
 
@@ -849,7 +850,7 @@ pub fn claim_erc20_transfer(
     claim: &Erc20TransferClaim,
     nullifiers: &mut NullifierSet,
 ) -> Result<u64, ReceiverError> {
-    if claim.statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(claim.statement.chain_id) {
         return Err(ReceiverError::WrongChain(claim.statement.chain_id));
     }
 
@@ -973,7 +974,7 @@ pub fn claim_erc20_deposit(
     claim: &Erc20DepositClaim,
     nullifiers: &mut NullifierSet,
 ) -> Result<u128, ReceiverError> {
-    if claim.statement.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(claim.statement.chain_id) {
         return Err(ReceiverError::WrongChain(claim.statement.chain_id));
     }
     if claim.statement.attester_program_id != MOSOO_PROGRAM_ID {
@@ -1133,7 +1134,7 @@ pub fn claim_atomic_u256(
     args: AtomicErc20ClaimArgsU256,
     nullifiers: &mut NullifierSet,
 ) -> Result<U256, ReceiverError> {
-    if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
+    if !is_supported_chain_id(args.instance.chain_id) {
         return Err(ReceiverError::WrongChain(args.instance.chain_id));
     }
 
@@ -1180,6 +1181,33 @@ pub fn claim_atomic_u256(
             }
         }
         StatementBinding::Erc20Transfer {
+            token_contract,
+            sender,
+            recipient,
+            ..
+        } => {
+            if *token_contract != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *token_contract,
+                });
+            }
+            if let Some(expected_sender) = args.expected_sender {
+                if *sender != expected_sender {
+                    return Err(ReceiverError::SenderMismatch {
+                        expected: expected_sender,
+                        actual: *sender,
+                    });
+                }
+            }
+            if *recipient != args.recipient {
+                return Err(ReceiverError::RecipientMismatch {
+                    expected: args.recipient,
+                    actual: *recipient,
+                });
+            }
+        }
+        StatementBinding::Erc20Deposit {
             token_contract,
             sender,
             recipient,
@@ -1385,7 +1413,105 @@ impl Erc20Ledger {
         Ok(entry.balance)
     }
 
+    /// Mint synthetic tokens from an in-guest atomic execution proof with full 256-bit validation.
+    pub fn mint_deposit_atomic_u256(
+        &mut self,
+        args: AtomicErc20ClaimArgsU256,
+        nullifiers: &mut NullifierSet,
+    ) -> Result<U256, ReceiverError> {
+        let recipient = args.recipient;
+        let token = args.expected_token_contract;
+        let amount_u256 = claim_atomic_u256(args, nullifiers)?;
+        let amount_u128 = amount_u256.to::<u128>();
+
+        let key = (token, recipient);
+        let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
+            token,
+            owner: recipient,
+            balance: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance = entry
+            .balance
+            .checked_add(amount_u128)
+            .ok_or(ReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        let supply = self.total_supplies.entry(token).or_insert(0);
+        *supply = supply
+            .checked_add(amount_u128)
+            .ok_or(ReceiverError::Overflow)?;
+
+        Ok(amount_u256)
+    }
+
+    /// Mint synthetic tokens from an authentic on-chain StatementAccount PDA.
+    pub fn mint_deposit_authenticated_pda_u256(
+        &mut self,
+        statement_account: &StatementAccount,
+        nullifiers: &mut NullifierSet,
+    ) -> Result<U256, ReceiverError> {
+        if statement_account.owner != MOSOO_PROGRAM_ID {
+            return Err(ReceiverError::UnauthenticatedAttester);
+        }
+        let expected_pda = derive_statement_pda(
+            statement_account.statement.chain_id,
+            &statement_account.statement.statement_id,
+        );
+        if statement_account.pda_address != expected_pda {
+            return Err(ReceiverError::UnauthenticatedAttester);
+        }
+
+        let (token, recipient) = match &statement_account.statement.binding {
+            StatementBinding::Erc20Transfer {
+                token_contract,
+                recipient,
+                ..
+            } => (*token_contract, *recipient),
+            StatementBinding::Erc20Deposit {
+                token_contract,
+                recipient,
+                ..
+            } => (*token_contract, *recipient),
+            _ => {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement_account.statement.proof_type_tag,
+                ))
+            }
+        };
+
+        let amount_u256 = claim_authenticated_pda_u256(statement_account, nullifiers, U256::ZERO)?;
+        let amount_u128 = amount_u256.to::<u128>();
+
+        let key = (token, recipient);
+        let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
+            token,
+            owner: recipient,
+            balance: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance = entry
+            .balance
+            .checked_add(amount_u128)
+            .ok_or(ReceiverError::Overflow)?;
+        entry.deposit_count += 1;
+
+        let supply = self.total_supplies.entry(token).or_insert(0);
+        *supply = supply
+            .checked_add(amount_u128)
+            .ok_or(ReceiverError::Overflow)?;
+
+        Ok(amount_u256)
+    }
+
     /// Mint synthetic tokens upon verification of a canonical DepositERC20 log from MosooLocker.sol.
+    #[deprecated(
+        note = "In-memory VerifiedStatement can be forged. Use `mint_deposit_atomic_u256` for in-guest atomic execution or `mint_deposit_authenticated_pda_u256` for on-chain StatementAccount PDA verification"
+    )]
     pub fn mint_deposit_tokens(
         &mut self,
         claim: &Erc20DepositClaim,
@@ -1652,6 +1778,15 @@ mod tests {
         let statement = make_statement(ETH_SEPOLIA_CHAIN_ID, true, 0x03, 100, MOSOO_PROGRAM_ID);
         let result = claim(&statement, &mut nullifiers, 100);
         assert!(matches!(result, Err(ReceiverError::WrongChain(_))));
+    }
+
+    #[test]
+    fn test_sepolia_chain_claim_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_statement(ETH_SEPOLIA_CHAIN_ID, true, 0x03, 100, MOSOO_PROGRAM_ID);
+        let account = StatementAccount::new_authentic(statement);
+        let result = claim_authenticated_pda_u256(&account, &mut nullifiers, U256::from(100u64));
+        assert_eq!(result, Ok(U256::from(100u64)));
     }
 
     #[test]
@@ -1931,7 +2066,7 @@ mod tests {
     fn test_erc20_transfer_wrong_chain_rejected() {
         let mut nullifiers = NullifierSet::new();
         let statement = make_erc20_statement(
-            ETH_SEPOLIA_CHAIN_ID, // Sepolia instead of Mainnet
+            999_999, // Unsupported chain ID
             true,
             0x10,
             500_000,
@@ -1948,7 +2083,31 @@ mod tests {
             min_amount: 100_000,
         };
         let result = claim_erc20_transfer(&claim, &mut nullifiers);
-        assert_eq!(result, Err(ReceiverError::WrongChain(ETH_SEPOLIA_CHAIN_ID)));
+        assert_eq!(result, Err(ReceiverError::WrongChain(999_999)));
+    }
+
+    #[test]
+    fn test_erc20_transfer_sepolia_succeeds() {
+        let mut nullifiers = NullifierSet::new();
+        let statement = make_erc20_statement(
+            ETH_SEPOLIA_CHAIN_ID, // Sepolia testnet
+            true,
+            0x10,
+            500_000,
+            MOSOO_PROGRAM_ID,
+            [0x11; 20],
+            [0x22; 20],
+            [0x33; 32],
+        );
+        let claim = Erc20TransferClaim {
+            statement,
+            token_contract: [0x11; 20],
+            sender: [0x22; 20],
+            recipient: [0x33; 32],
+            min_amount: 100_000,
+        };
+        let result = claim_erc20_transfer(&claim, &mut nullifiers);
+        assert_eq!(result, Ok(500_000));
     }
 
     #[test]
@@ -2751,6 +2910,47 @@ mod tests {
         assert_eq!(replay, ReceiverError::AlreadyClaimed);
     }
 
-    // Chain IDs used in tests above
-    const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
+    #[test]
+    fn test_erc20_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected() {
+        let mut ledger = Erc20Ledger::new();
+        let mut nullifiers = NullifierSet::new();
+
+        let token = [0x11; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let amount = 1_000_000u128;
+
+        let statement = make_erc20_deposit_statement(
+            ETH_SEPOLIA_CHAIN_ID,
+            true,
+            amount,
+            MOSOO_PROGRAM_ID,
+            [0xaa; 20],
+            token,
+            sender,
+            recipient,
+        );
+
+        // 1. Fabricated account rejected
+        let fabricated = StatementAccount {
+            owner: [0x55; 32],
+            pda_address: derive_statement_pda(statement.chain_id, &statement.statement_id),
+            statement: statement.clone(),
+        };
+        let err = ledger.mint_deposit_authenticated_pda_u256(&fabricated, &mut nullifiers);
+        assert_eq!(err, Err(ReceiverError::UnauthenticatedAttester));
+
+        // 2. Authentic account mints tokens successfully
+        let authentic = StatementAccount::new_authentic(statement);
+        let minted = ledger
+            .mint_deposit_authenticated_pda_u256(&authentic, &mut nullifiers)
+            .expect("Authentic StatementAccount PDA mint must succeed");
+        assert_eq!(minted, U256::from(amount));
+        assert_eq!(ledger.get_balance(&token, &recipient), amount);
+        assert_eq!(ledger.get_total_supply(&token), amount);
+
+        // 3. Double-mint replay rejected
+        let replay = ledger.mint_deposit_authenticated_pda_u256(&authentic, &mut nullifiers);
+        assert_eq!(replay, Err(ReceiverError::AlreadyClaimed));
+    }
 }
