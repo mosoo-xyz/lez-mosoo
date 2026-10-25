@@ -34,3 +34,8 @@ benchmarks/*.json.raw
 
 # Local scratch
 scratch/
+
+# Foundry
+cache/
+out/
+contracts/out/

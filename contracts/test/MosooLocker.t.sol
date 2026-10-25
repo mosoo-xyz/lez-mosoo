@@ -153,7 +153,7 @@ contract MosooLockerTest is Test {
         locker.depositETH{value: 20 ether}(bytes32(uint256(0xAA)));
 
         locker.proposeDailyWithdrawalLimitETH(5 ether);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.dailyLimitETHTimelockUnlock());
         locker.executeDailyWithdrawalLimitETH();
         assertEq(locker.dailyWithdrawalLimitETH(), 5 ether, "daily limit mismatch");
     }
@@ -178,15 +178,15 @@ contract MosooLockerTest is Test {
         address attester3 = vm.addr(attester3Pk);
 
         locker.proposeAddAttester(attester2);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
 
         locker.proposeAddAttester(attester3);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
 
         locker.proposeQuorum(2);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.quorumTimelockUnlock());
         locker.executeQuorum();
 
         assertEq(locker.attesterCount(), 3, "total attesters should be 3");
@@ -298,7 +298,7 @@ contract MosooLockerTest is Test {
         }
 
         // Warp past 2-day timelock delay
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.guardianTimelockUnlock());
         locker.executeGuardian();
         assertEq(locker.guardian(), newGuardian, "guardian update failed");
         assertEq(locker.pendingGuardian(), address(0), "pending guardian not cleared");
@@ -309,12 +309,12 @@ contract MosooLockerTest is Test {
         address attester2 = vm.addr(attester2Pk);
 
         locker.proposeAddAttester(attester2);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
 
         // Rotate authority to attester2
         locker.proposeAttesterAuthority(attester2);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(locker.authorityTimelockUnlock());
         locker.executeAttesterAuthority();
 
         assertEq(locker.attesterAuthority(), attester2, "authority mismatch");
@@ -370,23 +370,23 @@ contract MosooLockerTest is Test {
         address attester3 = vm.addr(attester3Pk);
 
         locker.proposeAddAttester(attester2);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
 
         locker.proposeAddAttester(attester3);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
 
         assertEq(locker.attesterCount(), 3, "initial count should be 3");
 
         locker.proposeQuorum(3);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.quorumTimelockUnlock());
         locker.executeQuorum();
         assertEq(locker.requiredQuorum(), 3, "quorum should be 3");
 
         // Rotate authority to attester2 (who is already in the committee)
         locker.proposeAttesterAuthority(attester2);
-        vm.warp(block.timestamp + 1 days);
+        vm.warp(locker.authorityTimelockUnlock());
         locker.executeAttesterAuthority();
 
         // Old authority (attesterAuthority) was removed, attester2 was already in committee
@@ -445,7 +445,7 @@ contract MosooLockerTest is Test {
         locker.depositETH{value: 50 ether}(bytes32(uint256(0xAA)));
 
         locker.proposeDailyWithdrawalLimitETH(10 ether);
-        vm.warp(block.timestamp + 2 days);
+        vm.warp(locker.dailyLimitETHTimelockUnlock());
         locker.executeDailyWithdrawalLimitETH();
 
         // Perform 40 small withdrawals of 0.2 ETH (total 8 ETH)
