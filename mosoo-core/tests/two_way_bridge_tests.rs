@@ -31,6 +31,7 @@ pub struct WithdrawalRecord {
 
 pub const GOVERNANCE_TIMELOCK_DELAY: u64 = 172_800; // 2 days in seconds
 pub const MAX_CLEANUP_BATCH: usize = 32;
+pub const MAX_PASS2_CLEANUP_BATCH: usize = 128;
 
 /// Mock simulation of Ethereum `MosooLocker.sol` state machine
 struct MockEthereumLocker {
@@ -670,15 +671,18 @@ impl MockEthereumLocker {
                 cleaned += 1;
             }
 
-            // Pass 2: If limit is threatened, prune all remaining expired records to defeat DoS
+            // Pass 2: If limit is threatened, prune expired records up to MAX_PASS2_CLEANUP_BATCH
             if self.rolling_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
+                let mut pass2_cleaned = 0;
                 while self.eth_withdrawal_head < self.eth_withdrawals.len()
                     && self.eth_withdrawals[self.eth_withdrawal_head].timestamp < cutoff
+                    && pass2_cleaned < MAX_PASS2_CLEANUP_BATCH
                 {
                     self.rolling_withdrawn_eth = self
                         .rolling_withdrawn_eth
                         .saturating_sub(self.eth_withdrawals[self.eth_withdrawal_head].amount);
                     self.eth_withdrawal_head += 1;
+                    pass2_cleaned += 1;
                 }
             }
 
@@ -752,6 +756,19 @@ impl MockEthereumLocker {
                     *rolling = rolling.saturating_sub(history[*head].amount);
                     *head += 1;
                     cleaned += 1;
+                }
+
+                // Pass 2: If limit is threatened, prune expired records up to MAX_PASS2_CLEANUP_BATCH
+                if *rolling + amount > limit {
+                    let mut pass2_cleaned = 0;
+                    while *head < history.len()
+                        && history[*head].timestamp < cutoff
+                        && pass2_cleaned < MAX_PASS2_CLEANUP_BATCH
+                    {
+                        *rolling = rolling.saturating_sub(history[*head].amount);
+                        *head += 1;
+                        pass2_cleaned += 1;
+                    }
                 }
 
                 if *rolling + amount > limit {

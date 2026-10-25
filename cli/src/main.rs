@@ -769,6 +769,18 @@ fn extract_account_rlp_from_leaf(leaf: &[u8]) -> Option<Vec<u8>> {
     }
 }
 
+/// Computes the authentic storage slot for a standard ERC-20 `balanceOf(owner)` mapping.
+/// Follows Solidity specification: keccak256(pad32(owner) || pad32(mapping_slot)).
+pub fn derive_erc20_balance_mapping_slot(
+    owner: alloy_primitives::Address,
+    mapping_slot: u64,
+) -> alloy_primitives::B256 {
+    let mut data = [0u8; 64];
+    data[12..32].copy_from_slice(owner.as_slice());
+    data[56..64].copy_from_slice(&mapping_slot.to_be_bytes());
+    alloy_primitives::keccak256(data)
+}
+
 struct AttestArgs<'a> {
     pub chain_id: u64,
     pub address_str: &'a str,
@@ -835,11 +847,11 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
 
         println!("    Connecting to live JSON-RPC node: {}", endpoint);
 
-        // 1. Fetch live execution block header
+        // 1. Fetch live execution block header (prefer finalized block to eliminate reorg races)
         let req_block = serde_json::json!({
             "jsonrpc": "2.0",
             "method": "eth_getBlockByNumber",
-            "params": ["latest", false],
+            "params": ["finalized", false],
             "id": 1
         });
         let resp_block = http
@@ -849,15 +861,38 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             .send()
             .map_err(|e| anyhow::anyhow!("Live RPC unreachable at {}: {}", endpoint, e))?;
 
-        if !resp_block.status().is_success() {
-            anyhow::bail!(
-                "Live node returned HTTP {} on eth_getBlockByNumber",
-                resp_block.status()
-            );
+        let mut json_block: serde_json::Value = if resp_block.status().is_success() {
+            resp_block.json().map_err(|e| {
+                anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
+            })?
+        } else {
+            serde_json::Value::Null
+        };
+
+        // Fallback to "latest" if "finalized" tag returns null or error (e.g. devnet/testnet without consensus client)
+        if json_block.get("result").is_none() || json_block.get("result").unwrap().is_null() {
+            let req_latest = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": "eth_getBlockByNumber",
+                "params": ["latest", false],
+                "id": 1
+            });
+            let resp_latest = http
+                .post(endpoint)
+                .header("User-Agent", "mosoo/1.0")
+                .json(&req_latest)
+                .send()
+                .map_err(|e| anyhow::anyhow!("Live RPC unreachable at {}: {}", endpoint, e))?;
+            if !resp_latest.status().is_success() {
+                anyhow::bail!(
+                    "Live node returned HTTP {} on eth_getBlockByNumber",
+                    resp_latest.status()
+                );
+            }
+            json_block = resp_latest.json().map_err(|e| {
+                anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
+            })?;
         }
-        let json_block: serde_json::Value = resp_block.json().map_err(|e| {
-            anyhow::anyhow!("Failed to parse JSON response from {}: {}", endpoint, e)
-        })?;
         if let Some(err) = json_block.get("error") {
             anyhow::bail!("Live RPC execution error on eth_getBlockByNumber: {}", err);
         }
@@ -891,8 +926,14 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             hex::encode(state_root_bytes)
         );
 
-        // 2. Fetch live EIP-1186 MPT proof for target address
-        let slot = B256::repeat_byte(0x01);
+        // 2. Fetch live EIP-1186 MPT proof for target address pinned to exact block number (race-free)
+        let slot = if args.target.to_lowercase() == "erc20" {
+            // Standard Solidity mapping(address => uint256) private _balances at slot 0
+            let probe_owner = Address::repeat_byte(0x11);
+            derive_erc20_balance_mapping_slot(probe_owner, 0)
+        } else {
+            B256::repeat_byte(0x01)
+        };
         let storage_keys = match args.target.to_lowercase().as_str() {
             "storage" | "erc20" => vec![format!("0x{}", hex::encode(slot.0))],
             _ => vec![],
@@ -904,7 +945,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             "params": [
                 format!("0x{}", hex::encode(target_addr.as_slice())),
                 storage_keys,
-                "latest"
+                block_num_hex
             ],
             "id": 2
         });
@@ -1033,6 +1074,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                 (p, state_root_bytes, receipts_root_bytes, block_hash_bytes)
             }
             "deposit" | "receipt" => {
+                println!("    \x1b[33m[notice] Target '{}' uses deposit event receipt proof fixture. For authentic live consensus state verification, use target 'account' or 'erc20' which extracts live EIP-1186 MPT storage/account proofs.\x1b[0m", args.target);
                 let sender = Address::repeat_byte(0x11);
                 let recipient = [0x22u8; 32];
                 let test_amount =

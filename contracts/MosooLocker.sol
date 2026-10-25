@@ -80,6 +80,8 @@ contract MosooLocker {
     uint256 public constant GOVERNANCE_TIMELOCK_DELAY = 2 days;
     /// @notice Maximum number of expired withdrawal records cleaned up per transaction to guarantee O(1) gas
     uint256 public constant MAX_CLEANUP_BATCH = 32;
+    /// @notice Maximum number of records pruned in second-pass cleanup to bound gas on limit contention
+    uint256 public constant MAX_PASS2_CLEANUP_BATCH = 128;
 
     uint256 public pendingQuorum;
     uint256 public quorumTimelockUnlock;
@@ -736,14 +738,16 @@ contract MosooLocker {
             cleaned++;
         }
 
-        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning all remaining expired records
-        // so that valid withdrawals are never blocked by uncleaned historical records (DoS defense)
+        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning expired records
+        // up to MAX_PASS2_CLEANUP_BATCH so valid withdrawals are not blocked by uncleaned records,
+        // while strictly bounding maximum per-call gas expenditure (predictable gas defense)
         if (rolling + amount > dailyWithdrawalLimitETH) {
-            while (head < len && _ethWithdrawals[head].timestamp < cutoff) {
+            uint256 pass2Cleaned = 0;
+            while (head < len && _ethWithdrawals[head].timestamp < cutoff && pass2Cleaned < MAX_PASS2_CLEANUP_BATCH) {
                 rolling -= _ethWithdrawals[head].amount;
                 delete _ethWithdrawals[head];
                 head++;
-                cleaned++;
+                pass2Cleaned++;
             }
         }
 
@@ -785,14 +789,16 @@ contract MosooLocker {
             cleaned++;
         }
 
-        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning all remaining expired records
-        // so that valid withdrawals are never blocked by uncleaned historical records (DoS defense)
+        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning expired records
+        // up to MAX_PASS2_CLEANUP_BATCH so valid withdrawals are not blocked by uncleaned records,
+        // while strictly bounding maximum per-call gas expenditure (predictable gas defense)
         if (rolling + amount > limit) {
-            while (head < len && history[head].timestamp < cutoff) {
+            uint256 pass2Cleaned = 0;
+            while (head < len && history[head].timestamp < cutoff && pass2Cleaned < MAX_PASS2_CLEANUP_BATCH) {
                 rolling -= history[head].amount;
                 delete history[head];
                 head++;
-                cleaned++;
+                pass2Cleaned++;
             }
         }
 
@@ -1019,6 +1025,10 @@ contract MosooLocker {
         emit AttesterAuthorityChangeProposed(attesterAuthority, _newAuthority, authorityTimelockUnlock);
     }
 
+    /// @notice Executes a proposed attester authority rotation after timelock expiration.
+    /// @dev Synchronizes attesterCount set accounting. If rotating authority decreases the active
+    /// committee below requiredQuorum, requiredQuorum is adjusted down to attesterCount (or 1)
+    /// as an explicit safety invariant to prevent permanent withdrawal freeze/deadlock.
     function executeAttesterAuthority() external onlyOwner {
         if (pendingAttesterAuthority == address(0)) revert NoPendingAuthority();
         if (block.timestamp < authorityTimelockUnlock) revert AuthorityTimelockActive(block.timestamp, authorityTimelockUnlock);
