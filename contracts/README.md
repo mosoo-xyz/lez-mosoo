@@ -48,3 +48,10 @@ The contract test suite is written in Solidity under [`test/MosooLocker.t.sol`](
 # Run Solidity unit and fuzz tests with Foundry
 forge test -vvv
 ```
+
+## Canonical Deployments
+
+| Network | Contract | Address | Transaction Hash | Explorer |
+| :--- | :--- | :--- | :--- | :--- |
+| **Ethereum Sepolia** | `MosooLocker` | `0x74625D146B8d9413F3c3976B323d94A739be7856` | `0x1b492d89631c7fb398008285e777781d95f48c1a07c9d6ca2d6be5459941b28b` | [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856) |
+

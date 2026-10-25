@@ -19,6 +19,7 @@ Usage:
     python scripts/testnet-two-way-bridge.py --mode live --rpc https://testnet.lez.logos.co
 """
 
+import os
 import sys
 import json
 import argparse
@@ -127,6 +128,7 @@ def main():
     parser.add_argument("--rpc", default=DEFAULT_RPC, help="Sequencer JSON-RPC URL")
     parser.add_argument("--eth-rpc", default=None, help="Ethereum L1 JSON-RPC URL (Sepolia or Mainnet)")
     parser.add_argument("--chain-id", type=int, default=1, help="Ethereum Chain ID (1 for Mainnet, 11155111 for Sepolia, etc.)")
+    parser.add_argument("--locker", default=None, help="Ethereum MosooLocker contract address (0x...)")
     args = parser.parse_args()
 
     print("=" * 80)
@@ -189,7 +191,21 @@ def main():
 
     # 2. Ethereum Deposit Step
     print("\n--- [Phase 2/5] Ethereum Vault Deposit (MosooLocker.sol) ---")
-    locker_address = b"\x11" * 20
+    if args.locker:
+        locker_hex = args.locker.lower().replace("0x", "")
+        locker_address = bytes.fromhex(locker_hex)
+    elif args.chain_id == 11155111:
+        # Check if deployed Sepolia manifest exists
+        deployments_path = os.path.join(os.path.dirname(__file__), "..", "contracts", "deployments", "sepolia.json")
+        if os.path.exists(deployments_path):
+            with open(deployments_path, "r", encoding="utf-8") as f:
+                dep_data = json.load(f)
+                locker_hex = dep_data.get("address", "").lower().replace("0x", "")
+                locker_address = bytes.fromhex(locker_hex)
+        else:
+            locker_address = b"\x11" * 20
+    else:
+        locker_address = b"\x11" * 20
     eth_depositor = b"\x22" * 20
     alice_lez = b"\xaa" * 32
     deposit_amount_eth = 10

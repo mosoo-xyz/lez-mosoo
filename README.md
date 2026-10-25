@@ -29,7 +29,8 @@ cargo test --test sequencer_e2e_tests
 
 # 5. Run the Two-Way Bridge pipeline (simulated demo or live testnet mode)
 python3 scripts/testnet-two-way-bridge.py --mode simulated
-python3 scripts/testnet-two-way-bridge.py --mode live --rpc https://testnet.lez.logos.co
+python3 scripts/testnet-two-way-bridge.py --mode live --rpc https://testnet.lez.logos.co --chain-id 11155111 --locker 0x74625D146B8d9413F3c3976B323d94A739be7856
+# Deployed Sepolia Locker: 0x74625D146B8d9413F3c3976B323d94A739be7856 (https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856)
 
 # 6. Verify live testnet sequencer health, gas limits, and blocks
 python3 scripts/verify-onchain.py
