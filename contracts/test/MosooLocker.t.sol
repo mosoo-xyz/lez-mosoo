@@ -303,4 +303,207 @@ contract MosooLockerTest is Test {
         assertEq(locker.guardian(), newGuardian, "guardian update failed");
         assertEq(locker.pendingGuardian(), address(0), "pending guardian not cleared");
     }
+
+    function test_removed_attester_single_signature_rejected() public {
+        uint256 attester2Pk = 0xB22CE;
+        address attester2 = vm.addr(attester2Pk);
+
+        locker.proposeAddAttester(attester2);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeAddAttester();
+
+        // Rotate authority to attester2
+        locker.proposeAttesterAuthority(attester2);
+        vm.warp(block.timestamp + 1 days);
+        locker.executeAttesterAuthority();
+
+        assertEq(locker.attesterAuthority(), attester2, "authority mismatch");
+        assertTrue(!locker.isAttester(attesterAuthority), "old authority must not be attester");
+
+        // Deposit 10 ETH
+        vm.prank(user);
+        locker.depositETH{value: 10 ether}(bytes32(uint256(0xAA)));
+
+        bytes32 lezOwner = bytes32(uint256(0xAA));
+        address payable recipient = payable(user);
+        uint256 amount = 1 ether;
+        uint64 burnNonce = 99;
+        uint64 lezSlot = 700;
+
+        bytes32 burnId = keccak256(
+            abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                locker.BURN_ETH_TYPEHASH(),
+                burnId,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+
+        // Old authority attempts single-signature unlock
+        (uint8 vOld, bytes32 rOld, bytes32 sOld) = vm.sign(attesterPk, digest);
+        bytes memory sigOld = abi.encodePacked(rOld, sOld, vOld);
+
+        try locker.unlockETH(burnId, amount, recipient, lezOwner, burnNonce, lezSlot, sigOld) {
+            revert("Expected revert on removed authority signature");
+        } catch {
+            // Success: old authority signature strictly rejected
+        }
+
+        // Active authority (attester2) signs
+        (uint8 vNew, bytes32 rNew, bytes32 sNew) = vm.sign(attester2Pk, digest);
+        bytes memory sigNew = abi.encodePacked(rNew, sNew, vNew);
+        locker.unlockETH(burnId, amount, recipient, lezOwner, burnNonce, lezSlot, sigNew);
+        assertTrue(locker.executedBurns(burnId), "burnId must be executed with active authority");
+    }
+
+    function test_authority_rotation_updates_committee_count_and_preserves_quorum() public {
+        uint256 attester2Pk = 0xB22CE;
+        uint256 attester3Pk = 0xC33CE;
+        address attester2 = vm.addr(attester2Pk);
+        address attester3 = vm.addr(attester3Pk);
+
+        locker.proposeAddAttester(attester2);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeAddAttester();
+
+        locker.proposeAddAttester(attester3);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeAddAttester();
+
+        assertEq(locker.attesterCount(), 3, "initial count should be 3");
+
+        locker.proposeQuorum(3);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeQuorum();
+        assertEq(locker.requiredQuorum(), 3, "quorum should be 3");
+
+        // Rotate authority to attester2 (who is already in the committee)
+        locker.proposeAttesterAuthority(attester2);
+        vm.warp(block.timestamp + 1 days);
+        locker.executeAttesterAuthority();
+
+        // Old authority (attesterAuthority) was removed, attester2 was already in committee
+        // Active attesters now: attester2, attester3 (count = 2)
+        assertEq(locker.attesterCount(), 2, "attester count must accurately update to 2");
+        // Quorum was 3, but now count is 2. Quorum must automatically adjust to 2 to prevent freeze
+        assertEq(locker.requiredQuorum(), 2, "quorum must adjust to 2");
+
+        // Verify quorum of 2 can unlock successfully
+        vm.prank(user);
+        locker.depositETH{value: 10 ether}(bytes32(uint256(0xAA)));
+
+        bytes32 lezOwner = bytes32(uint256(0xAA));
+        address payable recipient = payable(user);
+        uint256 amount = 1 ether;
+        uint64 burnNonce = 101;
+        uint64 lezSlot = 800;
+
+        bytes32 burnId = keccak256(
+            abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                locker.BURN_ETH_TYPEHASH(),
+                burnId,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+
+        address addrA = attester2;
+        address addrB = attester3;
+        uint256 pkA = attester2Pk;
+        uint256 pkB = attester3Pk;
+        if (addrA > addrB) {
+            pkA = attester3Pk;
+            pkB = attester2Pk;
+        }
+
+        bytes[] memory sigs = new bytes[](2);
+        (uint8 va, bytes32 ra, bytes32 sa) = vm.sign(pkA, digest);
+        (uint8 vb, bytes32 rb, bytes32 sb) = vm.sign(pkB, digest);
+        sigs[0] = abi.encodePacked(ra, sa, va);
+        sigs[1] = abi.encodePacked(rb, sb, vb);
+
+        locker.unlockETHWithQuorum(burnId, recipient, amount, lezOwner, burnNonce, lezSlot, sigs);
+        assertTrue(locker.executedBurns(burnId), "burnId must execute under adjusted quorum");
+    }
+
+    function test_rolling_limit_dos_cleanup_pruning() public {
+        vm.prank(user);
+        locker.depositETH{value: 50 ether}(bytes32(uint256(0xAA)));
+
+        locker.proposeDailyWithdrawalLimitETH(10 ether);
+        vm.warp(block.timestamp + 2 days);
+        locker.executeDailyWithdrawalLimitETH();
+
+        // Perform 40 small withdrawals of 0.2 ETH (total 8 ETH)
+        bytes32 lezOwner = bytes32(uint256(0xAA));
+        address payable recipient = payable(user);
+
+        for (uint64 i = 1; i <= 40; i++) {
+            bytes32 burnId = keccak256(
+                abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, uint256(0.2 ether), i, uint64(1000 + i))
+            );
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    locker.BURN_ETH_TYPEHASH(),
+                    burnId,
+                    recipient,
+                    uint256(0.2 ether),
+                    lezOwner,
+                    i,
+                    uint64(1000 + i)
+                )
+            );
+            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
+            locker.unlockETH(burnId, 0.2 ether, recipient, lezOwner, i, 1000 + i, abi.encodePacked(r, s, v));
+        }
+
+        assertEq(locker.dailyWithdrawnETH(), 8 ether, "daily withdrawn should be 8 ETH");
+
+        // Warp past 24 hours (all 40 withdrawals expire)
+        vm.warp(block.timestamp + 25 hours);
+
+        // A single large withdrawal of 9 ETH (under 10 ETH limit) must succeed by pruning expired records beyond 32
+        uint64 largeNonce = 999;
+        uint64 largeSlot = 50000;
+        uint256 largeAmount = 9 ether;
+        bytes32 largeBurnId = keccak256(
+            abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, largeAmount, largeNonce, largeSlot)
+        );
+        bytes32 largeStructHash = keccak256(
+            abi.encode(
+                locker.BURN_ETH_TYPEHASH(),
+                largeBurnId,
+                recipient,
+                largeAmount,
+                lezOwner,
+                largeNonce,
+                largeSlot
+            )
+        );
+        bytes32 largeDigest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), largeStructHash));
+        (uint8 vl, bytes32 rl, bytes32 sl) = vm.sign(attesterPk, largeDigest);
+
+        locker.unlockETH(largeBurnId, largeAmount, recipient, lezOwner, largeNonce, largeSlot, abi.encodePacked(rl, sl, vl));
+        assertTrue(locker.executedBurns(largeBurnId), "large withdrawal must succeed after complete pruning");
+        assertEq(locker.dailyWithdrawnETH(), 9 ether, "daily withdrawn should only reflect the new 9 ETH");
+
+        // Verify permissionless prune function also operates correctly
+        uint256 pruned = locker.pruneExpiredWithdrawalsETH(50);
+        assertEq(pruned, 0, "nothing left to prune");
+    }
 }

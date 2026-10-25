@@ -728,16 +728,35 @@ contract MosooLocker {
         uint256 rolling = _rollingWithdrawnETH;
         uint256 cleaned = 0;
 
+        // Pass 1: Bounded cleanup for normal gas efficiency
         while (head < len && _ethWithdrawals[head].timestamp < cutoff && cleaned < MAX_CLEANUP_BATCH) {
             rolling -= _ethWithdrawals[head].amount;
             delete _ethWithdrawals[head];
             head++;
             cleaned++;
         }
+
+        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning all remaining expired records
+        // so that valid withdrawals are never blocked by uncleaned historical records (DoS defense)
+        if (rolling + amount > dailyWithdrawalLimitETH) {
+            while (head < len && _ethWithdrawals[head].timestamp < cutoff) {
+                rolling -= _ethWithdrawals[head].amount;
+                delete _ethWithdrawals[head];
+                head++;
+                cleaned++;
+            }
+        }
+
         _ethWithdrawalHead = head;
 
         if (rolling + amount > dailyWithdrawalLimitETH) {
+            _rollingWithdrawnETH = rolling;
             revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - rolling);
+        }
+
+        if (head == len) {
+            delete _ethWithdrawals;
+            _ethWithdrawalHead = 0;
         }
 
         _rollingWithdrawnETH = rolling + amount;
@@ -758,16 +777,35 @@ contract MosooLocker {
         uint256 rolling = _rollingWithdrawnERC20[token];
         uint256 cleaned = 0;
 
+        // Pass 1: Bounded cleanup for normal gas efficiency
         while (head < len && history[head].timestamp < cutoff && cleaned < MAX_CLEANUP_BATCH) {
             rolling -= history[head].amount;
             delete history[head];
             head++;
             cleaned++;
         }
+
+        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning all remaining expired records
+        // so that valid withdrawals are never blocked by uncleaned historical records (DoS defense)
+        if (rolling + amount > limit) {
+            while (head < len && history[head].timestamp < cutoff) {
+                rolling -= history[head].amount;
+                delete history[head];
+                head++;
+                cleaned++;
+            }
+        }
+
         _erc20WithdrawalHead[token] = head;
 
         if (rolling + amount > limit) {
+            _rollingWithdrawnERC20[token] = rolling;
             revert DailyLimitExceeded(amount, limit - rolling);
+        }
+
+        if (head == len) {
+            delete _erc20Withdrawals[token];
+            _erc20WithdrawalHead[token] = 0;
         }
 
         _rollingWithdrawnERC20[token] = rolling + amount;
@@ -775,6 +813,58 @@ contract MosooLocker {
             timestamp: uint64(block.timestamp),
             amount: uint192(amount)
         }));
+    }
+
+    /// @notice Permissionless pruning function to clean expired ETH withdrawal records from history
+    /// @param maxBatch Maximum number of records to prune in this transaction (0 = default MAX_CLEANUP_BATCH)
+    /// @return prunedCount Number of expired records successfully deleted
+    function pruneExpiredWithdrawalsETH(uint256 maxBatch) external returns (uint256 prunedCount) {
+        if (maxBatch == 0) maxBatch = MAX_CLEANUP_BATCH;
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        uint256 head = _ethWithdrawalHead;
+        uint256 len = _ethWithdrawals.length;
+        uint256 rolling = _rollingWithdrawnETH;
+
+        while (head < len && _ethWithdrawals[head].timestamp < cutoff && prunedCount < maxBatch) {
+            rolling -= _ethWithdrawals[head].amount;
+            delete _ethWithdrawals[head];
+            head++;
+            prunedCount++;
+        }
+        _ethWithdrawalHead = head;
+        _rollingWithdrawnETH = rolling;
+
+        if (head == len) {
+            delete _ethWithdrawals;
+            _ethWithdrawalHead = 0;
+        }
+    }
+
+    /// @notice Permissionless pruning function to clean expired ERC-20 withdrawal records from history
+    /// @param token The ERC-20 token address to prune
+    /// @param maxBatch Maximum number of records to prune in this transaction (0 = default MAX_CLEANUP_BATCH)
+    /// @return prunedCount Number of expired records successfully deleted
+    function pruneExpiredWithdrawalsERC20(address token, uint256 maxBatch) external returns (uint256 prunedCount) {
+        if (maxBatch == 0) maxBatch = MAX_CLEANUP_BATCH;
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        uint256 head = _erc20WithdrawalHead[token];
+        WithdrawalRecord[] storage history = _erc20Withdrawals[token];
+        uint256 len = history.length;
+        uint256 rolling = _rollingWithdrawnERC20[token];
+
+        while (head < len && history[head].timestamp < cutoff && prunedCount < maxBatch) {
+            rolling -= history[head].amount;
+            delete history[head];
+            head++;
+            prunedCount++;
+        }
+        _erc20WithdrawalHead[token] = head;
+        _rollingWithdrawnERC20[token] = rolling;
+
+        if (head == len) {
+            delete _erc20Withdrawals[token];
+            _erc20WithdrawalHead[token] = 0;
+        }
     }
 
     /// @notice Returns the current rolling 24-hour volume withdrawn for native ETH
@@ -828,7 +918,13 @@ contract MosooLocker {
             abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
         );
         address signer = _recoverSigner(eip712Digest, signature);
-        return signer != address(0) && (signer == attesterAuthority || isAttester[signer]);
+        if (signer == address(0) || !isAttester[signer]) {
+            return false;
+        }
+        if (attesterAuthority != address(0)) {
+            return signer == attesterAuthority;
+        }
+        return true;
     }
 
     function _verifyQuorumSignatures(
@@ -926,12 +1022,30 @@ contract MosooLocker {
     function executeAttesterAuthority() external onlyOwner {
         if (pendingAttesterAuthority == address(0)) revert NoPendingAuthority();
         if (block.timestamp < authorityTimelockUnlock) revert AuthorityTimelockActive(block.timestamp, authorityTimelockUnlock);
-        emit AttesterAuthorityUpdated(attesterAuthority, pendingAttesterAuthority);
-        isAttester[attesterAuthority] = false;
-        isAttester[pendingAttesterAuthority] = true;
-        attesterAuthority = pendingAttesterAuthority;
+        address oldAuthority = attesterAuthority;
+        address newAuthority = pendingAttesterAuthority;
+        emit AttesterAuthorityUpdated(oldAuthority, newAuthority);
+
+        if (oldAuthority != newAuthority) {
+            if (isAttester[oldAuthority]) {
+                isAttester[oldAuthority] = false;
+                attesterCount -= 1;
+            }
+            if (!isAttester[newAuthority]) {
+                isAttester[newAuthority] = true;
+                attesterCount += 1;
+            }
+        }
+        attesterAuthority = newAuthority;
         pendingAttesterAuthority = address(0);
         authorityTimelockUnlock = 0;
+
+        // Quorum safety invariant: if attesterCount < requiredQuorum, adjust requiredQuorum to attesterCount
+        if (attesterCount < requiredQuorum) {
+            uint256 oldQuorum = requiredQuorum;
+            requiredQuorum = attesterCount > 0 ? attesterCount : 1;
+            emit QuorumUpdated(oldQuorum, requiredQuorum);
+        }
     }
 
     // --- Timelocked Multisig Governance (Finding M-04 / 4 Hardening) ---
@@ -998,6 +1112,9 @@ contract MosooLocker {
         address attester = pendingRemoveAttester;
         isAttester[attester] = false;
         attesterCount -= 1;
+        if (attester == attesterAuthority) {
+            attesterAuthority = address(0);
+        }
         pendingRemoveAttester = address(0);
         removeAttesterTimelockUnlock = 0;
         emit AttesterRemoved(attester);

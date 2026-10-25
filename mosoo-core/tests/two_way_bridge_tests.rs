@@ -236,6 +236,9 @@ impl MockEthereumLocker {
         }
         self.is_attester.remove(&proposed);
         self.attester_count = self.is_attester.len();
+        if proposed == self.attester_authority {
+            self.attester_authority = [0u8; 20];
+        }
         self.pending_remove_attester = None;
         self.remove_attester_timelock_unlock = 0;
         Ok(proposed)
@@ -339,9 +342,27 @@ impl MockEthereumLocker {
         if current_time < self.authority_timelock_unlock {
             return Err("AuthorityTimelockActive");
         }
-        self.attester_authority = pending;
+        let old_authority = self.attester_authority;
+        let new_authority = pending;
+        if old_authority != new_authority {
+            if self
+                .is_attester
+                .get(&old_authority)
+                .copied()
+                .unwrap_or(false)
+            {
+                self.is_attester.remove(&old_authority);
+            }
+            self.is_attester.insert(new_authority, true);
+            self.attester_count = self.is_attester.len();
+        }
+        self.attester_authority = new_authority;
         self.pending_attester_authority = None;
         self.authority_timelock_unlock = 0;
+
+        if self.attester_count < self.required_quorum {
+            self.required_quorum = self.attester_count.max(1);
+        }
         Ok(())
     }
 
@@ -597,6 +618,17 @@ impl MockEthereumLocker {
             return Err("InsufficientLockedETH");
         }
 
+        // Single-signer authorization: attesterAuthority must be an active attester in committee
+        if self.required_quorum == 1
+            && !self
+                .is_attester
+                .get(&self.attester_authority)
+                .copied()
+                .unwrap_or(false)
+        {
+            return Err("UnauthorizedAttester");
+        }
+
         let expected_burn_id = derive_burn_id(
             ETH_MAINNET_CHAIN_ID,
             &lez_owner,
@@ -626,6 +658,7 @@ impl MockEthereumLocker {
         if self.daily_withdrawal_limit_eth > 0 {
             let cutoff = current_timestamp.saturating_sub(86_400);
             let mut cleaned = 0;
+            // Pass 1: Bounded cleanup for normal gas efficiency
             while self.eth_withdrawal_head < self.eth_withdrawals.len()
                 && self.eth_withdrawals[self.eth_withdrawal_head].timestamp < cutoff
                 && cleaned < MAX_CLEANUP_BATCH
@@ -635,6 +668,18 @@ impl MockEthereumLocker {
                     .saturating_sub(self.eth_withdrawals[self.eth_withdrawal_head].amount);
                 self.eth_withdrawal_head += 1;
                 cleaned += 1;
+            }
+
+            // Pass 2: If limit is threatened, prune all remaining expired records to defeat DoS
+            if self.rolling_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
+                while self.eth_withdrawal_head < self.eth_withdrawals.len()
+                    && self.eth_withdrawals[self.eth_withdrawal_head].timestamp < cutoff
+                {
+                    self.rolling_withdrawn_eth = self
+                        .rolling_withdrawn_eth
+                        .saturating_sub(self.eth_withdrawals[self.eth_withdrawal_head].amount);
+                    self.eth_withdrawal_head += 1;
+                }
             }
 
             if self.rolling_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
@@ -1866,4 +1911,168 @@ fn test_mosoo_locker_guardian_timelock_governance() {
     assert_eq!(executed, new_guardian);
     assert_eq!(locker.guardian, new_guardian);
     assert_eq!(locker.pending_guardian, None);
+}
+
+#[test]
+fn test_removed_attester_single_signature_rejected() {
+    let locker_addr = [0x77; 20];
+    let mut locker = MockEthereumLocker::new(locker_addr);
+    let attester2 = [0xbb; 20];
+
+    // Add attester2
+    locker
+        .propose_add_attester(attester2, 1000)
+        .expect("propose add");
+    locker
+        .execute_add_attester(1000 + GOVERNANCE_TIMELOCK_DELAY)
+        .expect("exec add");
+
+    // Rotate authority to attester2
+    locker
+        .propose_attester_authority(attester2, 200_000)
+        .expect("propose authority");
+    locker
+        .execute_attester_authority(200_000 + AUTHORITY_CHANGE_DELAY)
+        .expect("exec authority");
+
+    assert_eq!(locker.attester_authority, attester2);
+    assert!(!locker
+        .is_attester
+        .get(&[0xaa; 20])
+        .copied()
+        .unwrap_or(false));
+
+    // Old authority removed, so attempts to withdraw under old authority are rejected
+    locker.deposit_eth(10_000_000_000_000_000_000);
+    let lez_owner = [0x55; 32];
+    let recipient = [0x88; 20];
+    let amount = 1_000_000_000_000_000_000;
+    let burn_id = derive_burn_id(ETH_MAINNET_CHAIN_ID, &lez_owner, &recipient, amount, 1, 500);
+
+    // If an attester is removed, it cannot authorize withdrawals
+    locker.attester_authority = [0xaa; 20]; // simulate stale / compromised removed key
+    assert_eq!(
+        locker.unlock_eth(burn_id, amount, lez_owner, recipient, 1, 500),
+        Err("UnauthorizedAttester")
+    );
+
+    // Active attester2 succeeds
+    locker.attester_authority = attester2;
+    assert_eq!(
+        locker.unlock_eth(burn_id, amount, lez_owner, recipient, 1, 500),
+        Ok(())
+    );
+}
+
+#[test]
+fn test_authority_rotation_updates_committee_count_and_preserves_quorum() {
+    let locker_addr = [0x77; 20];
+    let mut locker = MockEthereumLocker::new(locker_addr);
+    let attester2 = [0xbb; 20];
+    let attester3 = [0xcc; 20];
+
+    // Add attester2 and attester3
+    locker
+        .propose_add_attester(attester2, 1000)
+        .expect("add attester2");
+    locker
+        .execute_add_attester(1000 + GOVERNANCE_TIMELOCK_DELAY)
+        .expect("exec add attester2");
+
+    locker
+        .propose_add_attester(attester3, 200_000)
+        .expect("add attester3");
+    locker
+        .execute_add_attester(200_000 + GOVERNANCE_TIMELOCK_DELAY)
+        .expect("exec add attester3");
+
+    assert_eq!(locker.attester_count, 3);
+
+    // Set quorum to 3
+    locker.set_quorum(3).expect("set quorum 3");
+    assert_eq!(locker.required_quorum, 3);
+
+    // Rotate authority to attester2 (who was already in the committee)
+    locker
+        .propose_attester_authority(attester2, 400_000)
+        .expect("propose authority");
+    locker
+        .execute_attester_authority(400_000 + AUTHORITY_CHANGE_DELAY)
+        .expect("exec authority");
+
+    // Old authority [0xaa; 20] removed, attester2 was already in committee
+    // Active attesters: attester2, attester3 (count = 2)
+    assert_eq!(
+        locker.attester_count, 2,
+        "attester count must accurately update to 2"
+    );
+    // Quorum was 3, but now count is 2. Quorum must automatically adjust down to 2 to prevent lockup
+    assert_eq!(
+        locker.required_quorum, 2,
+        "required quorum must adjust down to 2"
+    );
+}
+
+#[test]
+fn test_rolling_limit_dos_cleanup_pruning() {
+    let locker_addr = [0x77; 20];
+    let mut locker = MockEthereumLocker::new(locker_addr);
+    locker.daily_withdrawal_limit_eth = 10_000_000_000_000_000_000; // 10 ETH
+    locker.deposit_eth(50_000_000_000_000_000_000); // 50 ETH
+
+    let lez_owner = [0x55; 32];
+    let recipient = [0x88; 20];
+    let small_amount = 200_000_000_000_000_000; // 0.2 ETH
+
+    // Perform 40 small withdrawals at t = 1000
+    for i in 1..=40 {
+        let burn_id = derive_burn_id(
+            ETH_MAINNET_CHAIN_ID,
+            &lez_owner,
+            &recipient,
+            small_amount,
+            i,
+            500 + i,
+        );
+        locker
+            .unlock_eth_with_time(
+                burn_id,
+                small_amount,
+                lez_owner,
+                recipient,
+                i,
+                500 + i,
+                1000,
+            )
+            .expect("small unlock");
+    }
+
+    assert_eq!(locker.daily_withdrawn_eth, 8_000_000_000_000_000_000); // 8 ETH
+
+    // Warp 25 hours later (t = 1000 + 90_000): all 40 withdrawals are expired
+    let now = 1000 + 90_000;
+
+    // A large withdrawal of 9 ETH (under 10 ETH limit) must succeed
+    let large_amount = 9_000_000_000_000_000_000; // 9 ETH
+    let large_burn_id = derive_burn_id(
+        ETH_MAINNET_CHAIN_ID,
+        &lez_owner,
+        &recipient,
+        large_amount,
+        999,
+        60_000,
+    );
+    assert_eq!(
+        locker.unlock_eth_with_time(
+            large_burn_id,
+            large_amount,
+            lez_owner,
+            recipient,
+            999,
+            60_000,
+            now,
+        ),
+        Ok(())
+    );
+    assert_eq!(locker.daily_withdrawn_eth, large_amount);
 }
