@@ -12,5 +12,14 @@
   "gasUsed": "22000376",
   "deployedAt": "2026-10-25T07:16:17.607Z",
   "rpcUsed": "https://ethereum-sepolia-rpc.publicnode.com",
+  "canonicalDeposit": {
+    "transactionHash": "0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882",
+    "blockNumber": 11990019,
+    "amountWei": "5000000000000000",
+    "amountEth": "0.005",
+    "depositor": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
+    "lezRecipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "nonce": 1
+  },
   "notes": "Testnet contract initialized with 1-of-1 attester authority for pipeline verification. Supports on-chain addAttester and setQuorum for M-of-N multisig transition."
 }

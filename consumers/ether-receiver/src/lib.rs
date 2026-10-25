@@ -3,10 +3,10 @@ pub use mosoo_core::predicate::derive_eth_deposit_subject_key;
 pub use mosoo_core::types::derive_statement_pda;
 pub use mosoo_core::types::StatementAccount as EtherStatementAccount;
 pub use mosoo_core::types::{
-    get_canonical_trusted_locker, is_supported_chain_id, AccountStore, StatementAccount,
-    StatementBinding, TrustedBridgeConfig, VerifiedStatement, ETH_HOLESKY_CHAIN_ID,
-    ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE,
-    PROOF_TYPE_ETH_DEPOSIT,
+    get_canonical_trusted_locker, is_supported_chain_id, AccountStore, RuntimeAccount,
+    StatementAccount, StatementBinding, TrustedBridgeConfig, VerifiedStatement,
+    ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -352,6 +352,18 @@ pub fn claim_ether_authenticated_pda_u256(
     }
     #[allow(deprecated)]
     claim_ether_u256(&statement_account.statement, nullifiers, min_wei)
+}
+
+/// Authenticate host runtime account metadata and claim Ether statement with full U256 precision.
+/// Asserts host sequencer owner authentication and canonical PDA derivation.
+pub fn claim_ether_runtime_account_u256(
+    runtime_account: &RuntimeAccount,
+    nullifiers: &mut EtherNullifierSet,
+    min_wei: U256,
+) -> Result<U256, EtherReceiverError> {
+    let statement_account = StatementAccount::try_from_runtime_account(runtime_account)
+        .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+    claim_ether_authenticated_pda_u256(&statement_account, nullifiers, min_wei)
 }
 
 /// Verify an Ether statement with full 256-bit (U256) precision and credit LEZ-side ether.
@@ -1218,15 +1230,38 @@ pub fn claim_account_balance_atomic(
 }
 
 /// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit.
-///
-/// Returns a strongly-typed `EthDepositReceipt` proving that the deposit was locked in
-/// the authentic vault contract for the benefit of `args.recipient`.
+/// Strictly enforces that the deposit was locked in the canonical trusted vault contract
+/// ([`get_canonical_trusted_locker`]) for the benefit of `args.recipient`.
 pub fn claim_native_eth_deposit_atomic(
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
 ) -> Result<EthDepositReceipt, EtherReceiverError> {
+    claim_native_eth_deposit_atomic_with_config(args, nullifiers, &TrustedBridgeConfig::canonical())
+}
+
+/// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit with custom bridge configuration.
+///
+/// Returns a strongly-typed `EthDepositReceipt` proving that the deposit was locked in
+/// the configured trusted vault contract for the benefit of `args.recipient`.
+pub fn claim_native_eth_deposit_atomic_with_config(
+    args: AtomicEtherClaimArgs,
+    nullifiers: &mut EtherNullifierSet,
+    config: &TrustedBridgeConfig,
+) -> Result<EthDepositReceipt, EtherReceiverError> {
     if !is_supported_chain_id(args.instance.chain_id) {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+    }
+    if args.expected_address == [0u8; 20] {
+        return Err(EtherReceiverError::DepositBackingRequired);
+    }
+    let trusted_locker = config
+        .get_trusted_locker(args.instance.chain_id)
+        .ok_or(EtherReceiverError::UntrustedLocker(args.instance.chain_id))?;
+    if args.expected_address != trusted_locker {
+        return Err(EtherReceiverError::ContractMismatch {
+            expected: trusted_locker,
+            actual: args.expected_address,
+        });
     }
 
     let attest_args = mosoo_core::verifier::AttestStateArgs {
@@ -1265,9 +1300,9 @@ pub fn claim_native_eth_deposit_atomic(
                 sender,
                 recipient,
             } => {
-                if *deposit_contract != args.expected_address {
+                if *deposit_contract != trusted_locker {
                     return Err(EtherReceiverError::ContractMismatch {
-                        expected: args.expected_address,
+                        expected: trusted_locker,
                         actual: *deposit_contract,
                     });
                 }
@@ -1700,6 +1735,24 @@ impl MethLedger {
         self.total_supply_wei = new_supply;
 
         Ok(amount_u256)
+    }
+
+    /// Mint synthetic `mETH` from a host-authenticated runtime account metadata object.
+    /// Strictly verifies that the host runtime owner is `MOSOO_PROGRAM_ID` and that the
+    /// address matches the canonical statement PDA before minting tokens.
+    pub fn mint_deposit_runtime_account_u256(
+        &mut self,
+        runtime_account: &RuntimeAccount,
+        expected_deposit_contract: [u8; 20],
+        nullifiers: &mut EtherNullifierSet,
+    ) -> Result<U256, EtherReceiverError> {
+        let statement_account = StatementAccount::try_from_runtime_account(runtime_account)
+            .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+        self.mint_deposit_authenticated_pda_u256(
+            &statement_account,
+            expected_deposit_contract,
+            nullifiers,
+        )
     }
 
     /// Transfer synthetic `mETH` between LEZ accounts.
@@ -3020,7 +3073,8 @@ mod tests {
         let mut ledger = MethLedger::new();
         let mut nullifiers = EtherNullifierSet::new();
 
-        let authentic_locker = [0xaa; 20]; // Default Mainnet canonical locker
+        let authentic_locker = [0xaa; 20]; // Registered test locker
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, authentic_locker);
         let fake_locker = [0x77; 20];
         let sender = [0x22; 20];
         let recipient = [0x33; 32];
@@ -3115,6 +3169,128 @@ mod tests {
                 actual: fake_locker,
             })
         );
+    }
+
+    #[test]
+    fn test_claim_native_eth_deposit_atomic_rejects_untrusted_vault_and_zero_address() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_deposit_eth_canonical_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = EtherNullifierSet::new();
+        let canonical_sepolia = mosoo_core::types::CANONICAL_SEPOLIA_MOSOO_LOCKER;
+        let fake_vault = [0x55; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let amount_wei = U256::from(2_000_000_000_000_000_000u64);
+        let nonce = 1u64;
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_eth_canonical_proof(
+            Address::from(canonical_sepolia),
+            Address::from(sender),
+            recipient,
+            amount_wei,
+            nonce,
+        );
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_SEPOLIA_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: [0x88; 32],
+            current_receipts_root: receipts_root.0,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_SEPOLIA_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::NativeEthDeposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract: Address::from(canonical_sepolia),
+                sender: Address::from(sender),
+                recipient,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        // 1. Zero address rejected
+        let zero_args = AtomicEtherClaimArgs {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_address: [0u8; 20],
+            recipient,
+            min_wei: 1_000_000,
+        };
+        let err_zero = claim_native_eth_deposit_atomic(zero_args, &mut nullifiers);
+        assert_eq!(err_zero, Err(EtherReceiverError::DepositBackingRequired));
+
+        // 2. Fake vault rejected against canonical locker
+        let fake_args = AtomicEtherClaimArgs {
+            instance: instance.clone(),
+            header: header.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_address: fake_vault,
+            recipient,
+            min_wei: 1_000_000,
+        };
+        let err_fake = claim_native_eth_deposit_atomic(fake_args, &mut nullifiers);
+        assert_eq!(
+            err_fake,
+            Err(EtherReceiverError::ContractMismatch {
+                expected: canonical_sepolia,
+                actual: fake_vault,
+            })
+        );
+
+        // 3. Authentic canonical vault succeeds
+        let valid_args = AtomicEtherClaimArgs {
+            instance,
+            header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof,
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_address: canonical_sepolia,
+            recipient,
+            min_wei: 1_000_000,
+        };
+        let receipt = claim_native_eth_deposit_atomic(valid_args, &mut nullifiers)
+            .expect("Authentic canonical Sepolia deposit claim must succeed");
+        assert_eq!(receipt.deposit_contract, canonical_sepolia);
+        assert_eq!(receipt.amount_wei, amount_wei);
     }
 
     #[test]

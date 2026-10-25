@@ -8,31 +8,30 @@ pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
 pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const ETH_HOLESKY_CHAIN_ID: u64 = 17_000;
 
-/// Canonical Mainnet MosooLocker contract address
-pub const CANONICAL_MAINNET_MOSOO_LOCKER: [u8; 20] = [0xaa; 20];
-
 /// Canonical Sepolia MosooLocker contract address (deployed at block 11989329, tx 0x1b49...b28b)
 pub const CANONICAL_SEPOLIA_MOSOO_LOCKER: [u8; 20] = [
     0x74, 0x62, 0x5d, 0x14, 0x6b, 0x8d, 0x94, 0x13, 0xf3, 0xc3, 0x97, 0x6b, 0x32, 0x3d, 0x94, 0xa7,
     0x39, 0xbe, 0x78, 0x56,
 ];
 
-/// Canonical Holesky MosooLocker contract address (reserved testnet)
-pub const CANONICAL_HOLESKY_MOSOO_LOCKER: [u8; 20] = [0x22; 20];
-
 /// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky).
+/// Light-client consensus tracking and inclusion proof verification are fully supported across all 3 chains.
 pub const fn is_supported_chain_id(chain_id: u64) -> bool {
     chain_id == ETH_MAINNET_CHAIN_ID
         || chain_id == ETH_SEPOLIA_CHAIN_ID
         || chain_id == ETH_HOLESKY_CHAIN_ID
 }
 
-/// Returns the canonical trusted bridge vault / locker contract address for a given chain ID.
+/// Returns the canonical deployed bridge locker contract address for a given chain ID, if deployed.
+///
+/// Note: Core Ethereum consensus and state proof verification (`AttestState`, `HeaderRecord`, `InstanceAccount`)
+/// support Mainnet, Sepolia, and Holesky via `is_supported_chain_id(chain_id)`.
+/// For bridge escrow locking (`MosooLocker.sol`), Sepolia has an authentic deployed testnet contract
+/// ([`CANONICAL_SEPOLIA_MOSOO_LOCKER`]). Mainnet and Holesky bridge contracts are pending production
+/// deployment, returning `None` until an authenticated address is explicitly registered via [`TrustedBridgeConfig`].
 pub const fn get_canonical_trusted_locker(chain_id: u64) -> Option<[u8; 20]> {
     match chain_id {
-        ETH_MAINNET_CHAIN_ID => Some(CANONICAL_MAINNET_MOSOO_LOCKER),
         ETH_SEPOLIA_CHAIN_ID => Some(CANONICAL_SEPOLIA_MOSOO_LOCKER),
-        ETH_HOLESKY_CHAIN_ID => Some(CANONICAL_HOLESKY_MOSOO_LOCKER),
         _ => None,
     }
 }
@@ -40,9 +39,11 @@ pub const fn get_canonical_trusted_locker(chain_id: u64) -> Option<[u8; 20]> {
 /// Authenticated program-owned configuration specifying trusted locker contracts and allowed tokens per chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedBridgeConfig {
+    /// Optional administrative authority key (32 bytes) authorized to update lockers or token allowlists.
+    pub admin_authority: Option<[u8; 32]>,
     /// Trusted locker vault contracts per chain ID
     pub trusted_lockers: HashMap<u64, [u8; 20]>,
-    /// Optional token allowlist per chain ID (if empty, all tokens allowed; if populated, only allowed tokens accepted)
+    /// Strict token allowlist per chain ID (default-deny: tokens must be explicitly allowlisted)
     pub allowed_tokens: HashMap<u64, HashSet<[u8; 20]>>,
 }
 
@@ -53,16 +54,31 @@ impl Default for TrustedBridgeConfig {
 }
 
 impl TrustedBridgeConfig {
-    /// Initialize with canonical production and testnet locker contracts.
+    /// Initialize with canonical production and testnet locker contracts and verified token allowlists.
     pub fn canonical() -> Self {
         let mut trusted_lockers = HashMap::new();
-        trusted_lockers.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_LOCKER);
+        // Register authentic deployed Sepolia testnet locker
         trusted_lockers.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_LOCKER);
-        trusted_lockers.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_MOSOO_LOCKER);
+
+        let mut allowed_tokens = HashMap::new();
+        let mut sepolia_tokens = HashSet::new();
+        // Canonical Sepolia testnet tokens:
+        // MockUSDC (Circle Sepolia testnet: 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238)
+        sepolia_tokens.insert([
+            0x1c, 0x7d, 0x4b, 0x19, 0x6c, 0xb0, 0xc7, 0xb0, 0x1d, 0x74, 0x3f, 0xbc, 0x61, 0x16,
+            0xa9, 0x02, 0x37, 0x9c, 0x72, 0x38,
+        ]);
+        // MockUSDT (Sepolia testnet: 0x7169D38820dfd117C3FA1f22a697dBA58d90BA06)
+        sepolia_tokens.insert([
+            0x71, 0x69, 0xd3, 0x88, 0x20, 0xdf, 0xd1, 0x17, 0xc3, 0xfa, 0x1f, 0x22, 0xa6, 0x97,
+            0xdb, 0xa5, 0x8d, 0x90, 0xba, 0x06,
+        ]);
+        allowed_tokens.insert(ETH_SEPOLIA_CHAIN_ID, sepolia_tokens);
 
         Self {
+            admin_authority: None,
             trusted_lockers,
-            allowed_tokens: HashMap::new(),
+            allowed_tokens,
         }
     }
 
@@ -74,6 +90,21 @@ impl TrustedBridgeConfig {
         }
         self.trusted_lockers.insert(chain_id, locker);
         true
+    }
+
+    /// Registers or updates the trusted locker contract if caller matches the authorized administrative authority.
+    pub fn register_trusted_locker_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        locker: [u8; 20],
+    ) -> bool {
+        if let Some(expected_admin) = self.admin_authority {
+            if *caller != expected_admin {
+                return false;
+            }
+        }
+        self.register_trusted_locker(chain_id, locker)
     }
 
     /// Returns the registered trusted locker contract for a given chain ID, if configured.
@@ -101,11 +132,29 @@ impl TrustedBridgeConfig {
         true
     }
 
-    /// Checks if a token is permitted. Returns true if no allowlist is configured for this chain,
-    /// or if the token is explicitly present in the allowlist.
+    /// Whitelists an ERC-20 token contract if caller matches the authorized administrative authority.
+    pub fn allow_token_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        token: [u8; 20],
+    ) -> bool {
+        if let Some(expected_admin) = self.admin_authority {
+            if *caller != expected_admin {
+                return false;
+            }
+        }
+        self.allow_token(chain_id, token)
+    }
+
+    /// Checks if a token is permitted. Strictly default-deny:
+    /// Returns true ONLY if an allowlist is configured for this chain and the token is explicitly present.
     pub fn is_token_allowed(&self, chain_id: u64, token: &[u8; 20]) -> bool {
+        if *token == [0u8; 20] {
+            return false;
+        }
         match self.allowed_tokens.get(&chain_id) {
-            None => true, // No restriction configured
+            None => false, // STRICT DEFAULT-DENY: unconfigured chains reject all tokens!
             Some(set) => set.contains(token),
         }
     }
@@ -671,6 +720,47 @@ impl StatementAccount {
             statement,
         }
     }
+
+    /// Deserializes and validates a StatementAccount from host runtime account metadata.
+    /// Strictly verifies that the host runtime authenticated owner matches `MOSOO_PROGRAM_ID`
+    /// and that the account address matches the canonical PDA derivation from the statement ID.
+    pub fn try_from_runtime_account(
+        account: &RuntimeAccount,
+    ) -> Result<Self, crate::error::MosooError> {
+        if account.owner != MOSOO_PROGRAM_ID {
+            return Err(crate::error::MosooError::UnauthenticatedAttester {
+                expected: MOSOO_PROGRAM_ID,
+                actual: account.owner,
+            });
+        }
+        let statement: VerifiedStatement = serde_json::from_slice(&account.data).map_err(|e| {
+            crate::error::MosooError::Internal(format!("malformed statement data: {e}"))
+        })?;
+        let expected_pda = derive_statement_pda(statement.chain_id, &statement.statement_id);
+        if account.address != expected_pda {
+            return Err(crate::error::MosooError::UnauthenticatedAttester {
+                expected: expected_pda,
+                actual: account.address,
+            });
+        }
+        Ok(Self {
+            owner: account.owner,
+            pda_address: account.address,
+            statement,
+        })
+    }
+}
+
+/// Host-provided runtime account metadata representing an on-chain LEZ account.
+/// Encapsulates host sequencer CPI verification asserting authenticated account ownership.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeAccount {
+    /// Owner program ID authenticated by the host sequencer/runtime.
+    pub owner: [u8; 32],
+    /// On-chain address of the account.
+    pub address: [u8; 32],
+    /// Serialized account data payload.
+    pub data: Vec<u8>,
 }
 
 /// Derives the deterministic PDA address for a verified statement on LEZ.

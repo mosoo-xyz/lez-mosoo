@@ -302,7 +302,7 @@ contract MosooLocker {
         if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
 
-        // 1. Verify burnId canonical derivation: sha256("mosoo_burn_v1" || chain_id || lezOwner || recipient || amount || nonce || slot)
+        // 1. Verify burnId canonical derivation: keccak256("mosoo_burn_v1" || chain_id || lezOwner || recipient || amount || nonce || slot)
         bytes32 expectedBurnId = keccak256(
             abi.encodePacked(
                 "mosoo_burn_v1",

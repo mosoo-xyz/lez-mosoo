@@ -25,10 +25,10 @@ pub use mosoo_core::predicate::{
 };
 pub use mosoo_core::types::derive_statement_pda;
 pub use mosoo_core::types::{
-    get_canonical_trusted_locker, is_supported_chain_id, AccountStore, StatementAccount,
-    StatementBinding, TrustedBridgeConfig, VerifiedStatement, ETH_HOLESKY_CHAIN_ID,
-    ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT,
-    PROOF_TYPE_ERC20_TRANSFER,
+    get_canonical_trusted_locker, is_supported_chain_id, AccountStore, RuntimeAccount,
+    StatementAccount, StatementBinding, TrustedBridgeConfig, VerifiedStatement,
+    ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -397,6 +397,18 @@ pub fn claim_authenticated_pda_u256(
     }
     #[allow(deprecated)]
     claim_u256(&statement_account.statement, nullifiers, min_amount)
+}
+
+/// Authenticate host runtime account metadata and claim ERC-20 statement with full U256 precision.
+/// Asserts host sequencer owner authentication and canonical PDA derivation.
+pub fn claim_authenticated_runtime_account_u256(
+    runtime_account: &RuntimeAccount,
+    nullifiers: &mut NullifierSet,
+    min_amount: U256,
+) -> Result<U256, ReceiverError> {
+    let statement_account = StatementAccount::try_from_runtime_account(runtime_account)
+        .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
+    claim_authenticated_pda_u256(&statement_account, nullifiers, min_amount)
 }
 
 /// Verify a VerifiedStatement with full 256-bit (U256) precision and mint LEZ-side tokens.
@@ -980,12 +992,40 @@ pub struct Erc20DepositClaim {
 
 /// Process a verified ERC-20 deposit event log from MosooLocker.sol:
 /// DepositERC20(address indexed token, address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 nonce)
+/// Strictly enforces that the deposit was locked in the canonical deployed vault ([`get_canonical_trusted_locker`]).
 pub fn claim_erc20_deposit(
     claim: &Erc20DepositClaim,
     nullifiers: &mut NullifierSet,
 ) -> Result<u128, ReceiverError> {
+    claim_erc20_deposit_with_config(claim, nullifiers, &TrustedBridgeConfig::canonical())
+}
+
+/// Process a verified ERC-20 deposit event log from MosooLocker.sol using a specified bridge configuration.
+pub fn claim_erc20_deposit_with_config(
+    claim: &Erc20DepositClaim,
+    nullifiers: &mut NullifierSet,
+    config: &TrustedBridgeConfig,
+) -> Result<u128, ReceiverError> {
     if !is_supported_chain_id(claim.statement.chain_id) {
         return Err(ReceiverError::WrongChain(claim.statement.chain_id));
+    }
+    if claim.deposit_contract == [0u8; 20] {
+        return Err(ReceiverError::DepositBackingRequired);
+    }
+    let trusted_locker = config
+        .get_trusted_locker(claim.statement.chain_id)
+        .ok_or(ReceiverError::UntrustedLocker(claim.statement.chain_id))?;
+    if claim.deposit_contract != trusted_locker {
+        return Err(ReceiverError::DepositContractMismatch {
+            expected: trusted_locker,
+            actual: claim.deposit_contract,
+        });
+    }
+    if !config.is_token_allowed(claim.statement.chain_id, &claim.token_contract) {
+        return Err(ReceiverError::TokenNotAllowed(
+            claim.token_contract,
+            claim.statement.chain_id,
+        ));
     }
     if claim.statement.attester_program_id != MOSOO_PROGRAM_ID {
         return Err(ReceiverError::UnauthenticatedAttester);
@@ -1010,9 +1050,9 @@ pub fn claim_erc20_deposit(
             sender,
             recipient,
         } => {
-            if *deposit_contract != claim.deposit_contract {
+            if *deposit_contract != trusted_locker {
                 return Err(ReceiverError::DepositContractMismatch {
-                    expected: claim.deposit_contract,
+                    expected: trusted_locker,
                     actual: *deposit_contract,
                 });
             }
@@ -1730,6 +1770,24 @@ impl Erc20Ledger {
         Ok(amount_u256)
     }
 
+    /// Mint synthetic tokens from a host-authenticated runtime account metadata object.
+    /// Strictly verifies that the host runtime owner is `MOSOO_PROGRAM_ID` and that the
+    /// address matches the canonical statement PDA before minting tokens.
+    pub fn mint_deposit_runtime_account_u256(
+        &mut self,
+        runtime_account: &RuntimeAccount,
+        expected_deposit_contract: [u8; 20],
+        nullifiers: &mut NullifierSet,
+    ) -> Result<U256, ReceiverError> {
+        let statement_account = StatementAccount::try_from_runtime_account(runtime_account)
+            .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
+        self.mint_deposit_authenticated_pda_u256(
+            &statement_account,
+            expected_deposit_contract,
+            nullifiers,
+        )
+    }
+
     /// Mint synthetic tokens upon verification of a canonical DepositERC20 log from MosooLocker.sol.
     #[deprecated(
         note = "In-memory VerifiedStatement can be forged. Use `mint_deposit_atomic_u256` for in-guest atomic execution or `mint_deposit_authenticated_pda_u256` for on-chain StatementAccount PDA verification"
@@ -1739,7 +1797,7 @@ impl Erc20Ledger {
         claim: &Erc20DepositClaim,
         nullifiers: &mut NullifierSet,
     ) -> Result<u128, ReceiverError> {
-        let amount = claim_erc20_deposit(claim, nullifiers)?;
+        let amount = claim_erc20_deposit_with_config(claim, nullifiers, &self.config)?;
 
         let key = (claim.token_contract, claim.recipient);
         let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
@@ -3039,6 +3097,8 @@ mod tests {
         let sender = [0x33; 20];
         let recipient = [0x44; 32];
         let amount: u128 = 250_000_000_000_000_000_000; // 250 tokens
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, deposit_contract);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token);
 
         let statement = make_erc20_deposit_statement(
             ETH_MAINNET_CHAIN_ID,
@@ -3137,12 +3197,13 @@ mod tests {
     fn test_erc20_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected() {
         let mut ledger = Erc20Ledger::new();
         let mut nullifiers = NullifierSet::new();
-        ledger.register_trusted_locker(ETH_SEPOLIA_CHAIN_ID, [0xaa; 20]);
-
         let token = [0x11; 20];
         let sender = [0x22; 20];
         let recipient = [0x33; 32];
         let amount = 1_000_000u128;
+
+        ledger.register_trusted_locker(ETH_SEPOLIA_CHAIN_ID, [0xaa; 20]);
+        ledger.allow_token(ETH_SEPOLIA_CHAIN_ID, token);
 
         let statement = make_erc20_deposit_statement(
             ETH_SEPOLIA_CHAIN_ID,
@@ -3211,6 +3272,8 @@ mod tests {
         let depositor = [0x22; 20];
         let recipient = [0x33; 32];
         let locker_addr = [0xaa; 20];
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, locker_addr);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token_addr);
         let amount = U256::from(100_000_000_000_000_000_000u128);
 
         // Ordinary Transfer event log (NOT DepositERC20 from MosooLocker)
@@ -3302,6 +3365,8 @@ mod tests {
         let mut nullifiers = NullifierSet::new();
         let token_addr = [0x11; 20];
         let locker_addr = [0xaa; 20];
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, locker_addr);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token_addr);
         let recipient = [0x33; 32];
 
         let contract = Address::from(token_addr);
@@ -3383,6 +3448,8 @@ mod tests {
 
         let locker_addr = [0xaa; 20];
         let token_addr = [0x11; 20];
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, locker_addr);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token_addr);
         let depositor = [0x22; 20];
         let recipient = [0x33; 32];
         let amount = U256::from(2_500_000_000_000_000_000u128); // 2.5 tokens
@@ -3489,6 +3556,8 @@ mod tests {
         let authentic_locker = [0xaa; 20];
         let malicious_locker = [0x99; 20]; // Attacker contract emitting DepositERC20
         let token_addr = [0x11; 20];
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, authentic_locker);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token_addr);
         let depositor = [0x22; 20];
         let recipient = [0x33; 32];
         let amount = U256::from(1_000_000_000u64);
@@ -3588,6 +3657,8 @@ mod tests {
 
         let locker_addr = [0xaa; 20];
         let token_addr = [0x11; 20];
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, locker_addr);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token_addr);
         let depositor = [0x22; 20];
         let recipient = [0x33; 32];
         // Amount exceeding u128::MAX (2^128)
@@ -3683,6 +3754,8 @@ mod tests {
         let authentic_locker = [0xaa; 20]; // Default Mainnet canonical locker
         let fake_locker = [0x77; 20];
         let token_addr = [0x11; 20];
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, authentic_locker);
+        ledger.allow_token(ETH_MAINNET_CHAIN_ID, token_addr);
         let depositor = [0x22; 20];
         let recipient = [0x33; 32];
         let amount = U256::from(500_000u64);
@@ -3803,6 +3876,7 @@ mod tests {
         let nonce = 1u64;
 
         // Configure allowlist: only allowed_token is permitted on Mainnet
+        ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, authentic_locker);
         ledger.allow_token(ETH_MAINNET_CHAIN_ID, allowed_token);
 
         let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_erc20_proof(

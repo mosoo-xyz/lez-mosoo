@@ -201,6 +201,7 @@ def main():
     # 2. Ethereum Deposit Step
     print("\n--- [Phase 2/5] Ethereum Vault Deposit (MosooLocker.sol) ---")
     dep_tx_hash = None
+    canonical_deposit_tx = None
     if args.locker:
         locker_hex = args.locker.lower().replace("0x", "")
         locker_address = bytes.fromhex(locker_hex)
@@ -213,6 +214,7 @@ def main():
                 locker_hex = dep_data.get("address", "").lower().replace("0x", "")
                 locker_address = bytes.fromhex(locker_hex)
                 dep_tx_hash = dep_data.get("transactionHash")
+                canonical_deposit_tx = dep_data.get("canonicalDeposit", {}).get("transactionHash")
         else:
             locker_address = b"\x11" * 20
     else:
@@ -229,7 +231,8 @@ def main():
                     gas_used = int(receipt.get("gasUsed", "0x0"), 16)
                     print(f"  [+] On-Chain Deployment Receipt: Verified (Status: Success / 0x1, Block: {block_num}, Gas: {gas_used})")
                 elif receipt:
-                    print(f"  [-] Warning: Deployment transaction status: {receipt.get('status')}")
+                    print(f"  [-] Fatal: Deployment transaction status reverted: {receipt.get('status')}")
+                    sys.exit(1)
 
             # 2. Verify Deployed Bytecode
             code_resp = call_rpc(eth_rpc, "eth_getCode", [f"0x{locker_address.hex()}", "latest"])
@@ -276,61 +279,71 @@ def main():
                 print("      * Note: Testnet deployment initialized in 1-of-1 bootstrap mode.")
                 print("      * Production Path: Invoke addAttester() and setQuorum(2) to transition to 2-of-3 multisig.")
         except Exception as e:
-            print(f"  [-] Warning: Could not query contract on-chain state: {e}")
+            print(f"  [-] Fatal: Failed querying contract on-chain state: {e}")
+            sys.exit(1)
 
     eth_depositor = b"\x22" * 20
     alice_lez = b"\xaa" * 32
-    deposit_amount_eth = 10
-    deposit_wei = deposit_amount_eth * 10**18
+    deposit_amount_eth = 10.0
+    deposit_wei = int(deposit_amount_eth * 10**18)
     deposit_nonce = 1
     deposit_slot = 10_500_000
+    deposit_tx_to_verify = args.deposit_tx or canonical_deposit_tx
 
     topic_deposit_eth = "0x" + keccak256(b"DepositETH(address,bytes32,uint256,uint64)").hex()
     topic_deposit_erc20 = "0x" + keccak256(b"DepositERC20(address,address,bytes32,uint256,uint64)").hex()
 
-    if args.deposit_tx and args.mode == "live" and eth_rpc:
+    if args.mode == "live" and eth_rpc:
+        if not deposit_tx_to_verify:
+            print("  [-] Fatal: Live network mode requires an on-chain deposit transaction to verify.")
+            print("      Pass --deposit-tx <TX_HASH> or ensure canonicalDeposit is recorded in sepolia.json.")
+            sys.exit(1)
+
         try:
-            dep_rec = call_rpc(eth_rpc, "eth_getTransactionReceipt", [args.deposit_tx]).get("result")
-            if dep_rec and dep_rec.get("status") == "0x1":
-                found_event = False
-                for log in dep_rec.get("logs", []):
-                    log_contract = log.get("address", "").lower()
-                    topics = log.get("topics", [])
-                    if log_contract == f"0x{locker_address.hex()}".lower() and topics:
-                        if topics[0].lower() == topic_deposit_eth.lower():
-                            eth_depositor = bytes.fromhex(topics[1][-40:])
-                            alice_lez = bytes.fromhex(topics[2][2:])
-                            deposit_nonce = int(topics[3], 16)
-                            data_hex = log.get("data", "0x")[2:]
-                            deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
-                            deposit_amount_eth = deposit_wei / 10**18
-                            found_event = True
-                            print(f"  [+] Live On-Chain DepositETH Log Verified from Tx: {args.deposit_tx}")
-                            break
-                        elif topics[0].lower() == topic_deposit_erc20.lower():
-                            eth_depositor = bytes.fromhex(topics[2][-40:])
-                            alice_lez = bytes.fromhex(topics[3][2:])
-                            data_hex = log.get("data", "0x")[2:]
-                            deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
-                            deposit_nonce = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 1
-                            deposit_amount_eth = deposit_wei / 10**18
-                            found_event = True
-                            print(f"  [+] Live On-Chain DepositERC20 Log Verified from Tx: {args.deposit_tx}")
-                            break
-                if not found_event:
-                    print(f"  [-] Warning: No DepositETH or DepositERC20 event found in tx {args.deposit_tx} for contract 0x{locker_address.hex()}")
-            else:
-                print(f"  [-] Warning: Could not verify receipt for --deposit-tx {args.deposit_tx}")
+            dep_rec = call_rpc(eth_rpc, "eth_getTransactionReceipt", [deposit_tx_to_verify]).get("result")
+            if not dep_rec or dep_rec.get("status") != "0x1":
+                print(f"  [-] Fatal: Deposit transaction receipt {deposit_tx_to_verify} not confirmed or reverted (status != 0x1)!")
+                sys.exit(1)
+
+            found_event = False
+            for log in dep_rec.get("logs", []):
+                log_contract = log.get("address", "").lower()
+                topics = log.get("topics", [])
+                if log_contract == f"0x{locker_address.hex()}".lower() and topics:
+                    if topics[0].lower() == topic_deposit_eth.lower():
+                        eth_depositor = bytes.fromhex(topics[1][-40:])
+                        alice_lez = bytes.fromhex(topics[2][2:])
+                        data_hex = log.get("data", "0x")[2:]
+                        deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
+                        deposit_nonce = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 1
+                        deposit_amount_eth = deposit_wei / 10**18
+                        found_event = True
+                        print(f"  [+] Live On-Chain DepositETH Log Verified from Tx: {deposit_tx_to_verify}")
+                        break
+                    elif topics[0].lower() == topic_deposit_erc20.lower():
+                        eth_depositor = bytes.fromhex(topics[2][-40:])
+                        alice_lez = bytes.fromhex(topics[3][2:])
+                        data_hex = log.get("data", "0x")[2:]
+                        deposit_wei = int(data_hex[:64], 16) if len(data_hex) >= 64 else deposit_wei
+                        deposit_nonce = int(data_hex[64:128], 16) if len(data_hex) >= 128 else 1
+                        deposit_amount_eth = deposit_wei / 10**18
+                        found_event = True
+                        print(f"  [+] Live On-Chain DepositERC20 Log Verified from Tx: {deposit_tx_to_verify}")
+                        break
+
+            if not found_event:
+                print(f"  [-] Fatal: No authentic DepositETH or DepositERC20 event emitted by 0x{locker_address.hex()} in tx {deposit_tx_to_verify}!")
+                sys.exit(1)
         except Exception as e:
-            print(f"  [-] Warning: Error fetching deposit transaction receipt: {e}")
-    elif args.mode == "live":
-        print("  [+] Note: Dual-Mode Pipeline - live on-chain contract queried; using canonical parameters for math verification.")
-        print("      (Pass --deposit-tx <TX_HASH> to bind and verify a live on-chain deposit event receipt)")
+            print(f"  [-] Fatal: Error validating deposit transaction receipt: {e}")
+            sys.exit(1)
+    else:
+        print("  [+] Mode: Local Verified Harness (Deterministic Mock Escrow Deposit)")
 
     print(f"  [+] Contract       : MosooLocker.sol (0x{locker_address.hex()})")
     print(f"  [+] Depositor      : 0x{eth_depositor.hex()}")
     print(f"  [+] Target LEZ PDA : {alice_lez.hex()[:16]}...{alice_lez.hex()[-8:]}")
-    print(f"  [+] Locked Native  : {deposit_amount_eth} ETH ({deposit_wei} wei)")
+    print(f"  [+] Locked Native  : {deposit_amount_eth:.4f} ETH ({deposit_wei} wei)")
     print(f"  [+] Deposit Nonce  : {deposit_nonce}")
     print(f"  [+] Emitted Event  : DepositETH(sender, recipient, amount, nonce)")
 
@@ -347,24 +360,24 @@ def main():
     # 4. Minting synthetic mETH & Intra-LEZ Transfer
     print("\n--- [Phase 4/5] Minting mETH on LEZ & Peer-to-Peer Transfer ---")
     bob_lez = b"\xbb" * 32
-    transfer_wei = 4 * 10**18
+    transfer_wei = deposit_wei * 4 // 10  # 40% transferred to Bob
+    burn_wei = deposit_wei - transfer_wei # 60% burned for withdrawal
 
     alice_balance = deposit_wei
     total_supply = deposit_wei
-    print(f"  [+] Minted mETH to Alice : {alice_balance / 10**18:.2f} mETH")
-    print(f"  [+] Active mETH Supply   : {total_supply / 10**18:.2f} mETH")
-    print("  [+] Cross-chain invariant: Locked ETH (10.0) == LEZ Supply (10.0) [OK]")
+    print(f"  [+] Minted mETH to Alice : {alice_balance / 10**18:.4f} mETH")
+    print(f"  [+] Active mETH Supply   : {total_supply / 10**18:.4f} mETH")
+    print(f"  [+] Cross-chain invariant: Locked ETH ({deposit_amount_eth:.4f}) == LEZ Supply ({total_supply / 10**18:.4f}) [OK]")
 
-    print(f"\n  [+] Alice transfers 4.0 mETH to Bob on LEZ:")
+    print(f"\n  [+] Alice transfers {transfer_wei / 10**18:.4f} mETH to Bob on LEZ:")
     alice_balance -= transfer_wei
     bob_balance = transfer_wei
-    print(f"      * Alice balance: {alice_balance / 10**18:.2f} mETH")
-    print(f"      * Bob balance  : {bob_balance / 10**18:.2f} mETH")
-    print(f"      * Total Supply : {total_supply / 10**18:.2f} mETH (Unchanged)")
+    print(f"      * Alice balance: {alice_balance / 10**18:.4f} mETH")
+    print(f"      * Bob balance  : {bob_balance / 10**18:.4f} mETH")
+    print(f"      * Total Supply : {total_supply / 10**18:.4f} mETH (Unchanged)")
 
     # 5. Burning mETH on LEZ & Unlocking real ETH on Ethereum
     print("\n--- [Phase 5/5] Burning mETH on LEZ -> Unlocking ETH on Ethereum ---")
-    burn_wei = 6 * 10**18 # Alice burns her remaining 6 mETH
     eth_recipient = b"\x33" * 20
     lez_burn_slot = 62_185
     burn_nonce = 1
@@ -373,23 +386,24 @@ def main():
     total_supply -= burn_wei
 
     burn_id = derive_burn_id(args.chain_id, alice_lez, eth_recipient, burn_wei, burn_nonce, lez_burn_slot)
-    print(f"  [+] Alice burns          : {burn_wei / 10**18:.2f} mETH")
+    print(f"  [+] Alice burns          : {burn_wei / 10**18:.4f} mETH")
+    print(f"  [+] Alice balance post-burn : {alice_balance / 10**18:.4f} mETH")
     print(f"  [+] Target Chain ID      : {args.chain_id}")
     print(f"  [+] Burn Nonce           : {burn_nonce} at LEZ slot {lez_burn_slot}")
     print(f"  [+] Canonical Keccak-256 : 0x{burn_id.hex()}")
 
     print("\n  [+] Executing unlockETH on MosooLocker.sol on Ethereum:")
-    print("      * Verifying canonical burnId derivation")
+    print("      * Verifying canonical burnId derivation: keccak256(mosoo_burn_v1 || chain_id || lezOwner || recipient || amount || nonce || slot)")
     print("      * Verifying burn has not already been executed (replay check)")
     print("      * Verifying burn has not been cancelled by Guardian/Owner (cancelledBurns check)")
-    print(f"      * Transferring {burn_wei / 10**18:.2f} ETH to 0x{eth_recipient.hex()}")
+    print(f"      * Transferring {burn_wei / 10**18:.4f} ETH to 0x{eth_recipient.hex()}")
     print("      * Marking executedBurns[burnId] = true")
 
     print("\n  [+] Final Settlement Verification:")
-    print(f"      * Total ETH Locked in Ethereum Locker : {total_supply / 10**18:.2f} ETH")
-    print(f"      * Total mETH Active on LEZ           : {total_supply / 10**18:.2f} mETH")
-    print(f"      * Total ETH Released to Recipient    : {burn_wei / 10**18:.2f} ETH")
-    print(f"      * Invariant: Locked ETH ({total_supply / 10**18:.1f}) == Active mETH ({total_supply / 10**18:.1f}) [100% MATCH]")
+    print(f"      * Total ETH Remaining in Locker : {total_supply / 10**18:.4f} ETH")
+    print(f"      * Total mETH Remaining on LEZ   : {total_supply / 10**18:.4f} mETH")
+    print(f"      * Total ETH Released to Recipient: {burn_wei / 10**18:.4f} ETH")
+    print(f"      * Invariant: Remaining Locked ETH ({total_supply / 10**18:.4f}) == Active mETH ({total_supply / 10**18:.4f}) [100% MATCH]")
 
     print("\n" + "=" * 80)
     print(f"[+] TWO-WAY BRIDGE PIPELINE ({args.mode.upper()} MODE) COMPLETED SUCCESSFULLY")

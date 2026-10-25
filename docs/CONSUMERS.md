@@ -172,6 +172,14 @@ On the live Logos Execution Zone runtime:
 - When a claim transaction executes, LEZ attempts to initialize the PDA account.
 - If the account already exists (indicating a prior claim), the LEZ transaction runtime aborts with an account collision error, preventing replay at the consensus layer before any token minting instruction executes.
 
+### Host Runtime Account Ownership & CPI Provenance Verification
+
+To prevent attackers from passing caller-spoofed `StatementAccount` structs in decoupled relayer architectures, LEZ smart contracts enforce runtime-level account ownership:
+1. **Host-Level Account Ownership (`RuntimeAccount`):** During Cross-Program Invocation (CPI) or account loading, the LEZ sequencer asserts that the statement account is strictly owned by `MOSOO_PROGRAM_ID` (`account.owner == MOSOO_PROGRAM_ID`).
+2. **Canonical PDA Derivation:** The consumer re-derives `derive_statement_pda(chain_id, statement_id)` and verifies that `account.address == expected_pda`.
+3. **Decoupled Relayer Invocations:** Consuming contracts utilize `mint_deposit_runtime_account_u256` or `claim_authenticated_runtime_account_u256` to validate host-provided runtime metadata rather than relying solely on caller-provided unauthenticated fields.
+4. **Administrative Configuration Guarding:** Bridge configuration mutators `register_trusted_locker_authorized` and `allow_token_authorized` strictly enforce administrative key authorization before any locker or token whitelist alterations are committed to state.
+
 ---
 
 ## 5. Two-Way Token Bridge & Burn Ledgers (LEZ ↔ Ethereum)
