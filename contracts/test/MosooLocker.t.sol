@@ -580,4 +580,60 @@ contract MosooLockerTest is Test {
         uint256 prunedEmpty = locker.pruneExpiredWithdrawalsETH(10);
         assertEq(prunedEmpty, 0, "empty prune must return 0");
     }
+
+    function test_cross_instance_replay_rejection() public {
+        vm.deal(user, 1 ether);
+        vm.prank(user);
+        locker.depositETH{value: 1 ether}(bytes32(uint256(0x1111)));
+
+        bytes32 sourceInstanceA = bytes32(uint256(0xAAAA));
+        bytes32 sourceInstanceB = bytes32(uint256(0xBBBB));
+        bytes32 lezOwner = bytes32(uint256(0x1111));
+        address payable recipient = payable(user);
+        uint256 amount = 0.5 ether;
+        uint64 burnNonce = 1;
+        uint64 lezSlot = 6000;
+
+        // 1. Generate signature authorized strictly for sourceInstanceA
+        bytes32 burnIdA = keccak256(
+            abi.encodePacked("mosoo_burn_v2", block.chainid, sourceInstanceA, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        bytes32 structHashA = keccak256(
+            abi.encode(
+                locker.BURN_ETH_V2_TYPEHASH(),
+                burnIdA,
+                sourceInstanceA,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        bytes32 digestA = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHashA));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digestA);
+        bytes memory sigA = abi.encodePacked(r, s, v);
+
+        // 2. Cross-instance attack: Attempting to unlock on sourceInstanceB using signature for sourceInstanceA
+        bytes32 burnIdB = keccak256(
+            abi.encodePacked("mosoo_burn_v2", block.chainid, sourceInstanceB, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        try locker.unlockETHWithInstance(burnIdB, sourceInstanceB, amount, recipient, lezOwner, burnNonce, lezSlot, sigA) {
+            revert("unlockETHWithInstance MUST reject cross-instance replay on sourceInstanceB");
+        } catch {}
+
+        // 3. Zero sourceInstance MUST revert
+        try locker.unlockETHWithInstance(burnIdA, bytes32(0), amount, recipient, lezOwner, burnNonce, lezSlot, sigA) {
+            revert("unlockETHWithInstance MUST revert on zero sourceInstance");
+        } catch {}
+
+        // 4. Authentic instance unlock succeeds
+        locker.unlockETHWithInstance(burnIdA, sourceInstanceA, amount, recipient, lezOwner, burnNonce, lezSlot, sigA);
+        assertTrue(locker.executedBurns(burnIdA), "burnIdA must be marked executed");
+
+        // 5. Duplicate replay MUST be rejected
+        try locker.unlockETHWithInstance(burnIdA, sourceInstanceA, amount, recipient, lezOwner, burnNonce, lezSlot, sigA) {
+            revert("Duplicate unlock must revert");
+        } catch {}
+    }
 }

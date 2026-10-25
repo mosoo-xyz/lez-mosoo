@@ -4315,3 +4315,32 @@ fn test_mutation_attack_46_dual_nullifier_atomic_rollback_on_partial_failure() {
     assert_eq!(store.get_account(&statement_pda), Some(data.clone()));
     assert_eq!(store.get_account(&subject_pda), Some(data));
 }
+
+/// Attack 47: Batch Rollback Partial Failure Detection.
+/// Verifies that if rollback itself encounters a storage removal failure, the storage engine
+/// strictly raises `BatchRollbackPartialFailure` so the caller is immediately notified of dirty state.
+#[test]
+fn test_mutation_attack_47_batch_rollback_failure_detection() {
+    let mut store = ProgramAccountStore::new();
+    let statement_pda = [0x77; 32];
+    let subject_pda = [0x88; 32];
+    let data = vec![9, 8, 7];
+
+    // Configure write to fail on subject_pda, AND removal to fail on statement_pda during rollback
+    store.fail_on_address = Some(subject_pda);
+    store.fail_on_remove = Some(statement_pda);
+
+    let batch = vec![
+        (statement_pda, data.clone(), MOSOO_PROGRAM_ID),
+        (subject_pda, data.clone(), MOSOO_PROGRAM_ID),
+    ];
+
+    let res = store.try_set_accounts_batch_with_owner(&batch);
+    assert!(
+        matches!(
+            res,
+            Err(mosoo_core::types::StoreError::BatchRollbackPartialFailure { .. })
+        ),
+        "Storage engine must report BatchRollbackPartialFailure when rollback removal fails"
+    );
+}

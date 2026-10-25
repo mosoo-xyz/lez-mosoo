@@ -1624,6 +1624,29 @@ pub fn derive_burn_id(
     keccak256(&packed).0
 }
 
+/// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol` V2 with cross-instance domain separation:
+/// `keccak256(abi.encodePacked("mosoo_burn_v2", block.chainid, sourceInstance, lezOwner, recipient, amount, burnNonce, lezSlot))`
+pub fn derive_burn_id_v2(
+    chain_id: u64,
+    source_instance: &[u8; 32],
+    lez_owner: &[u8; 32],
+    eth_recipient: &[u8; 20],
+    amount_wei: u128,
+    burn_nonce: u64,
+    lez_slot: u64,
+) -> [u8; 32] {
+    let mut packed = Vec::with_capacity(177);
+    packed.extend_from_slice(b"mosoo_burn_v2");
+    packed.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    packed.extend_from_slice(source_instance);
+    packed.extend_from_slice(lez_owner);
+    packed.extend_from_slice(eth_recipient);
+    packed.extend_from_slice(&U256::from(amount_wei).to_be_bytes::<32>());
+    packed.extend_from_slice(&burn_nonce.to_be_bytes());
+    packed.extend_from_slice(&lez_slot.to_be_bytes());
+    keccak256(&packed).0
+}
+
 /// An on-chain account holding synthetic `mETH` on Logos Execution Zone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MethAccount {

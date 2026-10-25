@@ -12,10 +12,12 @@
 
 use alloy_primitives::U256;
 use erc20_receiver::{
-    derive_burn_erc20_id, Erc20Ledger, Erc20TransferClaim, NullifierSet as Erc20NullifierSet,
-    ReceiverError,
+    derive_burn_erc20_id, derive_burn_erc20_id_v2, Erc20Ledger, Erc20TransferClaim,
+    NullifierSet as Erc20NullifierSet, ReceiverError,
 };
-use ether_receiver::{derive_burn_id, EtherNullifierSet, EtherReceiverError, MethLedger};
+use ether_receiver::{
+    derive_burn_id, derive_burn_id_v2, EtherNullifierSet, EtherReceiverError, MethLedger,
+};
 use mosoo_core::predicate::{derive_erc20_transfer_subject_key, derive_eth_deposit_subject_key};
 use mosoo_core::types::{
     StatementAccount, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
@@ -2169,4 +2171,68 @@ fn test_rolling_limit_dos_cleanup_pruning() {
         Ok(())
     );
     assert_eq!(locker.daily_withdrawn_eth, large_amount);
+}
+
+#[test]
+fn test_two_way_bridge_cross_instance_burn_domain_separation() {
+    let instance_a = [0xAA; 32];
+    let instance_b = [0xBB; 32];
+    let lez_owner = [0x11; 32];
+    let recipient = [0x22; 20];
+    let token = [0x33; 20];
+    let amount = 1_000_000_000_000_000_000u128;
+    let nonce = 1u64;
+    let slot = 5000u64;
+
+    // 1. Native ETH burn ID V2 with instance binding
+    let burn_id_a = derive_burn_id_v2(
+        ETH_MAINNET_CHAIN_ID,
+        &instance_a,
+        &lez_owner,
+        &recipient,
+        amount,
+        nonce,
+        slot,
+    );
+    let burn_id_b = derive_burn_id_v2(
+        ETH_MAINNET_CHAIN_ID,
+        &instance_b,
+        &lez_owner,
+        &recipient,
+        amount,
+        nonce,
+        slot,
+    );
+
+    assert_ne!(
+        burn_id_a, burn_id_b,
+        "Identical burn parameters for different LEZ instances MUST yield distinct burn IDs"
+    );
+
+    // 2. ERC-20 burn ID V2 with instance binding
+    let erc20_burn_id_a = derive_burn_erc20_id_v2(
+        ETH_MAINNET_CHAIN_ID,
+        &instance_a,
+        &token,
+        &lez_owner,
+        &recipient,
+        amount,
+        nonce,
+        slot,
+    );
+    let erc20_burn_id_b = derive_burn_erc20_id_v2(
+        ETH_MAINNET_CHAIN_ID,
+        &instance_b,
+        &token,
+        &lez_owner,
+        &recipient,
+        amount,
+        nonce,
+        slot,
+    );
+
+    assert_ne!(
+        erc20_burn_id_a, erc20_burn_id_b,
+        "Identical ERC-20 burn parameters for different LEZ instances MUST yield distinct burn IDs"
+    );
 }

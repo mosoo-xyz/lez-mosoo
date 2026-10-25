@@ -1636,6 +1636,32 @@ pub fn derive_burn_erc20_id(
     keccak256(&packed).0
 }
 
+/// Derives the canonical 32-byte ERC-20 burn identifier matching `MosooLocker.sol` V2 with cross-instance domain separation:
+/// `keccak256(abi.encodePacked("mosoo_burn_erc20_v2", block.chainid, sourceInstance, token, lezOwner, recipient, amount, burnNonce, lezSlot))`
+#[allow(clippy::too_many_arguments)]
+pub fn derive_burn_erc20_id_v2(
+    chain_id: u64,
+    source_instance: &[u8; 32],
+    token: &[u8; 20],
+    lez_owner: &[u8; 32],
+    eth_recipient: &[u8; 20],
+    amount: u128,
+    burn_nonce: u64,
+    lez_slot: u64,
+) -> [u8; 32] {
+    let mut packed = Vec::with_capacity(197);
+    packed.extend_from_slice(b"mosoo_burn_erc20_v2");
+    packed.extend_from_slice(&U256::from(chain_id).to_be_bytes::<32>());
+    packed.extend_from_slice(source_instance);
+    packed.extend_from_slice(token);
+    packed.extend_from_slice(lez_owner);
+    packed.extend_from_slice(eth_recipient);
+    packed.extend_from_slice(&U256::from(amount).to_be_bytes::<32>());
+    packed.extend_from_slice(&burn_nonce.to_be_bytes());
+    packed.extend_from_slice(&lez_slot.to_be_bytes());
+    keccak256(&packed).0
+}
+
 /// An on-chain account holding synthetic ERC-20 token balances on Logos Execution Zone.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Erc20Account {

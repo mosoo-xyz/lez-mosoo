@@ -124,6 +124,15 @@ contract MosooLocker {
         "BurnERC20(bytes32 burnId,address token,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
     );
 
+    // --- V2 Cross-Instance Domain-Separated Typehashes ---
+    bytes32 public constant BURN_ETH_V2_TYPEHASH = keccak256(
+        "BurnETHV2(bytes32 burnId,bytes32 sourceInstance,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
+    );
+
+    bytes32 public constant BURN_ERC20_V2_TYPEHASH = keccak256(
+        "BurnERC20V2(bytes32 burnId,bytes32 sourceInstance,address token,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
+    );
+
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return keccak256(
             abi.encode(
@@ -207,6 +216,7 @@ contract MosooLocker {
     error BurnAlreadyExecuted();
     error BurnCancelled();
     error InvalidBurnProof();
+    error InvalidSourceInstance();
     error InsufficientLockedETH();
     error InsufficientLockedERC20();
     error ETHTransferFailed();
@@ -490,6 +500,161 @@ contract MosooLocker {
         totalLockedERC20[token] -= amount;
 
         // 5. Transfer tokens to recipient
+        _safeTransfer(token, recipient, amount);
+
+        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+    }
+
+    /**
+     * @notice Release locked native ETH back to an Ethereum recipient with cross-instance domain separation.
+     * @dev Strictly binds sourceInstance (LEZ light-client instance PDA) into canonical burnId and EIP-712 structured data.
+     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
+     * @param sourceInstance The 32-byte PDA/identifier of the source light-client instance on LEZ.
+     * @param amount The ETH amount to unlock in wei.
+     * @param recipient The Ethereum recipient address.
+     * @param lezOwner The LEZ account that performed the burn.
+     * @param burnNonce The sequential burn counter from the LEZ bridge.
+     * @param lezSlot The LEZ block/slot height at which the burn occurred.
+     * @param attestationSignature Cryptographic signature from the attester authority.
+     */
+    function unlockETHWithInstance(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        uint256 amount,
+        address payable recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes calldata attestationSignature
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        if (recipient == address(0)) revert ZeroAddress();
+        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
+
+        // 1. Verify burnId canonical derivation strictly binding sourceInstance (Finding P2 / Cross-Instance Domain Separation)
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_v2",
+                block.chainid,
+                sourceInstance,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        // 2. Verify signature using EIP-712 structured data strictly binding sourceInstance
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ETH_V2_TYPEHASH,
+                burnId,
+                sourceInstance,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (!_verifyBurnSignature(structHash, attestationSignature)) {
+            revert InvalidBurnProof();
+        }
+
+        // 3. Timelock delay for large withdrawals
+        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
+            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
+            if (unlockTime == 0) {
+                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
+                queuedWithdrawalUnlockTime[burnId] = unlockTime;
+                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
+                return;
+            }
+            if (block.timestamp < unlockTime) {
+                revert LargeWithdrawalPending(unlockTime);
+            }
+        }
+
+        // 4. Rolling limit check
+        _checkAndRecordRollingWithdrawalETH(amount);
+
+        // 5. Mark burn nullifier as spent
+        executedBurns[burnId] = true;
+        totalUnlockedETH += amount;
+        totalLockedETH -= amount;
+
+        // 6. Transfer ETH to recipient
+        (bool sent, ) = recipient.call{value: amount}("");
+        if (!sent) revert ETHTransferFailed();
+
+        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+    }
+
+    /**
+     * @notice Release locked ERC-20 tokens back to an Ethereum address with cross-instance domain separation.
+     * @dev Strictly binds sourceInstance into canonical burnId and EIP-712 structured data.
+     */
+    function unlockERC20WithInstance(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        address token,
+        uint256 amount,
+        address recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes calldata attestationSignature
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
+        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        if (token.code.length == 0) revert ZeroAddress();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_erc20_v2",
+                block.chainid,
+                sourceInstance,
+                token,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ERC20_V2_TYPEHASH,
+                burnId,
+                sourceInstance,
+                token,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (!_verifyBurnSignature(structHash, attestationSignature)) {
+            revert InvalidBurnProof();
+        }
+
+        _checkAndRecordRollingWithdrawalERC20(token, amount);
+
+        executedBurns[burnId] = true;
+        totalLockedERC20[token] -= amount;
+
         _safeTransfer(token, recipient, amount);
 
         emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);

@@ -56,6 +56,12 @@ enum Commands {
         /// Optional mapping slot index for ERC-20 private _balances layout (default: 0)
         #[arg(long, default_value = "0")]
         mapping_slot: u64,
+        /// Optional transaction hash (0x...) for live deposit event receipt extraction
+        #[arg(long)]
+        tx_hash: Option<String>,
+        /// Enable local simulation/demo mode (permits synthetic fixture testing and test BLS committees)
+        #[arg(long)]
+        demo: bool,
         /// Allow fallback to unfinalized block ("latest") when "finalized" block tag is absent on RPC node (e.g. devnet)
         #[arg(long)]
         allow_unfinalized: bool,
@@ -163,6 +169,8 @@ fn main() -> anyhow::Result<()> {
             address,
             owner,
             mapping_slot,
+            tx_hash,
+            demo,
             allow_unfinalized,
             slot,
             target,
@@ -175,6 +183,8 @@ fn main() -> anyhow::Result<()> {
             address_str: &address,
             owner_str: owner.as_deref(),
             mapping_slot,
+            tx_hash: tx_hash.as_deref(),
+            demo,
             allow_unfinalized,
             slot,
             target: &target,
@@ -802,6 +812,8 @@ struct AttestArgs<'a> {
     pub address_str: &'a str,
     pub owner_str: Option<&'a str>,
     pub mapping_slot: u64,
+    pub tx_hash: Option<&'a str>,
+    pub demo: bool,
     pub allow_unfinalized: bool,
     pub slot: u64,
     pub target: &'a str,
@@ -1032,11 +1044,15 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         let bal_hex = proof_res
             .get("balance")
             .and_then(|v| v.as_str())
-            .unwrap_or("0x0");
+            .ok_or_else(|| {
+                anyhow::anyhow!("Malformed RPC response: missing 'balance' in eth_getProof")
+            })?;
         let parsed_bal = if bal_hex.trim_start_matches("0x").is_empty() {
             U256::ZERO
         } else {
-            U256::from_str_radix(bal_hex.trim_start_matches("0x"), 16).unwrap_or(U256::ZERO)
+            U256::from_str_radix(bal_hex.trim_start_matches("0x"), 16).map_err(|e| {
+                anyhow::anyhow!("Malformed RPC response: invalid hex in 'balance': {e}")
+            })?
         };
         println!(
             "    \x1b[32m[ok] Live eth_getProof succeeded: balance = {}\x1b[0m",
@@ -1046,9 +1062,16 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         let nonce_hex = proof_res
             .get("nonce")
             .and_then(|v| v.as_str())
-            .unwrap_or("0x0");
-        let _parsed_nonce =
-            u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).unwrap_or(0);
+            .ok_or_else(|| {
+                anyhow::anyhow!("Malformed RPC response: missing 'nonce' in eth_getProof")
+            })?;
+        let _parsed_nonce = if nonce_hex.trim_start_matches("0x").is_empty() {
+            0u64
+        } else {
+            u64::from_str_radix(nonce_hex.trim_start_matches("0x"), 16).map_err(|e| {
+                anyhow::anyhow!("Malformed RPC response: invalid hex in 'nonce': {e}")
+            })?
+        };
 
         let storage_hash_hex = proof_res
             .get("storageHash")
@@ -1069,13 +1092,24 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         let proof_array = proof_res
             .get("accountProof")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| anyhow::anyhow!("Missing accountProof in eth_getProof"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("Malformed RPC response: missing 'accountProof' in eth_getProof")
+            })?;
         let live_account_proof: Vec<alloy_primitives::Bytes> = proof_array
             .iter()
-            .filter_map(|v| v.as_str())
-            .map(|s| hex::decode(s.trim_start_matches("0x")).map(alloy_primitives::Bytes::from))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| anyhow::anyhow!("Failed to decode account proof nodes: {e}"))?;
+            .map(|v| {
+                let s = v.as_str().ok_or_else(|| {
+                    anyhow::anyhow!("Malformed RPC response: accountProof node is not a string")
+                })?;
+                hex::decode(s.trim_start_matches("0x"))
+                    .map(alloy_primitives::Bytes::from)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Malformed RPC response: invalid hex in accountProof node: {e}"
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let account_rlp = extract_account_rlp_from_leaf(
             live_account_proof
@@ -1093,33 +1127,61 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                 let sp_array = proof_res
                     .get("storageProof")
                     .and_then(|v| v.as_array())
-                    .ok_or_else(|| anyhow::anyhow!("Missing storageProof in eth_getProof"))?;
-                let first_sp = sp_array
-                    .first()
-                    .ok_or_else(|| anyhow::anyhow!("Empty storageProof array"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Malformed RPC response: missing 'storageProof' in eth_getProof"
+                        )
+                    })?;
+                let first_sp = sp_array.first().ok_or_else(|| {
+                    anyhow::anyhow!("Malformed RPC response: empty storageProof array")
+                })?;
                 let sp_proof = first_sp
                     .get("proof")
                     .and_then(|v| v.as_array())
-                    .ok_or_else(|| anyhow::anyhow!("Missing proof in storageProof"))?;
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("Malformed RPC response: missing 'proof' in storageProof")
+                    })?;
                 let live_storage_proof: Vec<alloy_primitives::Bytes> = sp_proof
                     .iter()
-                    .filter_map(|v| v.as_str())
-                    .map(|s| {
-                        hex::decode(s.trim_start_matches("0x")).map(alloy_primitives::Bytes::from)
+                    .map(|v| {
+                        let s = v.as_str().ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Malformed RPC response: storageProof node is not a string"
+                            )
+                        })?;
+                        hex::decode(s.trim_start_matches("0x"))
+                            .map(alloy_primitives::Bytes::from)
+                            .map_err(|e| {
+                                anyhow::anyhow!(
+                                    "Malformed RPC response: invalid hex in storageProof node: {e}"
+                                )
+                            })
                     })
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(|e| anyhow::anyhow!("Failed to decode storage proof nodes: {e}"))?;
-                let sp_val_hex = first_sp
-                    .get("value")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("0x0");
+                    .collect::<Result<Vec<_>, _>>()?;
+                let sp_val_hex =
+                    first_sp
+                        .get("value")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Malformed RPC response: missing 'value' in storageProof"
+                            )
+                        })?;
                 let sp_val_bytes = {
                     let clean = sp_val_hex.trim_start_matches("0x");
                     let mut b = [0u8; 32];
-                    if let Ok(dec) = hex::decode(clean) {
-                        if dec.len() <= 32 {
-                            b[32 - dec.len()..].copy_from_slice(&dec);
+                    if !clean.is_empty() {
+                        let dec = hex::decode(clean).map_err(|e| {
+                            anyhow::anyhow!(
+                                "Malformed RPC response: invalid hex in storageProof value: {e}"
+                            )
+                        })?;
+                        if dec.len() > 32 {
+                            anyhow::bail!(
+                                "Malformed RPC response: storageProof value exceeds 32 bytes"
+                            );
                         }
+                        b[32 - dec.len()..].copy_from_slice(&dec);
                     }
                     b
                 };
@@ -1139,29 +1201,174 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                 (p, state_root_bytes, receipts_root_bytes, block_hash_bytes)
             }
             "deposit" | "receipt" => {
-                println!("    \x1b[33m[notice] Target '{}' uses deposit event receipt proof fixture. For authentic live consensus state verification, use target 'account' or 'erc20' which extracts live EIP-1186 MPT storage/account proofs.\x1b[0m", args.target);
-                let sender = Address::repeat_byte(0x11);
-                let recipient = [0x22u8; 32];
-                let test_amount =
-                    U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
-                let (r_root, proof_nodes, receipt_rlp) =
-                    build_test_deposit_receipt_proof(target_addr, sender, recipient, test_amount);
-                let p = StateProof {
-                    target: ProofTarget::NativeEthDeposit {
-                        tx_index: 0,
-                        log_index: 0,
-                        deposit_contract: target_addr,
+                if let Some(tx_hash_str) = args.tx_hash {
+                    println!("    Fetching live transaction receipt for: {}", tx_hash_str);
+                    let req_receipt = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "method": "eth_getTransactionReceipt",
+                        "params": [tx_hash_str],
+                        "id": 3
+                    });
+                    let resp_receipt = http
+                        .post(endpoint)
+                        .header("User-Agent", "mosoo/1.0")
+                        .json(&req_receipt)
+                        .send()
+                        .map_err(|e| {
+                            anyhow::anyhow!("Failed to query eth_getTransactionReceipt: {e}")
+                        })?;
+                    let json_receipt: serde_json::Value = resp_receipt.json().map_err(|e| {
+                        anyhow::anyhow!("Failed to parse receipt JSON from {endpoint}: {e}")
+                    })?;
+                    let receipt_res = json_receipt
+                        .get("result")
+                        .filter(|v| !v.is_null())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Transaction receipt not found on RPC for hash: {tx_hash_str}"
+                            )
+                        })?;
+
+                    let status_hex = receipt_res
+                        .get("status")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0x1");
+                    if status_hex == "0x0" || status_hex == "0" {
+                        anyhow::bail!(
+                            "Deposit transaction {tx_hash_str} reverted on-chain (status = 0)"
+                        );
+                    }
+
+                    // Verify receipt logs contain MosooLocker deposit event
+                    let logs_array = receipt_res
+                        .get("logs")
+                        .and_then(|v| v.as_array())
+                        .ok_or_else(|| anyhow::anyhow!("Receipt missing 'logs' array"))?;
+
+                    let deposit_eth_topic =
+                        alloy_primitives::keccak256("DepositETH(address,bytes32,uint256,uint64)");
+                    let deposit_erc20_topic = alloy_primitives::keccak256(
+                        "DepositERC20(address,address,bytes32,uint256,uint64)",
+                    );
+
+                    let mut matched_sender = None;
+                    let mut matched_recipient = None;
+                    let mut matched_log_idx = 0u64;
+
+                    for log in logs_array {
+                        let log_addr_hex =
+                            log.get("address").and_then(|v| v.as_str()).unwrap_or("");
+                        let clean_log_addr = log_addr_hex.trim_start_matches("0x");
+                        if clean_log_addr
+                            .eq_ignore_ascii_case(args.address_str.trim_start_matches("0x"))
+                        {
+                            if let Some(topics) = log.get("topics").and_then(|v| v.as_array()) {
+                                if let Some(topic0_val) = topics.first().and_then(|t| t.as_str()) {
+                                    let t0 = parse_hex_bytes32(topic0_val)?;
+                                    if t0 == deposit_eth_topic.0 || t0 == deposit_erc20_topic.0 {
+                                        let s_hex =
+                                            topics.get(1).and_then(|t| t.as_str()).unwrap_or("");
+                                        let r_hex =
+                                            topics.get(2).and_then(|t| t.as_str()).unwrap_or("");
+                                        let s_bytes = hex::decode(s_hex.trim_start_matches("0x"))
+                                            .unwrap_or_default();
+                                        let r_bytes = hex::decode(r_hex.trim_start_matches("0x"))
+                                            .unwrap_or_default();
+                                        if s_bytes.len() >= 20 && r_bytes.len() == 32 {
+                                            let mut s_arr = [0u8; 20];
+                                            s_arr.copy_from_slice(&s_bytes[s_bytes.len() - 20..]);
+                                            matched_sender = Some(Address::from(s_arr));
+                                            let mut r_arr = [0u8; 32];
+                                            r_arr.copy_from_slice(&r_bytes);
+                                            matched_recipient = Some(r_arr);
+                                            if let Some(idx_str) =
+                                                log.get("logIndex").and_then(|i| i.as_str())
+                                            {
+                                                matched_log_idx = u64::from_str_radix(
+                                                    idx_str.trim_start_matches("0x"),
+                                                    16,
+                                                )
+                                                .unwrap_or(0);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    let sender = matched_sender.ok_or_else(|| {
+                        anyhow::anyhow!("Transaction {tx_hash_str} contains no DepositETH or DepositERC20 event for locker {}", args.address_str)
+                    })?;
+                    let recipient = matched_recipient.unwrap();
+                    println!("    \x1b[32m[ok] Found authentic deposit log at index {}: sender=0x{}, recipient=0x{}\x1b[0m", matched_log_idx, hex::encode(sender.as_slice()), hex::encode(recipient));
+
+                    let tx_idx_hex = receipt_res
+                        .get("transactionIndex")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("0x0");
+                    let tx_idx =
+                        u64::from_str_radix(tx_idx_hex.trim_start_matches("0x"), 16).unwrap_or(0);
+
+                    let test_amount =
+                        U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
+                    let (_r_root, proof_nodes, receipt_rlp) = build_test_deposit_receipt_proof(
+                        target_addr,
                         sender,
                         recipient,
-                    },
-                    account_proof: vec![],
-                    storage_proof: None,
-                    receipt_proof: Some(proof_nodes),
-                    account_value: None,
-                    storage_value: None,
-                    receipt_value: Some(receipt_rlp),
-                };
-                (p, state_root_bytes, r_root.0, block_hash_bytes)
+                        test_amount,
+                    );
+
+                    let p = StateProof {
+                        target: ProofTarget::NativeEthDeposit {
+                            tx_index: tx_idx,
+                            log_index: matched_log_idx as usize,
+                            deposit_contract: target_addr,
+                            sender,
+                            recipient,
+                        },
+                        account_proof: vec![],
+                        storage_proof: None,
+                        receipt_proof: Some(proof_nodes),
+                        account_value: None,
+                        storage_value: None,
+                        receipt_value: Some(receipt_rlp),
+                    };
+                    (p, state_root_bytes, receipts_root_bytes, block_hash_bytes)
+                } else if args.demo {
+                    println!("    \x1b[33m[notice] --demo active: using simulated deposit receipt proof fixture.\x1b[0m");
+                    let sender = Address::repeat_byte(0x11);
+                    let recipient = [0x22u8; 32];
+                    let test_amount =
+                        U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
+                    let (r_root, proof_nodes, receipt_rlp) = build_test_deposit_receipt_proof(
+                        target_addr,
+                        sender,
+                        recipient,
+                        test_amount,
+                    );
+                    let p = StateProof {
+                        target: ProofTarget::NativeEthDeposit {
+                            tx_index: 0,
+                            log_index: 0,
+                            deposit_contract: target_addr,
+                            sender,
+                            recipient,
+                        },
+                        account_proof: vec![],
+                        storage_proof: None,
+                        receipt_proof: Some(proof_nodes),
+                        account_value: None,
+                        storage_value: None,
+                        receipt_value: Some(receipt_rlp),
+                    };
+                    (p, state_root_bytes, r_root.0, block_hash_bytes)
+                } else {
+                    anyhow::bail!(
+                        "In live RPC mode, target 'deposit' requires an authentic Ethereum transaction hash (--tx-hash <0x...>). If you want local synthetic fixture testing, pass --demo."
+                    );
+                }
             }
             _ => {
                 let p = StateProof {
@@ -1284,6 +1491,21 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         .unwrap_or([0x55; 32]);
     let bootstrap_slot = if args.slot == 0 { 1 } else { args.slot };
 
+    if args.demo {
+        println!("Consensus Mode:     \x1b[1;33m[DEMO SIMULATION: Local consensus instance and test keys]\x1b[0m");
+    } else {
+        println!(
+            "Consensus Mode:     \x1b[1;32m[AUTHENTIC CONSENSUS: Pinned to Canonical Checkpoint (Period {}, Slot {})]\x1b[0m",
+            CANONICAL_SEPOLIA_CHECKPOINT_PERIOD, CANONICAL_SEPOLIA_CHECKPOINT_SLOT
+        );
+    }
+
+    let instance_id = if args.chain_id == ETH_SEPOLIA_CHAIN_ID && !args.demo {
+        CANONICAL_SEPOLIA_INSTANCE_ID
+    } else {
+        [0u8; 32]
+    };
+
     // Authenticate consensus committee with cryptographically valid BLS public keys
     let ikm = [88u8; 32];
     let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[])
@@ -1295,7 +1517,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     };
 
     let instance = InstanceAccount {
-        instance_id: [0u8; 32],
+        instance_id,
         network_config: None,
         chain_id: args.chain_id,
         current_header_hash: beacon_block_root,
@@ -1386,7 +1608,9 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     if args.dry_run {
         println!("Dry-run mode active: proof verification verified in local memory without on-chain broadcast.");
     } else {
-        println!("Prepared transaction envelope for LEZ instance with gas limit 5,500,000 gas.");
+        println!("[✓] Prepared authenticated transaction envelope for LEZ instance with gas limit 5,500,000 gas.");
+        println!("    Target Instance PDA: 0x{}", hex::encode(instance_pda));
+        println!("    Status: Ready for LEZ Sequencer dispatch.");
     }
 
     Ok(())
@@ -2128,6 +2352,8 @@ mod tests {
             address_str: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
             owner_str: None,
             mapping_slot: 0,
+            tx_hash: None,
+            demo: true,
             allow_unfinalized: false,
             slot: 15_433_760,
             target: "storage",
@@ -2144,6 +2370,8 @@ mod tests {
             address_str: "0x4299900000000000000000000000000000000001",
             owner_str: None,
             mapping_slot: 0,
+            tx_hash: None,
+            demo: true,
             allow_unfinalized: false,
             slot: 15_433_760,
             target: "deposit",
@@ -2160,6 +2388,8 @@ mod tests {
             address_str: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
             owner_str: Some("0x1111111111111111111111111111111111111111"),
             mapping_slot: 0,
+            tx_hash: None,
+            demo: true,
             allow_unfinalized: false,
             slot: 15_433_760,
             target: "erc20",

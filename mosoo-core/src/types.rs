@@ -43,16 +43,39 @@ pub const MOSOO_PROGRAM_ID: [u8; 32] = [
 ];
 
 /// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Sepolia.
+/// Cryptographically derived via `derive_instance_pda(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_INSTANCE_ID)`.
 pub const CANONICAL_SEPOLIA_MOSOO_INSTANCE: [u8; 32] = [
-    0x5e, 0x90, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
-    0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+    0x98, 0x4a, 0x6b, 0x2e, 0x81, 0xc3, 0x18, 0x49, 0x2c, 0x2c, 0x0a, 0xbd, 0x21, 0x1d, 0xfb, 0xbb,
+    0x64, 0x1a, 0x3e, 0x71, 0xa5, 0xb2, 0x7f, 0xcf, 0x80, 0x67, 0x32, 0xad, 0x55, 0x86, 0x19, 0x12,
 ];
 
-/// Canonical Sepolia weak-subjectivity trusted checkpoint root (Period 1884/Capella/Deneb Anchor)
-pub const CANONICAL_SEPOLIA_CHECKPOINT_ROOT: [u8; 32] = [
-    0x5f, 0x18, 0xd0, 0x93, 0x3b, 0x81, 0x5a, 0x72, 0x4d, 0x9e, 0x3c, 0xa1, 0x2b, 0x7f, 0x4e, 0x88,
-    0x91, 0x02, 0x53, 0x64, 0x7a, 0x8b, 0x9c, 0x0d, 0x1e, 0x2f, 0x3a, 0x4b, 0x5c, 0x6d, 0x7e, 0x8f,
+/// Canonical instance identifier for Sepolia: sha256(b"mosoo_sepolia_instance_v1")
+pub const CANONICAL_SEPOLIA_INSTANCE_ID: [u8; 32] = [
+    0x8d, 0x28, 0x35, 0x80, 0xaa, 0x10, 0x7b, 0x57, 0x50, 0x1a, 0x40, 0x3f, 0xc4, 0x16, 0xa4, 0xd2,
+    0x53, 0x6a, 0xcf, 0x8a, 0x4d, 0x1f, 0xe8, 0xa9, 0x3e, 0x57, 0x34, 0xbb, 0xbe, 0xdc, 0x90, 0xe6,
 ];
+
+/// Canonical Sepolia weak-subjectivity trusted checkpoint root (Period 1395, Slot 11,434,912).
+/// Independently verified via Sepolia Lodestar consensus endpoint:
+/// `https://lodestar-sepolia.chainsafe.io/eth/v1/beacon/light_client/bootstrap/0x9e63ec3735177d6f97988238c6dfba0d262f0b7251a25ce6d07a0cd77ae12395`
+pub const CANONICAL_SEPOLIA_CHECKPOINT_ROOT: [u8; 32] = [
+    0x9e, 0x63, 0xec, 0x37, 0x35, 0x17, 0x7d, 0x6f, 0x97, 0x98, 0x82, 0x38, 0xc6, 0xdf, 0xba, 0x0d,
+    0x26, 0x2f, 0x0b, 0x72, 0x51, 0xa2, 0x5c, 0xe6, 0xd0, 0x7a, 0x0c, 0xd7, 0x7a, 0xe1, 0x23, 0x95,
+];
+
+/// Slot and Sync Committee Period of the canonical Sepolia weak-subjectivity checkpoint.
+pub const CANONICAL_SEPOLIA_CHECKPOINT_SLOT: u64 = 11_434_912;
+pub const CANONICAL_SEPOLIA_CHECKPOINT_PERIOD: u64 = 1_395;
+
+/// Computes the deterministic 32-byte PDA address of a light-client instance on LEZ.
+pub fn derive_instance_pda(chain_id: u64, instance_id: &[u8; 32]) -> [u8; 32] {
+    let mut h = sha2::Sha256::new();
+    sha2::Digest::update(&mut h, MOSOO_PROGRAM_ID);
+    sha2::Digest::update(&mut h, b"mosoo_instance");
+    sha2::Digest::update(&mut h, chain_id.to_le_bytes());
+    sha2::Digest::update(&mut h, instance_id);
+    sha2::Digest::finalize(h).into()
+}
 
 /// Derives the unique PDA address for the program-owned TrustedBridgeConfig account on LEZ.
 pub fn derive_bridge_config_pda() -> [u8; 32] {
@@ -564,6 +587,13 @@ pub enum StoreError {
     QuotaExceeded,
     #[error("unauthorized storage operation")]
     Unauthorized,
+    #[error("rollback removal failed for address {address:?}: {reason}")]
+    RollbackRemovalFailed { address: [u8; 32], reason: String },
+    #[error("batch write aborted due to write error ({original_error}); rollback also encountered failures: {rollback_errors:?}")]
+    BatchRollbackPartialFailure {
+        original_error: Box<StoreError>,
+        rollback_errors: Vec<([u8; 32], String)>,
+    },
     #[error("storage error: {0}")]
     Custom(String),
 }
@@ -603,6 +633,7 @@ pub trait AccountStore {
     /// Transactional batch account write enforcing atomicity.
     /// If any write fails, all previously written accounts in the batch are immediately
     /// removed to prevent orphaned/inconsistent storage state.
+    /// If any removal fails during rollback, a `BatchRollbackPartialFailure` is returned to notify the caller.
     fn try_set_accounts_batch_with_owner(
         &mut self,
         entries: &[([u8; 32], Vec<u8>, [u8; 32])],
@@ -613,8 +644,17 @@ pub trait AccountStore {
                 Ok(()) => written.push(*addr),
                 Err(err) => {
                     // Roll back all previously written accounts in this batch
+                    let mut rollback_errors = Vec::new();
                     for rolled in written {
-                        let _ = self.try_remove_account(&rolled);
+                        if let Err(r_err) = self.try_remove_account(&rolled) {
+                            rollback_errors.push((rolled, r_err.to_string()));
+                        }
+                    }
+                    if !rollback_errors.is_empty() {
+                        return Err(StoreError::BatchRollbackPartialFailure {
+                            original_error: Box::new(err),
+                            rollback_errors,
+                        });
                     }
                     return Err(err);
                 }
@@ -672,6 +712,7 @@ pub struct ProgramAccountStore {
     pub accounts: HashMap<[u8; 32], ProgramAccount>,
     pub simulate_write_failure: bool,
     pub fail_on_address: Option<[u8; 32]>,
+    pub fail_on_remove: Option<[u8; 32]>,
 }
 
 impl ProgramAccountStore {
@@ -680,6 +721,7 @@ impl ProgramAccountStore {
             accounts: HashMap::new(),
             simulate_write_failure: false,
             fail_on_address: None,
+            fail_on_remove: None,
         }
     }
 
@@ -724,6 +766,15 @@ impl AccountStore for ProgramAccountStore {
     }
     fn remove_account(&mut self, address: &[u8; 32]) -> bool {
         self.accounts.remove(address).is_some()
+    }
+    fn try_remove_account(&mut self, address: &[u8; 32]) -> Result<bool, StoreError> {
+        if self.fail_on_remove == Some(*address) {
+            return Err(StoreError::RollbackRemovalFailed {
+                address: *address,
+                reason: "simulated rollback removal failure in storage engine".into(),
+            });
+        }
+        Ok(self.remove_account(address))
     }
 }
 
