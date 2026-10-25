@@ -44,6 +44,7 @@ struct MockEthereumLocker {
     pub large_withdrawal_threshold_eth: u128,
     pub large_withdrawal_delay: u64,
     pub queued_withdrawals: HashMap<[u8; 32], u64>,
+    pub cancelled_burns: std::collections::HashSet<[u8; 32]>,
 }
 
 pub const AUTHORITY_CHANGE_DELAY: u64 = 86_400; // 1 day in seconds
@@ -70,6 +71,7 @@ impl MockEthereumLocker {
             large_withdrawal_threshold_eth: LARGE_WITHDRAWAL_THRESHOLD_ETH,
             large_withdrawal_delay: 86_400,
             queued_withdrawals: HashMap::new(),
+            cancelled_burns: std::collections::HashSet::new(),
         }
     }
 
@@ -203,7 +205,13 @@ impl MockEthereumLocker {
             return Err("NoQueuedWithdrawal");
         }
         self.queued_withdrawals.remove(&burn_id);
+        self.cancelled_burns.insert(burn_id);
         Ok(())
+    }
+
+    fn cancel_burn(&mut self, burn_id: [u8; 32]) {
+        self.queued_withdrawals.remove(&burn_id);
+        self.cancelled_burns.insert(burn_id);
     }
 
     /// Simulates `unlockETH(bytes32 burnId, uint256 amount, address recipient, ...)`
@@ -244,6 +252,9 @@ impl MockEthereumLocker {
         }
         if self.executed_burns.contains_key(&burn_id) {
             return Err("BurnAlreadyExecuted");
+        }
+        if self.cancelled_burns.contains(&burn_id) {
+            return Err("BurnCancelled");
         }
         if self.locked_eth_wei < amount_wei {
             return Err("InsufficientLockedETH");
@@ -853,7 +864,7 @@ fn test_mosoo_locker_large_withdrawal_queue_and_guardian_veto() {
     // Guardian vetoes the malicious queued withdrawal during an emergency!
     assert!(locker.cancel_queued_withdrawal(burn_id).is_ok());
 
-    // Subsequent unlock attempt fails because queue entry was purged
+    // Subsequent unlock attempt fails permanently with BurnCancelled! Re-queue bypass is strictly prevented.
     let post_cancel_res = locker.unlock_eth_with_time(
         burn_id,
         large_burn_amount,
@@ -863,6 +874,24 @@ fn test_mosoo_locker_large_withdrawal_queue_and_guardian_veto() {
         200,
         current_time + 100_000,
     );
-    // Queues fresh rather than allowing instant execution!
-    assert_eq!(post_cancel_res.unwrap_err(), "WithdrawalQueued");
+    assert_eq!(post_cancel_res.unwrap_err(), "BurnCancelled");
+}
+
+#[test]
+fn test_mosoo_locker_proactive_guardian_veto_rejects_withdrawal() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    let total_deposit: u128 = 20_000_000_000_000_000_000; // 20 ETH
+    locker.deposit_eth(total_deposit);
+
+    let burn_amount: u128 = 5_000_000_000_000_000_000; // 5 ETH
+    let burn_id = derive_burn_id(1, &lez_owner, &eth_recipient, burn_amount, 1, 300);
+
+    // Guardian proactively cancels fraudulent burn authorization before relayer submission
+    locker.cancel_burn(burn_id);
+
+    // Relayer attempts to unlock ETH with cancelled burn authorization
+    let res = locker.unlock_eth(burn_id, burn_amount, lez_owner, eth_recipient, 1, 300);
+    assert_eq!(res.unwrap_err(), "BurnCancelled");
 }

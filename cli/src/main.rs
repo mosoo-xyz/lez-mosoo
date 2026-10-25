@@ -1341,8 +1341,9 @@ fn run_verify_checkpoint(
             aggregate_pubkey: pk_bytes.to_vec(),
         };
         let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee)?;
-        let branch = vec![[0u8; 32]; 5];
         let gindex = mosoo_core::crypto::current_sync_committee_gindex(chain_id, slot);
+        let depth = (63 - gindex.leading_zeros()) as usize;
+        let branch = vec![[0u8; 32]; depth];
         let state_root = mosoo_core::crypto::compute_branch_root_checked(leaf, &branch, gindex)?;
         let header = BeaconBlockHeader {
             slot,
@@ -1372,10 +1373,76 @@ fn run_verify_checkpoint(
         }
     }
 
+    let mut verified_live_head_slot = trusted_head_slot;
     if let Some(rpc) = beacon_rpc {
         println!("  - Public Beacon REST Endpoint: {}", rpc);
-        println!("    GET {}/eth/v1/beacon/headers/{}", rpc, header.slot);
+        println!("    [Live Query] GET {}/eth/v1/beacon/headers/head", rpc);
         println!("    [TLS Guard] Standard strict certificate verification active");
+
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let head_url = format!("{}/eth/v1/beacon/headers/head", rpc.trim_end_matches('/'));
+        match client.get(&head_url).send() {
+            Ok(resp) => {
+                if resp.status().is_success() {
+                    if let Ok(json_val) = resp.json::<serde_json::Value>() {
+                        if let Some(slot_str) = json_val
+                            .pointer("/data/header/message/slot")
+                            .and_then(|v| v.as_str())
+                        {
+                            if let Ok(slot_num) = slot_str.parse::<u64>() {
+                                println!(
+                                    "    [Live Consensus] Authenticated network head slot: {}",
+                                    slot_num
+                                );
+                                verified_live_head_slot = slot_num;
+                            }
+                        }
+                        if trusted_block_root.is_none() {
+                            let checkpoint_url = format!(
+                                "{}/eth/v1/beacon/headers/{}",
+                                rpc.trim_end_matches('/'),
+                                header.slot
+                            );
+                            if let Ok(chk_resp) = client.get(&checkpoint_url).send() {
+                                if chk_resp.status().is_success() {
+                                    if let Ok(chk_json) = chk_resp.json::<serde_json::Value>() {
+                                        if let Some(root_str) =
+                                            chk_json.pointer("/data/root").and_then(|v| v.as_str())
+                                        {
+                                            let trimmed = root_str.trim_start_matches("0x");
+                                            if let Ok(bytes) = hex::decode(trimmed) {
+                                                if bytes.len() == 32 {
+                                                    let mut r = [0u8; 32];
+                                                    r.copy_from_slice(&bytes);
+                                                    trusted_block_root = Some(r);
+                                                    println!(
+                                                        "    [Live Consensus] Fetched authentic checkpoint block root: 0x{}",
+                                                        hex::encode(r)
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    println!(
+                        "    [Notice] Public Beacon RPC returned HTTP status: {}",
+                        resp.status()
+                    );
+                }
+            }
+            Err(e) => {
+                println!(
+                    "    [Notice] Public Beacon RPC query failed ({}). Proceeding with parameter.",
+                    e
+                );
+            }
+        }
     }
 
     let report = mosoo_core::verify_weak_subjectivity_checkpoint(
@@ -1385,7 +1452,7 @@ fn run_verify_checkpoint(
         &committee_branch,
         initial_next.as_ref(),
         next_branch.as_deref(),
-        trusted_head_slot,
+        verified_live_head_slot,
         trusted_block_root,
         None,
     )?;

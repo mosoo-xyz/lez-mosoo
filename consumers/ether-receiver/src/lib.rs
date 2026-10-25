@@ -921,15 +921,34 @@ pub struct AtomicEtherClaimArgs {
     pub min_wei: u64,
 }
 
-/// Execute atomic same-transaction Native Ether claim.
-///
-/// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
-/// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts account identity,
-/// derives the deterministic statement nullifier, checks for replay, and credits wei.
-pub fn claim_ether_atomic(
-    args: AtomicEtherClaimArgs,
+/// Arguments for executing an atomic same-transaction Native Ether claim with 256-bit representation.
+#[derive(Debug, Clone)]
+pub struct AtomicEtherClaimArgsU256 {
+    /// Active authenticated light client instance account
+    pub instance: mosoo_core::types::InstanceAccount,
+    /// Authenticated header record for the target block
+    pub header: mosoo_core::types::HeaderRecord,
+    /// Optional historical branch if proving against past block in weak-subjectivity window
+    pub header_history_branch: Option<Vec<[u8; 32]>>,
+    /// Complete cryptographic proof binding historical execution roots to beacon state
+    pub historical_execution_proof: Option<mosoo_core::types::HistoricalHeaderProof>,
+    /// State inclusion proof (MPT proof for account balance or deposit contract)
+    pub proof: mosoo_core::inclusion::StateProof,
+    /// Predicate evaluated against verified state
+    pub predicate: mosoo_core::types::Predicate,
+    /// Expected Ethereum account or deposit contract address
+    pub expected_address: [u8; 20],
+    /// Expected recipient identifier on LEZ
+    pub recipient: [u8; 32],
+    /// Minimum required wei as U256
+    pub min_wei: U256,
+}
+
+/// Execute atomic same-transaction Native Ether claim with full 256-bit amount preservation.
+pub fn claim_ether_atomic_u256(
+    args: AtomicEtherClaimArgsU256,
     nullifiers: &mut EtherNullifierSet,
-) -> Result<u64, EtherReceiverError> {
+) -> Result<U256, EtherReceiverError> {
     if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
         return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
     }
@@ -985,13 +1004,11 @@ pub fn claim_ether_atomic(
         }
     }
 
-    let verified_wei = statement
-        .value_as_u64_checked()
-        .map_err(|e| EtherReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    let verified_wei = statement.value_as_u256();
     if verified_wei < args.min_wei {
         return Err(EtherReceiverError::BalanceTooLow {
-            actual: verified_wei as u128,
-            required: args.min_wei as u128,
+            actual: verified_wei.to::<u128>(),
+            required: args.min_wei.to::<u128>(),
         });
     }
 
@@ -1006,6 +1023,35 @@ pub fn claim_ether_atomic(
     }
 
     Ok(verified_wei)
+}
+
+/// Execute atomic same-transaction Native Ether claim.
+///
+/// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
+/// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts account identity,
+/// derives the deterministic statement nullifier, checks for replay, and credits wei.
+pub fn claim_ether_atomic(
+    args: AtomicEtherClaimArgs,
+    nullifiers: &mut EtherNullifierSet,
+) -> Result<u64, EtherReceiverError> {
+    let u256_args = AtomicEtherClaimArgsU256 {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
+        proof: args.proof,
+        predicate: args.predicate,
+        expected_address: args.expected_address,
+        recipient: args.recipient,
+        min_wei: U256::from(args.min_wei),
+    };
+    let val_u256 = claim_ether_atomic_u256(u256_args, nullifiers)?;
+    let val_u64: u64 = val_u256.try_into().map_err(|_| {
+        EtherReceiverError::AttestationFailed(
+            "verified wei exceeds u64 bounds; use claim_ether_atomic_u256".into(),
+        )
+    })?;
+    Ok(val_u64)
 }
 
 /// Strongly-typed cryptographic receipt proving a verified native ETH deposit or vault escrow lock event.
@@ -1996,6 +2042,86 @@ mod tests {
 
         // Replay rejection
         let replay = claim_ether_atomic(args, &mut nullifiers);
+        assert_eq!(replay, Err(EtherReceiverError::AlreadyClaimed));
+    }
+
+    #[test]
+    fn test_claim_ether_atomic_u256_large_amount_succeeds() {
+        use alloy_primitives::{Address, U256};
+        use mosoo_core::inclusion::test_helpers::build_test_account_balance_proof;
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = EtherNullifierSet::new();
+        let user_addr = [0x42; 20];
+        // 50 ETH = 50 * 10^18 wei >> u64::MAX (18.44 * 10^18)
+        let large_wei = U256::from(50_000_000_000_000_000_000u128);
+
+        let (state_root, proof_nodes, account_rlp) =
+            build_test_account_balance_proof(user_addr.into(), large_wei);
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: state_root.0,
+            current_receipts_root: [0x88; 32],
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: state_root.0,
+            receipts_root: [0x88; 32],
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::AccountBalance {
+                address: Address::from(user_addr),
+            },
+            account_proof: proof_nodes,
+            storage_proof: None,
+            receipt_proof: None,
+            account_value: Some(account_rlp),
+            storage_value: None,
+            receipt_value: None,
+        };
+
+        let mut min_32 = [0u8; 32];
+        min_32[24..32].copy_from_slice(&1_000u64.to_be_bytes());
+
+        let args = AtomicEtherClaimArgsU256 {
+            instance,
+            header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof,
+            predicate: Predicate::AtLeast { min: min_32 },
+            expected_address: user_addr,
+            recipient: [0x33; 32],
+            min_wei: U256::from(10_000_000_000_000_000_000u128), // 10 ETH
+        };
+
+        let credited = claim_ether_atomic_u256(args.clone(), &mut nullifiers)
+            .expect("Atomic U256 ether claim for 50 ETH MUST succeed");
+        assert_eq!(credited, large_wei);
+
+        // Replay rejection
+        let replay = claim_ether_atomic_u256(args, &mut nullifiers);
         assert_eq!(replay, Err(EtherReceiverError::AlreadyClaimed));
     }
 

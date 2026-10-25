@@ -20,9 +20,17 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
   - Strictly prevents replay attacks using the `executedBurns` nullifier registry (`mapping(bytes32 => bool)`).
   - Releases locked ETH directly to `recipient`.
 
-- **Security Guarantees**:
+- **Trust Model & Security Guarantees**:
+  - **Asymmetric Hybrid Trust Model**:
+    - **Inbound (ETH -> LEZ)**: 100% trustless on-chain consensus tracking and MPT receipt inclusion proof verification inside the RISC Zero zkVM on LEZ.
+    - **Outbound (LEZ -> ETH)**: Multi-layered witness attestation with defense-in-depth:
+      1. EIP-712 structured data signing with strict domain separation and contract address binding.
+      2. Replay nullifier registry (`executedBurns[burnId]`).
+      3. Rolling 24-hour daily withdrawal limits (`dailyWithdrawalLimitETH`, `dailyWithdrawalLimitERC20`) bounding maximum outflow velocity.
+      4. Mandatory 24-hour timelock queue for large withdrawals ($\ge 10$ ETH).
+      5. Permanent Guardian & Owner cancellation veto (`cancelledBurns[burnId]`), strictly preventing re-queueing of vetoed withdrawals.
+      6. Inviolable 24-hour timelock on updating `attesterAuthority`.
   - `ReentrancyGuard` protection against recursive calls across deposit and unlock flows.
-  - Cryptographic nullifiers (`executedBurns`) prevent double-spending and cross-chain replay.
   - Safe token transfer checks: strict contract existence checks (`token.code.length > 0`) preventing phantom transfers on EOAs.
   - Fee-on-transfer protection via before/after balance differentials on `depositERC20`.
   - Signature malleability protection: strict EIP-2 upper-bound checks on `s` values.
@@ -31,3 +39,12 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
   - Direct transfer protection: `receive()` strictly reverts to prevent unindexed ether desync.
   - Dual-role emergency controls: `emergencyPause()` callable by designated `guardian` or `owner`.
   - Two-step ownership transfers: `transferOwnership` + `acceptOwnership` to guard against operational misdirection.
+
+## EVM Verification & Foundry Testing
+
+The contract test suite is written in Solidity under [`test/MosooLocker.t.sol`](./test/MosooLocker.t.sol) and configured via [`foundry.toml`](../foundry.toml).
+
+```console
+# Run Solidity unit and fuzz tests with Foundry
+forge test -vvv
+```

@@ -68,6 +68,9 @@ contract MosooLocker {
     /// @notice Queued large withdrawals: burnId => executableTimestamp
     mapping(bytes32 => uint256) public queuedWithdrawalUnlockTime;
 
+    /// @notice Permanently cancelled burns (cannot be re-queued or unlocked by anyone)
+    mapping(bytes32 => bool) public cancelledBurns;
+
     // --- EIP-712 Domain Separation ---
     bytes32 public constant EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -140,6 +143,7 @@ contract MosooLocker {
     event TokenAllowedStatusUpdated(address indexed token, bool allowed);
     event WithdrawalQueued(bytes32 indexed burnId, address indexed recipient, uint256 amount, uint256 unlockTimestamp);
     event QueuedWithdrawalCancelled(bytes32 indexed burnId, address indexed cancelledBy);
+    event BurnPermanentlyCancelled(bytes32 indexed burnId, address indexed cancelledBy);
     event DailyWithdrawalLimitUpdatedETH(uint256 oldLimit, uint256 newLimit);
     event DailyWithdrawalLimitUpdatedERC20(address indexed token, uint256 oldLimit, uint256 newLimit);
 
@@ -151,6 +155,7 @@ contract MosooLocker {
     error Unauthorized();
     error ReentrancyGuardReentrantCall();
     error BurnAlreadyExecuted();
+    error BurnCancelled();
     error InvalidBurnProof();
     error InsufficientLockedETH();
     error InsufficientLockedERC20();
@@ -277,6 +282,7 @@ contract MosooLocker {
         if (amount == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
 
         // 1. Verify burnId canonical derivation: sha256("mosoo_burn_v1" || chain_id || lezOwner || recipient || amount || nonce || slot)
@@ -374,6 +380,7 @@ contract MosooLocker {
         if (token == address(0) || recipient == address(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
 
         // 1. Verify burnId canonical derivation for ERC-20
@@ -448,11 +455,21 @@ contract MosooLocker {
     }
 
     /// @notice Cancel a queued large withdrawal in an emergency (guardian or owner)
+    /// @dev Permanently vetoes the burnId, preventing any re-queue or future withdrawal.
     function cancelQueuedWithdrawal(bytes32 burnId) external {
         if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
         if (queuedWithdrawalUnlockTime[burnId] == 0) revert NoQueuedWithdrawal();
         queuedWithdrawalUnlockTime[burnId] = 0;
+        cancelledBurns[burnId] = true;
         emit QueuedWithdrawalCancelled(burnId, msg.sender);
+    }
+
+    /// @notice Permanently veto and invalidate any burn authorization (guardian or owner)
+    function cancelBurn(bytes32 burnId) external {
+        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        queuedWithdrawalUnlockTime[burnId] = 0;
+        cancelledBurns[burnId] = true;
+        emit BurnPermanentlyCancelled(burnId, msg.sender);
     }
 
     // --- Internal Helpers ---

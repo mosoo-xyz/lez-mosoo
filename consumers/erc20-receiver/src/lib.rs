@@ -1063,15 +1063,36 @@ pub struct AtomicErc20ClaimArgs {
     pub min_amount: u64,
 }
 
-/// Execute atomic same-transaction ERC-20 token claim.
-///
-/// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
-/// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts target contract
-/// identity, derives the deterministic statement nullifier, checks for replay, and credits tokens.
-pub fn claim_atomic(
-    args: AtomicErc20ClaimArgs,
+/// Arguments for executing an atomic same-transaction ERC-20 token claim with 256-bit amount representation.
+#[derive(Debug, Clone)]
+pub struct AtomicErc20ClaimArgsU256 {
+    /// Active authenticated light client instance account
+    pub instance: mosoo_core::types::InstanceAccount,
+    /// Authenticated header record for the target block
+    pub header: mosoo_core::types::HeaderRecord,
+    /// Optional historical branch if proving against past block in weak-subjectivity window
+    pub header_history_branch: Option<Vec<[u8; 32]>>,
+    /// Complete cryptographic proof binding historical execution roots to beacon state
+    pub historical_execution_proof: Option<mosoo_core::types::HistoricalHeaderProof>,
+    /// State inclusion proof (receipt log proof or storage proof)
+    pub proof: mosoo_core::inclusion::StateProof,
+    /// Predicate evaluated against verified state
+    pub predicate: mosoo_core::types::Predicate,
+    /// Expected ERC-20 token contract address on Ethereum
+    pub expected_token_contract: [u8; 20],
+    /// Expected sender address on Ethereum (optional for general storage slot claims)
+    pub expected_sender: Option<[u8; 20]>,
+    /// Expected recipient identifier on LEZ
+    pub recipient: [u8; 32],
+    /// Minimum required token amount as U256
+    pub min_amount: U256,
+}
+
+/// Execute atomic same-transaction ERC-20 token claim with full 256-bit amount preservation.
+pub fn claim_atomic_u256(
+    args: AtomicErc20ClaimArgsU256,
     nullifiers: &mut NullifierSet,
-) -> Result<u64, ReceiverError> {
+) -> Result<U256, ReceiverError> {
     if args.instance.chain_id != ETH_MAINNET_CHAIN_ID {
         return Err(ReceiverError::WrongChain(args.instance.chain_id));
     }
@@ -1152,13 +1173,11 @@ pub fn claim_atomic(
         }
     }
 
-    let verified_amount = statement
-        .value_as_u64_checked()
-        .map_err(|e| ReceiverError::AttestationFailed(format!("value overflow: {e}")))?;
+    let verified_amount = statement.value_as_u256();
     if verified_amount < args.min_amount {
         return Err(ReceiverError::AmountTooLow {
-            min_amount: args.min_amount as u128,
-            actual: verified_amount as u128,
+            min_amount: args.min_amount.to::<u128>(),
+            actual: verified_amount.to::<u128>(),
         });
     }
 
@@ -1173,6 +1192,36 @@ pub fn claim_atomic(
     }
 
     Ok(verified_amount)
+}
+
+/// Execute atomic same-transaction ERC-20 token claim.
+///
+/// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
+/// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts target contract
+/// identity, derives the deterministic statement nullifier, checks for replay, and credits tokens.
+pub fn claim_atomic(
+    args: AtomicErc20ClaimArgs,
+    nullifiers: &mut NullifierSet,
+) -> Result<u64, ReceiverError> {
+    let u256_args = AtomicErc20ClaimArgsU256 {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
+        proof: args.proof,
+        predicate: args.predicate,
+        expected_token_contract: args.expected_token_contract,
+        expected_sender: args.expected_sender,
+        recipient: args.recipient,
+        min_amount: U256::from(args.min_amount),
+    };
+    let val_u256 = claim_atomic_u256(u256_args, nullifiers)?;
+    let val_u64: u64 = val_u256.try_into().map_err(|_| {
+        ReceiverError::AttestationFailed(
+            "verified value exceeds u64 bounds; use claim_atomic_u256".into(),
+        )
+    })?;
+    Ok(val_u64)
 }
 
 /// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol:unlockERC20`:
@@ -1949,6 +1998,101 @@ mod tests {
 
         // Replay rejection in the same state
         let replay = claim_atomic(args, &mut nullifiers);
+        assert_eq!(replay, Err(ReceiverError::AlreadyClaimed));
+    }
+
+    #[test]
+    fn test_claim_atomic_u256_large_amount_succeeds() {
+        use alloy_primitives::{keccak256, Address, U256};
+        use mosoo_core::inclusion::test_helpers::{
+            build_leaf_mpt_proof, build_test_eip1559_transfer_receipt,
+        };
+        use mosoo_core::inclusion::{ProofTarget, StateProof};
+        use mosoo_core::types::{HeaderRecord, InstanceAccount, Predicate, SyncCommittee};
+
+        let mut nullifiers = NullifierSet::new();
+        let emitter_addr = [0xaa; 20];
+        let from_addr = [0x11; 20];
+        let to_addr = [0x22; 20];
+        // 500,000 tokens (18 dec) >> u64::MAX
+        let amount = U256::from(500_000_000_000_000_000_000_000u128);
+
+        let receipt_rlp = build_test_eip1559_transfer_receipt(
+            Address::from(emitter_addr),
+            Address::from(from_addr),
+            Address::from(to_addr),
+            amount,
+        );
+        let tx_index: u64 = 0;
+        let key_bytes = alloy_rlp::encode(tx_index);
+        let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
+
+        let instance = InstanceAccount {
+            instance_id: [0u8; 32],
+            network_config: None,
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            current_header_hash: [0x55; 32],
+            current_state_root: [0x66; 32],
+            current_slot: 10_000_000,
+            current_sync_committee: SyncCommittee {
+                pubkeys: vec![vec![0u8; 48]; 512],
+                aggregate_pubkey: vec![0u8; 48],
+            },
+            next_sync_committee: None,
+            bootstrap_slot: 10_000_000,
+            bootstrap_header_hash: [0x55; 32],
+            initialized: true,
+            current_execution_block_hash: [0x77; 32],
+            current_execution_state_root: [0x88; 32],
+            current_receipts_root: receipts_root.0,
+        };
+
+        let header = HeaderRecord {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x77; 32],
+            execution_state_root: [0x88; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let proof = StateProof {
+            target: ProofTarget::ReceiptLog {
+                tx_index,
+                log_index: 0,
+                emitter: Address::from(emitter_addr),
+                topic0: keccak256("Transfer(address,address,uint256)"),
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp),
+        };
+
+        let mut min_32 = [0u8; 32];
+        min_32[24..32].copy_from_slice(&1_000u64.to_be_bytes());
+
+        let args = AtomicErc20ClaimArgsU256 {
+            instance,
+            header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof,
+            predicate: Predicate::AtLeast { min: min_32 },
+            expected_token_contract: emitter_addr,
+            expected_sender: None,
+            recipient: [0x33; 32],
+            min_amount: U256::from(100_000_000_000_000_000_000u128),
+        };
+
+        let minted = claim_atomic_u256(args.clone(), &mut nullifiers)
+            .expect("Atomic U256 claim for 500,000 tokens MUST succeed");
+        assert_eq!(minted, amount);
+
+        // Replay rejection
+        let replay = claim_atomic_u256(args, &mut nullifiers);
         assert_eq!(replay, Err(ReceiverError::AlreadyClaimed));
     }
 
