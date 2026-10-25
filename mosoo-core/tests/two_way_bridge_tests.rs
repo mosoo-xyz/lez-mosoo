@@ -45,6 +45,9 @@ struct MockEthereumLocker {
     pub large_withdrawal_delay: u64,
     pub queued_withdrawals: HashMap<[u8; 32], u64>,
     pub cancelled_burns: std::collections::HashSet<[u8; 32]>,
+    pub is_attester: HashMap<[u8; 20], bool>,
+    pub attester_count: usize,
+    pub required_quorum: usize,
 }
 
 pub const AUTHORITY_CHANGE_DELAY: u64 = 86_400; // 1 day in seconds
@@ -52,6 +55,8 @@ pub const LARGE_WITHDRAWAL_THRESHOLD_ETH: u128 = 10_000_000_000_000_000_000; // 
 
 impl MockEthereumLocker {
     fn new(locker_address: [u8; 20]) -> Self {
+        let mut is_attester = HashMap::new();
+        is_attester.insert([0xaa; 20], true);
         Self {
             locked_eth_wei: 0,
             unlocked_eth_wei: 0,
@@ -72,7 +77,57 @@ impl MockEthereumLocker {
             large_withdrawal_delay: 86_400,
             queued_withdrawals: HashMap::new(),
             cancelled_burns: std::collections::HashSet::new(),
+            is_attester,
+            attester_count: 1,
+            required_quorum: 1,
         }
+    }
+
+    fn add_attester(&mut self, attester: [u8; 20]) {
+        self.is_attester.insert(attester, true);
+        self.attester_count = self.is_attester.len();
+    }
+
+    fn set_quorum(&mut self, quorum: usize) -> Result<(), &'static str> {
+        if quorum == 0 || quorum > self.attester_count {
+            return Err("InvalidQuorum");
+        }
+        self.required_quorum = quorum;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn unlock_eth_with_quorum(
+        &mut self,
+        burn_id: [u8; 32],
+        amount_wei: u128,
+        lez_owner: [u8; 32],
+        eth_recipient: [u8; 20],
+        burn_nonce: u64,
+        lez_slot: u64,
+        signers: &[[u8; 20]],
+    ) -> Result<(), &'static str> {
+        if signers.len() < self.required_quorum {
+            return Err("QuorumNotMet");
+        }
+        let mut last_signer = [0u8; 20];
+        for signer in signers {
+            if !self.is_attester.get(signer).copied().unwrap_or(false) {
+                return Err("UnauthorizedAttester");
+            }
+            if *signer <= last_signer {
+                return Err("DuplicateOrUnorderedAttesterSignature");
+            }
+            last_signer = *signer;
+        }
+        self.unlock_eth(
+            burn_id,
+            amount_wei,
+            lez_owner,
+            eth_recipient,
+            burn_nonce,
+            lez_slot,
+        )
     }
 
     /// Simulates `depositETH(bytes32 lezRecipient) payable`
@@ -894,4 +949,107 @@ fn test_mosoo_locker_proactive_guardian_veto_rejects_withdrawal() {
     // Relayer attempts to unlock ETH with cancelled burn authorization
     let res = locker.unlock_eth(burn_id, burn_amount, lez_owner, eth_recipient, 1, 300);
     assert_eq!(res.unwrap_err(), "BurnCancelled");
+}
+
+#[test]
+fn test_two_way_bridge_multi_signer_quorum_and_rejection() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    let total_deposit: u128 = 20_000_000_000_000_000_000; // 20 ETH
+    locker.deposit_eth(total_deposit);
+
+    let attester1 = [0x10; 20];
+    let attester2 = [0x20; 20];
+    let attester3 = [0x30; 20];
+
+    locker.add_attester(attester1);
+    locker.add_attester(attester2);
+    locker.add_attester(attester3);
+    locker
+        .set_quorum(2)
+        .expect("setting quorum to 2 must succeed");
+
+    let burn_amount: u128 = 2_000_000_000_000_000_000; // 2 ETH
+    let burn_id = derive_burn_id(1, &lez_owner, &eth_recipient, burn_amount, 5, 400);
+
+    // 1. Sub-threshold quorum (only 1 signer provided) fails
+    let err_sub = locker.unlock_eth_with_quorum(
+        burn_id,
+        burn_amount,
+        lez_owner,
+        eth_recipient,
+        5,
+        400,
+        &[attester1],
+    );
+    assert_eq!(err_sub.unwrap_err(), "QuorumNotMet");
+
+    // 2. Duplicate or disordered signers fail
+    let err_dup = locker.unlock_eth_with_quorum(
+        burn_id,
+        burn_amount,
+        lez_owner,
+        eth_recipient,
+        5,
+        400,
+        &[attester1, attester1],
+    );
+    assert_eq!(
+        err_dup.unwrap_err(),
+        "DuplicateOrUnorderedAttesterSignature"
+    );
+
+    let err_unordered = locker.unlock_eth_with_quorum(
+        burn_id,
+        burn_amount,
+        lez_owner,
+        eth_recipient,
+        5,
+        400,
+        &[attester2, attester1],
+    );
+    assert_eq!(
+        err_unordered.unwrap_err(),
+        "DuplicateOrUnorderedAttesterSignature"
+    );
+
+    // 3. Unauthorized signer fails
+    let fake_attester = [0x99; 20];
+    let err_fake = locker.unlock_eth_with_quorum(
+        burn_id,
+        burn_amount,
+        lez_owner,
+        eth_recipient,
+        5,
+        400,
+        &[attester1, fake_attester],
+    );
+    assert_eq!(err_fake.unwrap_err(), "UnauthorizedAttester");
+
+    // 4. Valid 2-of-3 quorum in strictly ascending order succeeds
+    assert!(locker
+        .unlock_eth_with_quorum(
+            burn_id,
+            burn_amount,
+            lez_owner,
+            eth_recipient,
+            5,
+            400,
+            &[attester1, attester2],
+        )
+        .is_ok());
+    assert_eq!(locker.unlocked_eth_wei, burn_amount);
+
+    // 5. Replay fails with BurnAlreadyExecuted
+    let err_replay = locker.unlock_eth_with_quorum(
+        burn_id,
+        burn_amount,
+        lez_owner,
+        eth_recipient,
+        5,
+        400,
+        &[attester1, attester2],
+    );
+    assert_eq!(err_replay.unwrap_err(), "BurnAlreadyExecuted");
 }

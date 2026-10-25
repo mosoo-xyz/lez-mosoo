@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use mosoo_core::{crypto::*, error::MosooError, types::*};
 
 fn make_dummy_committee(count: usize) -> SyncCommittee {

@@ -287,10 +287,21 @@ pub fn verify_state_proof(
                 return Err(MosooError::Internal("deposit log missing topics".into()));
             }
             let sig = verified_log.topics[0];
-            if sig != deposit_eth_canonical_topic0
-                && sig != deposit_topic0_bytes32
-                && sig != deposit_topic0_addr
-            {
+            if sig == deposit_eth_canonical_topic0 {
+                if verified_log.topics.len() != 4 {
+                    return Err(MosooError::RlpDecodeFailed(format!(
+                        "canonical DepositETH log must have exactly 4 topics (sig, sender, recipient, nonce), got {}",
+                        verified_log.topics.len()
+                    )));
+                }
+            } else if sig == deposit_topic0_bytes32 || sig == deposit_topic0_addr {
+                if verified_log.topics.len() != 3 {
+                    return Err(MosooError::RlpDecodeFailed(format!(
+                        "legacy Deposit log must have exactly 3 topics (sig, sender, recipient), got {}",
+                        verified_log.topics.len()
+                    )));
+                }
+            } else {
                 return Err(MosooError::EventTopicMismatch {
                     index: 0,
                     expected: format!(
@@ -299,44 +310,37 @@ pub fn verify_state_proof(
                     actual: format!("{sig:?}"),
                 });
             }
-            if verified_log.topics.len() >= 2 {
-                let from_topic = verified_log.topics[1];
-                if &from_topic.0[12..32] != sender.as_slice() {
-                    return Err(MosooError::Internal(
-                        "sender address mismatch in Deposit log".into(),
-                    ));
-                }
-            }
-            if verified_log.topics.len() >= 3 {
-                let to_topic = verified_log.topics[2];
-                let matches_recipient = if to_topic.0 == *recipient {
-                    true
-                } else if recipient[0..12] == [0u8; 12] {
-                    to_topic.0[12..32] == recipient[12..32]
-                } else if to_topic.0[0..12] == [0u8; 12] {
-                    to_topic.0[12..32] == recipient[12..32]
-                        || to_topic.0[12..32] == recipient[0..20]
-                } else {
-                    false
-                };
-                if !matches_recipient {
-                    return Err(MosooError::Internal(
-                        "recipient mismatch in Deposit log".into(),
-                    ));
-                }
-            }
-            if verified_log.data.is_empty() {
+
+            let from_topic = verified_log.topics[1];
+            if &from_topic.0[12..32] != sender.as_slice() {
                 return Err(MosooError::Internal(
-                    "missing deposit amount in log data".into(),
+                    "sender address mismatch in Deposit log".into(),
                 ));
             }
-            // For standard 32-byte amount word
-            let amount_bytes = if verified_log.data.len() >= 32 {
-                verified_log.data[..32].to_vec()
+
+            let to_topic = verified_log.topics[2];
+            let matches_recipient = if to_topic.0 == *recipient {
+                true
+            } else if recipient[0..12] == [0u8; 12] {
+                to_topic.0[12..32] == recipient[12..32]
+            } else if to_topic.0[0..12] == [0u8; 12] {
+                to_topic.0[12..32] == recipient[12..32] || to_topic.0[12..32] == recipient[0..20]
             } else {
-                verified_log.data
+                false
             };
-            Ok(VerifiedValue::LogData(amount_bytes))
+            if !matches_recipient {
+                return Err(MosooError::Internal(
+                    "recipient mismatch in Deposit log".into(),
+                ));
+            }
+
+            if verified_log.data.len() != 32 {
+                return Err(MosooError::Internal(format!(
+                    "deposit log data must be exactly 32 bytes, got {}",
+                    verified_log.data.len()
+                )));
+            }
+            Ok(VerifiedValue::LogData(verified_log.data))
         }
         ProofTarget::Erc20Deposit {
             tx_index,
@@ -362,11 +366,11 @@ pub fn verify_state_proof(
                 })?,
             };
             let verified_log = verify_receipt_log_proof(&r_proof, header)?;
-            if verified_log.topics.len() < 4 {
-                return Err(MosooError::RlpDecodeFailed(
-                    "DepositERC20 log must have at least 4 topics (sig, token, sender, recipient)"
-                        .into(),
-                ));
+            if verified_log.topics.len() != 4 {
+                return Err(MosooError::RlpDecodeFailed(format!(
+                    "DepositERC20 log must have exactly 4 topics (sig, token, sender, recipient), got {}",
+                    verified_log.topics.len()
+                )));
             }
             let token_topic = verified_log.topics[1];
             if &token_topic.0[12..32] != token_contract.as_slice() {
@@ -396,10 +400,11 @@ pub fn verify_state_proof(
                     "recipient mismatch in DepositERC20 log".into(),
                 ));
             }
-            if verified_log.data.len() < 32 {
-                return Err(MosooError::Internal(
-                    "missing amount in DepositERC20 log data (expected at least 32 bytes)".into(),
-                ));
+            if verified_log.data.len() != 64 {
+                return Err(MosooError::Internal(format!(
+                    "DepositERC20 log data must be exactly 64 bytes (abi.encode(amount, nonce)), got {}",
+                    verified_log.data.len()
+                )));
             }
             // data is abi.encode(amount, nonce): first 32 bytes is amount
             Ok(VerifiedValue::LogData(verified_log.data[..32].to_vec()))
@@ -572,38 +577,40 @@ pub fn decode_deposit_eth_log(
         return Err(MosooError::Internal("deposit log missing topics".into()));
     }
     let sig = log.topics[0];
-    if sig != deposit_eth_canonical_topic0
-        && sig != deposit_topic0_bytes32
-        && sig != deposit_topic0_addr
-    {
+    let nonce = if sig == deposit_eth_canonical_topic0 {
+        if log.topics.len() != 4 {
+            return Err(MosooError::RlpDecodeFailed(format!(
+                "canonical DepositETH log must have exactly 4 topics (sig, sender, recipient, nonce), got {}",
+                log.topics.len()
+            )));
+        }
+        let mut buf = [0u8; 8];
+        buf.copy_from_slice(&log.topics[3].0[24..32]);
+        u64::from_be_bytes(buf)
+    } else if sig == deposit_topic0_bytes32 || sig == deposit_topic0_addr {
+        if log.topics.len() != 3 {
+            return Err(MosooError::RlpDecodeFailed(format!(
+                "legacy Deposit log must have exactly 3 topics (sig, sender, recipient), got {}",
+                log.topics.len()
+            )));
+        }
+        0
+    } else {
         return Err(MosooError::EventTopicMismatch {
             index: 0,
             expected: format!("{deposit_eth_canonical_topic0:?}"),
             actual: format!("{sig:?}"),
         });
-    }
-
-    if log.topics.len() < 3 {
-        return Err(MosooError::RlpDecodeFailed(
-            "Deposit log must have at least 3 topics (sig, sender, recipient)".into(),
-        ));
-    }
+    };
 
     let sender = Address::from_slice(&log.topics[1].0[12..32]);
     let recipient = log.topics[2].0;
 
-    let nonce = if sig == deposit_eth_canonical_topic0 && log.topics.len() >= 4 {
-        let mut buf = [0u8; 8];
-        buf.copy_from_slice(&log.topics[3].0[24..32]);
-        u64::from_be_bytes(buf)
-    } else {
-        0
-    };
-
-    if log.data.len() < 32 {
-        return Err(MosooError::Internal(
-            "deposit log missing 32-byte amount".into(),
-        ));
+    if log.data.len() != 32 {
+        return Err(MosooError::Internal(format!(
+            "deposit log data must be exactly 32 bytes (amount), got {}",
+            log.data.len()
+        )));
     }
     let mut amount_bytes = [0u8; 32];
     amount_bytes.copy_from_slice(&log.data[0..32]);
@@ -623,10 +630,11 @@ pub fn decode_deposit_erc20_log(
         b"DepositERC20(address,address,bytes32,uint256,uint64)",
     ));
 
-    if log.topics.len() < 4 {
-        return Err(MosooError::RlpDecodeFailed(
-            "DepositERC20 log must have at least 4 topics (sig, token, sender, recipient)".into(),
-        ));
+    if log.topics.len() != 4 {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "DepositERC20 log must have exactly 4 topics (sig, token, sender, recipient), got {}",
+            log.topics.len()
+        )));
     }
     if log.topics[0] != deposit_erc20_topic0 {
         return Err(MosooError::EventTopicMismatch {
@@ -640,22 +648,19 @@ pub fn decode_deposit_erc20_log(
     let sender = Address::from_slice(&log.topics[2].0[12..32]);
     let recipient = log.topics[3].0;
 
-    if log.data.len() < 32 {
-        return Err(MosooError::Internal(
-            "DepositERC20 log missing amount".into(),
-        ));
+    if log.data.len() != 64 {
+        return Err(MosooError::Internal(format!(
+            "DepositERC20 log data must be exactly 64 bytes (abi.encode(amount, nonce)), got {}",
+            log.data.len()
+        )));
     }
     let mut amount_bytes = [0u8; 32];
     amount_bytes.copy_from_slice(&log.data[0..32]);
     let amount = U256::from_be_bytes(amount_bytes);
 
-    let nonce = if log.data.len() >= 64 {
-        let mut nonce_buf = [0u8; 8];
-        nonce_buf.copy_from_slice(&log.data[56..64]);
-        u64::from_be_bytes(nonce_buf)
-    } else {
-        0
-    };
+    let mut nonce_buf = [0u8; 8];
+    nonce_buf.copy_from_slice(&log.data[56..64]);
+    let nonce = u64::from_be_bytes(nonce_buf);
 
     Ok((token, sender, recipient, amount, nonce))
 }
@@ -2055,5 +2060,133 @@ mod tests {
             }
             _ => panic!("Expected LogData"),
         }
+    }
+
+    #[test]
+    fn test_decode_deposit_eth_fail_closed_on_malformed_topics() {
+        let deposit_eth_sig = B256::from(alloy_primitives::keccak256(
+            b"DepositETH(address,bytes32,uint256,uint64)",
+        ));
+        let sender = Address::repeat_byte(0x11);
+        let recipient = [0x22u8; 32];
+        let amount = U256::from(1_000_000_000u64);
+
+        // Truncated to 3 topics (missing nonce topic)
+        let malformed_log = VerifiedLog {
+            emitter: Address::repeat_byte(0x42),
+            topics: vec![
+                deposit_eth_sig,
+                B256::left_padding_from(sender.as_slice()),
+                B256::from(recipient),
+            ],
+            data: amount.to_be_bytes::<32>().to_vec(),
+            tx_index: 0,
+            log_index: 0,
+        };
+
+        let res = decode_deposit_eth_log(&malformed_log);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+
+        // Superfluous 5 topics
+        let mut superfluous_topics = malformed_log.topics.clone();
+        superfluous_topics.push(B256::repeat_byte(0x01));
+        superfluous_topics.push(B256::repeat_byte(0x02));
+        let malformed_log_5 = VerifiedLog {
+            topics: superfluous_topics,
+            ..malformed_log
+        };
+        let res2 = decode_deposit_eth_log(&malformed_log_5);
+        assert!(matches!(res2, Err(MosooError::RlpDecodeFailed(_))));
+    }
+
+    #[test]
+    fn test_decode_deposit_eth_fail_closed_on_malformed_data() {
+        let deposit_eth_sig = B256::from(alloy_primitives::keccak256(
+            b"DepositETH(address,bytes32,uint256,uint64)",
+        ));
+        let sender = Address::repeat_byte(0x11);
+        let recipient = [0x22u8; 32];
+        let nonce = 5u64;
+
+        let base_log = VerifiedLog {
+            emitter: Address::repeat_byte(0x42),
+            topics: vec![
+                deposit_eth_sig,
+                B256::left_padding_from(sender.as_slice()),
+                B256::from(recipient),
+                B256::left_padding_from(&nonce.to_be_bytes()),
+            ],
+            data: vec![0u8; 16], // Truncated data: 16 bytes instead of 32
+            tx_index: 0,
+            log_index: 0,
+        };
+
+        let res = decode_deposit_eth_log(&base_log);
+        assert!(matches!(res, Err(MosooError::Internal(_))));
+
+        // Over-sized data: 64 bytes instead of 32
+        let oversized_log = VerifiedLog {
+            data: vec![0u8; 64],
+            ..base_log
+        };
+        let res2 = decode_deposit_eth_log(&oversized_log);
+        assert!(matches!(res2, Err(MosooError::Internal(_))));
+    }
+
+    #[test]
+    fn test_decode_deposit_erc20_fail_closed_on_malformed_topics_and_data() {
+        let deposit_erc20_sig = B256::from(alloy_primitives::keccak256(
+            b"DepositERC20(address,address,bytes32,uint256,uint64)",
+        ));
+        let token = Address::repeat_byte(0xa0);
+        let sender = Address::repeat_byte(0x11);
+        let recipient = [0x22u8; 32];
+
+        // Truncated to 3 topics
+        let malformed_topics_log = VerifiedLog {
+            emitter: Address::repeat_byte(0x42),
+            topics: vec![
+                deposit_erc20_sig,
+                B256::left_padding_from(token.as_slice()),
+                B256::left_padding_from(sender.as_slice()),
+            ],
+            data: vec![0u8; 64],
+            tx_index: 0,
+            log_index: 0,
+        };
+        let res = decode_deposit_erc20_log(&malformed_topics_log);
+        assert!(matches!(res, Err(MosooError::RlpDecodeFailed(_))));
+
+        // Valid 4 topics but truncated data: only 32 bytes instead of 64
+        let malformed_data_log = VerifiedLog {
+            emitter: Address::repeat_byte(0x42),
+            topics: vec![
+                deposit_erc20_sig,
+                B256::left_padding_from(token.as_slice()),
+                B256::left_padding_from(sender.as_slice()),
+                B256::from(recipient),
+            ],
+            data: vec![0u8; 32],
+            tx_index: 0,
+            log_index: 0,
+        };
+        let res2 = decode_deposit_erc20_log(&malformed_data_log);
+        assert!(matches!(res2, Err(MosooError::Internal(_))));
+
+        // Valid topics and valid 64 bytes data succeeds with exact nonce
+        let mut valid_data = vec![0u8; 64];
+        valid_data[31] = 42; // amount = 42
+        valid_data[63] = 9; // nonce = 9
+        let valid_log = VerifiedLog {
+            data: valid_data,
+            ..malformed_data_log
+        };
+        let (dec_tok, dec_snd, dec_rec, dec_amt, dec_nonce) =
+            decode_deposit_erc20_log(&valid_log).expect("Exact 64-byte log MUST decode");
+        assert_eq!(dec_tok, token);
+        assert_eq!(dec_snd, sender);
+        assert_eq!(dec_rec, recipient);
+        assert_eq!(dec_amt, U256::from(42u64));
+        assert_eq!(dec_nonce, 9u64);
     }
 }

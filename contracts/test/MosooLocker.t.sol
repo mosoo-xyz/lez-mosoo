@@ -169,4 +169,74 @@ contract MosooLockerTest is Test {
             // Success
         }
     }
+
+    function test_committee_quorum_m_of_n() public {
+        uint256 attester2Pk = 0xB22CE;
+        uint256 attester3Pk = 0xC33CE;
+        address attester2 = vm.addr(attester2Pk);
+        address attester3 = vm.addr(attester3Pk);
+
+        locker.addAttester(attester2);
+        locker.addAttester(attester3);
+        locker.setQuorum(2);
+
+        assertEq(locker.attesterCount(), 3, "total attesters should be 3");
+        assertEq(locker.requiredQuorum(), 2, "required quorum should be 2");
+
+        vm.prank(user);
+        locker.depositETH{value: 10 ether}(bytes32(uint256(0xAA)));
+
+        bytes32 lezOwner = bytes32(uint256(0xAA));
+        address payable recipient = payable(user);
+        uint256 amount = 2 ether;
+        uint64 burnNonce = 10;
+        uint64 lezSlot = 600;
+
+        bytes32 burnId = keccak256(
+            abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot)
+        );
+        bytes32 structHash = keccak256(
+            abi.encode(
+                locker.BURN_ETH_TYPEHASH(),
+                burnId,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+
+        // Sub-threshold quorum (only 1 signature provided)
+        bytes[] memory subQuorumSigs = new bytes[](1);
+        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(attesterPk, digest);
+        subQuorumSigs[0] = abi.encodePacked(r1, s1, v1);
+
+        try locker.unlockETHWithQuorum(burnId, recipient, amount, lezOwner, burnNonce, lezSlot, subQuorumSigs) {
+            revert("Expected revert on sub-threshold quorum");
+        } catch {
+            // Success
+        }
+
+        // Two valid signatures in strictly ascending signer order
+        address addr1 = attesterAuthority;
+        address addr2 = attester2;
+        uint256 pkFirst = attesterPk;
+        uint256 pkSecond = attester2Pk;
+        if (addr1 > addr2) {
+            pkFirst = attester2Pk;
+            pkSecond = attesterPk;
+        }
+
+        bytes[] memory validQuorumSigs = new bytes[](2);
+        (uint8 va, bytes32 ra, bytes32 sa) = vm.sign(pkFirst, digest);
+        (uint8 vb, bytes32 rb, bytes32 sb) = vm.sign(pkSecond, digest);
+        validQuorumSigs[0] = abi.encodePacked(ra, sa, va);
+        validQuorumSigs[1] = abi.encodePacked(rb, sb, vb);
+
+        locker.unlockETHWithQuorum(burnId, recipient, amount, lezOwner, burnNonce, lezSlot, validQuorumSigs);
+        assertTrue(locker.executedBurns(burnId), "burnId must be marked executed");
+        assertEq(locker.totalUnlockedETH(), amount, "unlocked ETH mismatch");
+    }
 }

@@ -544,4 +544,38 @@ impl VerifiedStatement {
     }
 }
 
+/// An authenticated on-chain Statement Account record on Logos Execution Zone.
+/// Represents an authentic statement verified and committed on-chain by `MOSOO_PROGRAM_ID`.
+/// Seed derivation: `["mosoo_statement", chain_id.to_le_bytes(), statement_id]`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatementAccount {
+    /// Account owner program ID (must be `MOSOO_PROGRAM_ID`).
+    pub owner: [u8; 32],
+    /// On-chain PDA address of this statement account.
+    pub pda_address: [u8; 32],
+    /// The cryptographically verified statement payload.
+    pub statement: VerifiedStatement,
+}
+
+impl StatementAccount {
+    /// Constructs a verified StatementAccount owned by `MOSOO_PROGRAM_ID`.
+    pub fn new_authentic(statement: VerifiedStatement) -> Self {
+        let pda_address = derive_statement_pda(statement.chain_id, &statement.statement_id);
+        Self {
+            owner: MOSOO_PROGRAM_ID,
+            pda_address,
+            statement,
+        }
+    }
+}
+
+/// Derives the deterministic PDA address for a verified statement on LEZ.
+pub fn derive_statement_pda(chain_id: u64, statement_id: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = sha2::Sha256::new();
+    hasher.update(b"mosoo_statement");
+    hasher.update(chain_id.to_le_bytes());
+    hasher.update(statement_id);
+    hasher.finalize().into()
+}
+
 pub use crate::verifier::{AttestStateArgs, InstructionOutput};

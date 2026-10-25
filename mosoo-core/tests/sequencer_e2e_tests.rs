@@ -8,6 +8,8 @@
 //! - Dual consumer settlement (ERC-20 and Native Ether)
 //! - Replay attack rejection
 
+#![allow(deprecated)]
+
 use erc20_receiver::{claim, claim_with_store, NullifierSet};
 use ether_receiver::{claim_ether, claim_ether_with_store, EtherNullifierSet};
 use mosoo_core::{

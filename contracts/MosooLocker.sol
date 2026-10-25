@@ -32,6 +32,11 @@ contract MosooLocker {
     uint256 public authorityTimelockUnlock;
     uint256 public constant AUTHORITY_CHANGE_DELAY = 1 days;
 
+    /// @notice Multi-signer attester committee membership and M-of-N threshold quorum
+    mapping(address => bool) public isAttester;
+    uint256 public attesterCount;
+    uint256 public requiredQuorum;
+
     address public guardian;
     bool public paused;
 
@@ -135,6 +140,9 @@ contract MosooLocker {
 
     event AttesterAuthorityUpdated(address indexed oldAuthority, address indexed newAuthority);
     event AttesterAuthorityChangeProposed(address indexed currentAuthority, address indexed proposedAuthority, uint256 unlockTimestamp);
+    event AttesterAdded(address indexed attester);
+    event AttesterRemoved(address indexed attester);
+    event QuorumUpdated(uint256 oldQuorum, uint256 newQuorum);
     event GuardianUpdated(address indexed previousGuardian, address indexed newGuardian);
     event PausedStateChanged(bool isPaused);
     event OwnershipTransferStarted(address indexed currentOwner, address indexed pendingOwner);
@@ -168,6 +176,10 @@ contract MosooLocker {
     error DailyLimitExceeded(uint256 requested, uint256 available);
     error LargeWithdrawalPending(uint256 unlockTimestamp);
     error NoQueuedWithdrawal();
+    error InvalidQuorum();
+    error DuplicateOrUnorderedAttesterSignature();
+    error AttesterAlreadyExists();
+    error AttesterNotFound();
 
     // --- Modifiers ---
 
@@ -194,10 +206,15 @@ contract MosooLocker {
         if (_attesterAuthority == address(0)) revert ZeroAddress();
         owner = msg.sender;
         attesterAuthority = _attesterAuthority;
+        isAttester[_attesterAuthority] = true;
+        attesterCount = 1;
+        requiredQuorum = 1;
         tokenAllowlistEnabled = true; // Enabled by default for strict production safety
         _status = _NOT_ENTERED;
         emit OwnershipTransferred(address(0), msg.sender);
         emit AttesterAuthorityUpdated(address(0), _attesterAuthority);
+        emit AttesterAdded(_attesterAuthority);
+        emit QuorumUpdated(0, 1);
         emit TokenAllowlistToggled(true);
     }
 
@@ -439,6 +456,173 @@ contract MosooLocker {
         emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
     }
 
+    /**
+     * @notice Release locked native ETH back to an Ethereum recipient with M-of-N multi-signer committee attestation.
+     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
+     * @param recipient The Ethereum recipient address.
+     * @param amount The ETH amount to unlock in wei.
+     * @param lezOwner The LEZ account that performed the burn.
+     * @param burnNonce The sequential burn counter from the LEZ bridge.
+     * @param lezSlot The LEZ block/slot height at which the burn occurred.
+     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
+     */
+    function unlockETHWithQuorum(
+        bytes32 burnId,
+        address payable recipient,
+        uint256 amount,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes[] calldata signatures
+    ) external whenNotPaused nonReentrant {
+        if (recipient == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
+
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_v1",
+                block.chainid,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ETH_TYPEHASH,
+                burnId,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (!_verifyQuorumSignatures(structHash, signatures)) {
+            revert InvalidBurnProof();
+        }
+
+        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
+            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
+            if (unlockTime == 0) {
+                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
+                queuedWithdrawalUnlockTime[burnId] = unlockTime;
+                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
+                return;
+            }
+            if (block.timestamp < unlockTime) {
+                revert LargeWithdrawalPending(unlockTime);
+            }
+        }
+
+        if (dailyWithdrawalLimitETH > 0) {
+            uint256 currentDay = block.timestamp / 1 days;
+            if (currentDay > currentDayWindowETH) {
+                currentDayWindowETH = currentDay;
+                dailyWithdrawnETH = 0;
+            }
+            if (dailyWithdrawnETH + amount > dailyWithdrawalLimitETH) {
+                revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - dailyWithdrawnETH);
+            }
+            dailyWithdrawnETH += amount;
+        }
+
+        executedBurns[burnId] = true;
+        totalUnlockedETH += amount;
+        totalLockedETH -= amount;
+
+        (bool sent, ) = recipient.call{value: amount}("");
+        if (!sent) revert ETHTransferFailed();
+
+        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+    }
+
+    /**
+     * @notice Release locked ERC-20 tokens back to an Ethereum recipient with M-of-N multi-signer committee attestation.
+     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
+     * @param token The ERC-20 token contract address.
+     * @param amount The token amount to unlock.
+     * @param recipient The Ethereum recipient address.
+     * @param lezOwner The LEZ account that performed the burn.
+     * @param burnNonce The sequential burn counter from the LEZ bridge.
+     * @param lezSlot The LEZ block/slot height at which the burn occurred.
+     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
+     */
+    function unlockERC20WithQuorum(
+        bytes32 burnId,
+        address token,
+        uint256 amount,
+        address recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bytes[] calldata signatures
+    ) external whenNotPaused nonReentrant {
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
+        if (token.code.length == 0) revert ZeroAddress();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+
+        bytes32 expectedBurnId = keccak256(
+            abi.encodePacked(
+                "mosoo_burn_erc20_v1",
+                block.chainid,
+                token,
+                lezOwner,
+                recipient,
+                amount,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                BURN_ERC20_TYPEHASH,
+                burnId,
+                token,
+                recipient,
+                amount,
+                lezOwner,
+                burnNonce,
+                lezSlot
+            )
+        );
+        if (!_verifyQuorumSignatures(structHash, signatures)) {
+            revert InvalidBurnProof();
+        }
+
+        uint256 limit = dailyWithdrawalLimitERC20[token];
+        if (limit > 0) {
+            uint256 currentDay = block.timestamp / 1 days;
+            if (currentDay > currentDayWindowERC20[token]) {
+                currentDayWindowERC20[token] = currentDay;
+                dailyWithdrawnERC20[token] = 0;
+            }
+            if (dailyWithdrawnERC20[token] + amount > limit) {
+                revert DailyLimitExceeded(amount, limit - dailyWithdrawnERC20[token]);
+            }
+            dailyWithdrawnERC20[token] += amount;
+        }
+
+        executedBurns[burnId] = true;
+        totalLockedERC20[token] -= amount;
+
+        _safeTransfer(token, recipient, amount);
+
+        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+    }
+
     /// @notice Configure rolling daily withdrawal volume cap for native ETH
     function setDailyWithdrawalLimitETH(uint256 newLimit) external onlyOwner {
         uint256 oldLimit = dailyWithdrawalLimitETH;
@@ -478,20 +662,53 @@ contract MosooLocker {
         bytes32 structHash,
         bytes calldata signature
     ) internal view returns (bool) {
-        // EIP-712 structured data signing strictly binding verifyingContract address(this)
+        if (requiredQuorum > 1) {
+            // When M-of-N quorum > 1, callers must invoke unlockETHWithQuorum / unlockERC20WithQuorum
+            return false;
+        }
         bytes32 eip712Digest = keccak256(
             abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
         );
-        return _verifySignature(eip712Digest, signature, attesterAuthority);
+        address signer = _recoverSigner(eip712Digest, signature);
+        return signer != address(0) && (signer == attesterAuthority || isAttester[signer]);
     }
 
-    function _verifySignature(
+    function _verifyQuorumSignatures(
+        bytes32 structHash,
+        bytes[] calldata signatures
+    ) internal view returns (bool) {
+        if (signatures.length < requiredQuorum) {
+            return false;
+        }
+        bytes32 eip712Digest = keccak256(
+            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
+        );
+        address lastSigner = address(0);
+        uint256 validCount = 0;
+
+        for (uint256 i = 0; i < signatures.length; i++) {
+            address signer = _recoverSigner(eip712Digest, signatures[i]);
+            if (signer == address(0) || !isAttester[signer]) {
+                return false;
+            }
+            // Strictly ascending signer addresses guarantee uniqueness without duplicate allocations
+            if (signer <= lastSigner) {
+                return false;
+            }
+            lastSigner = signer;
+            validCount += 1;
+            if (validCount >= requiredQuorum) {
+                return true;
+            }
+        }
+        return validCount >= requiredQuorum;
+    }
+
+    function _recoverSigner(
         bytes32 hash,
-        bytes memory signature,
-        address expectedSigner
-    ) internal pure returns (bool) {
-        if (expectedSigner == address(0)) return false;
-        if (signature.length != 65) return false;
+        bytes memory signature
+    ) internal pure returns (address) {
+        if (signature.length != 65) return address(0);
 
         bytes32 r;
         bytes32 s;
@@ -505,14 +722,13 @@ contract MosooLocker {
 
         // Strict EIP-2 check to prevent signature malleability
         if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
-            return false;
+            return address(0);
         }
 
         if (v < 27) v += 27;
-        if (v != 27 && v != 28) return false;
+        if (v != 27 && v != 28) return address(0);
 
-        address recovered = ecrecover(hash, v, r, s);
-        return recovered != address(0) && recovered == expectedSigner;
+        return ecrecover(hash, v, r, s);
     }
 
     function _safeTransfer(address token, address to, uint256 amount) internal {
@@ -553,9 +769,34 @@ contract MosooLocker {
         if (pendingAttesterAuthority == address(0)) revert NoPendingAuthority();
         if (block.timestamp < authorityTimelockUnlock) revert AuthorityTimelockActive(block.timestamp, authorityTimelockUnlock);
         emit AttesterAuthorityUpdated(attesterAuthority, pendingAttesterAuthority);
+        isAttester[attesterAuthority] = false;
+        isAttester[pendingAttesterAuthority] = true;
         attesterAuthority = pendingAttesterAuthority;
         pendingAttesterAuthority = address(0);
         authorityTimelockUnlock = 0;
+    }
+
+    function addAttester(address _attester) external onlyOwner {
+        if (_attester == address(0)) revert ZeroAddress();
+        if (isAttester[_attester]) revert AttesterAlreadyExists();
+        isAttester[_attester] = true;
+        attesterCount += 1;
+        emit AttesterAdded(_attester);
+    }
+
+    function removeAttester(address _attester) external onlyOwner {
+        if (!isAttester[_attester]) revert AttesterNotFound();
+        if (attesterCount <= 1) revert InvalidQuorum();
+        if (attesterCount - 1 < requiredQuorum) revert InvalidQuorum();
+        isAttester[_attester] = false;
+        attesterCount -= 1;
+        emit AttesterRemoved(_attester);
+    }
+
+    function setQuorum(uint256 _newQuorum) external onlyOwner {
+        if (_newQuorum == 0 || _newQuorum > attesterCount) revert InvalidQuorum();
+        emit QuorumUpdated(requiredQuorum, _newQuorum);
+        requiredQuorum = _newQuorum;
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {

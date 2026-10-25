@@ -2,6 +2,8 @@
 //!
 //! Exposes interactive simulation, canonical fixture verification, and live empirical benchmarks.
 
+#![allow(deprecated)]
+
 use alloy::signers::SignerSync;
 use alloy_primitives::{Address, B256, U256};
 use clap::{Parser, Subcommand};
@@ -491,13 +493,34 @@ fn run_fixture_verification_demo(chain_id: u64) -> anyhow::Result<()> {
 
     println!("\n\x1b[1;33m[4/4] Consumer Settlement Binding\x1b[0m");
     let mut nullifiers = NullifierSet::new();
+    let token_contract = emitter.0 .0;
+    let sender = Address::from_slice(&log.topics[1].0[12..32]).0 .0;
+    let recipient = log.topics[2].0;
+    let subject_key = derive_erc20_transfer_subject_key(
+        &header_record.execution_block_hash,
+        header_record.slot,
+        0,
+        0,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
     let pred = Predicate::AtLeast { min: [0; 32] };
-    let statement = evaluate(
+    let statement = evaluate_with_binding(
         &pred,
         &VerifiedValue::LogData(log.data),
         1,
-        [0x99; 32],
-        2, // ReceiptLog
+        subject_key,
+        PROOF_TYPE_ERC20_TRANSFER,
+        StatementBinding::Erc20Transfer {
+            execution_block_hash: header_record.execution_block_hash,
+            slot: header_record.slot,
+            tx_index: 0,
+            log_index: 0,
+            token_contract,
+            sender,
+            recipient,
+        },
     )?;
 
     println!(
@@ -1490,6 +1513,15 @@ fn run_verify_checkpoint(
             matched
         );
     }
+    println!(
+        "  - Header Anchored to Root:   {} \x1b[32m[{}]\x1b[0m",
+        report.header_anchored_to_trusted_root,
+        if report.header_anchored_to_trusted_root {
+            "100% CRYPTOGRAPHICALLY ANCHORED"
+        } else {
+            "UNANCHORED / SELF-CONSISTENT ONLY"
+        }
+    );
     println!("\n  \x1b[1;32m[SUCCESS] Checkpoint is independently authentic, fresh, and cryptographically verified.\x1b[0m\n");
 
     Ok(())

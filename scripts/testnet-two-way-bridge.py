@@ -126,16 +126,19 @@ def main():
                         help="Execution mode: 'live' (strict on-chain RPC) or 'simulated' (local harness)")
     parser.add_argument("--rpc", default=DEFAULT_RPC, help="Sequencer JSON-RPC URL")
     parser.add_argument("--eth-rpc", default=None, help="Ethereum L1 JSON-RPC URL (Sepolia or Mainnet)")
+    parser.add_argument("--chain-id", type=int, default=1, help="Ethereum Chain ID (1 for Mainnet, 11155111 for Sepolia, etc.)")
     args = parser.parse_args()
 
     print("=" * 80)
     if args.mode == "live":
         print("MOSOO TWO-WAY BRIDGE TESTNET PIPELINE (LIVE NETWORK MODE)")
         print(f"Target LEZ Sequencer: {args.rpc}")
+        print(f"Target Chain ID     : {args.chain_id}")
         if args.eth_rpc:
             print(f"Target Ethereum RPC : {args.eth_rpc}")
     else:
         print("MOSOO TWO-WAY BRIDGE PIPELINE (SIMULATED HARNESS DEMO)")
+        print(f"Target Chain ID     : {args.chain_id}")
         print("Notice: Running in verified standalone simulation mode.")
     print("=" * 80)
 
@@ -169,6 +172,14 @@ def main():
                 else:
                     print(f"  [-] Fatal: Ethereum RPC returned unexpected payload: {eth_resp}")
                     sys.exit(1)
+
+                chain_resp = call_rpc(args.eth_rpc, "eth_chainId", [])
+                if "result" in chain_resp:
+                    rpc_chain_id = int(chain_resp["result"], 16)
+                    print(f"  [+] Live Ethereum RPC Chain ID: {rpc_chain_id}")
+                    if args.chain_id != rpc_chain_id:
+                        print(f"  [-] Fatal: Specified --chain-id ({args.chain_id}) does not match RPC ({rpc_chain_id})")
+                        sys.exit(1)
             except Exception as e:
                 print(f"  [-] Fatal: Failed connecting to Ethereum RPC at {args.eth_rpc}: {e}")
                 sys.exit(1)
@@ -231,8 +242,9 @@ def main():
     alice_balance -= burn_wei
     total_supply -= burn_wei
 
-    burn_id = derive_burn_id(1, alice_lez, eth_recipient, burn_wei, burn_nonce, lez_burn_slot)
+    burn_id = derive_burn_id(args.chain_id, alice_lez, eth_recipient, burn_wei, burn_nonce, lez_burn_slot)
     print(f"  [+] Alice burns          : {burn_wei / 10**18:.2f} mETH")
+    print(f"  [+] Target Chain ID      : {args.chain_id}")
     print(f"  [+] Burn Nonce           : {burn_nonce} at LEZ slot {lez_burn_slot}")
     print(f"  [+] Canonical Keccak-256 : 0x{burn_id.hex()}")
 

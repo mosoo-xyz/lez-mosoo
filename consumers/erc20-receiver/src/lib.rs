@@ -23,9 +23,10 @@ use alloy_primitives::{keccak256, U256};
 pub use mosoo_core::predicate::{
     derive_erc20_deposit_subject_key, derive_erc20_transfer_subject_key,
 };
+pub use mosoo_core::types::derive_statement_pda;
 use mosoo_core::types::{
-    AccountStore, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
+    AccountStore, StatementAccount, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID,
+    MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ERC20_TRANSFER,
 };
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
@@ -179,6 +180,7 @@ impl NullifierSet {
 /// # Examples
 ///
 /// ```
+/// # #[allow(deprecated)]
 /// use erc20_receiver::{claim, NullifierSet, derive_erc20_transfer_subject_key};
 /// use mosoo_core::types::{VerifiedStatement, StatementBinding, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_TRANSFER};
 /// use mosoo_core::predicate::derive_statement_id_from_raw;
@@ -226,6 +228,9 @@ impl NullifierSet {
 /// let minted = claim(&statement, &mut nullifiers, 100).expect("first claim succeeds");
 /// assert_eq!(minted, 100);
 /// ```
+#[deprecated(
+    note = "Use `claim_atomic_u256` for in-guest atomic execution or `claim_authenticated_pda_u256` for on-chain PDA account provenance with full U256 precision"
+)]
 pub fn claim(
     statement: &VerifiedStatement,
     nullifiers: &mut NullifierSet,
@@ -357,9 +362,38 @@ pub fn claim(
     Ok(minted_amount)
 }
 
+/// Claim tokens from an authentic on-chain Statement Account committed by `MOSOO_PROGRAM_ID`.
+///
+/// Cryptographically verifies on-chain provenance:
+/// 1. Account owner is strictly `MOSOO_PROGRAM_ID` (enforced on-chain by LEZ VM).
+/// 2. PDA address matches `derive_statement_pda(chain_id, statement_id)`.
+/// 3. Re-derives canonical statement ID and subject key.
+/// 4. Enforces nullifier replay protection with full U256 precision.
+pub fn claim_authenticated_pda_u256(
+    statement_account: &StatementAccount,
+    nullifiers: &mut NullifierSet,
+    min_amount: U256,
+) -> Result<U256, ReceiverError> {
+    if statement_account.owner != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+    let expected_pda = derive_statement_pda(
+        statement_account.statement.chain_id,
+        &statement_account.statement.statement_id,
+    );
+    if statement_account.pda_address != expected_pda {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+    #[allow(deprecated)]
+    claim_u256(&statement_account.statement, nullifiers, min_amount)
+}
+
 /// Verify a VerifiedStatement with full 256-bit (U256) precision and mint LEZ-side tokens.
 ///
 /// Prevents truncation for amounts > u64::MAX (e.g. standard 18-decimal token transfers).
+#[deprecated(
+    note = "Use `claim_atomic_u256` for in-guest atomic execution or `claim_authenticated_pda_u256` for on-chain PDA account provenance"
+)]
 pub fn claim_u256(
     statement: &VerifiedStatement,
     nullifiers: &mut NullifierSet,
@@ -481,11 +515,13 @@ pub fn claim_u256(
 }
 
 /// Verify a VerifiedStatement with u128 precision (safe for amounts up to 3.4e38 units).
+#[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_u128(
     statement: &VerifiedStatement,
     nullifiers: &mut NullifierSet,
     min_amount: u128,
 ) -> Result<u128, ReceiverError> {
+    #[allow(deprecated)]
     claim_u256(statement, nullifiers, U256::from(min_amount))?;
     statement
         .value_as_u128_checked()
@@ -494,6 +530,7 @@ pub fn claim_u128(
 
 /// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
 /// writes the spent nullifier PDA record into `store`, and returns the credited amount.
+#[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_with_store<S: AccountStore>(
     statement: &VerifiedStatement,
     store: &mut S,
@@ -635,6 +672,7 @@ pub fn claim_with_store<S: AccountStore>(
 }
 
 /// Atomically verifies statement with full 256-bit (U256) precision against persistent PDA nullifiers in AccountStore.
+#[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_with_store_u256<S: AccountStore>(
     statement: &VerifiedStatement,
     store: &mut S,
@@ -772,12 +810,14 @@ pub fn claim_with_store_u256<S: AccountStore>(
 }
 
 /// Atomically verifies statement with u128 precision against persistent PDA nullifiers in AccountStore.
+#[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_with_store_u128<S: AccountStore>(
     statement: &VerifiedStatement,
     store: &mut S,
     min_amount: u128,
     current_slot: u64,
 ) -> Result<u128, ReceiverError> {
+    #[allow(deprecated)]
     claim_with_store_u256(statement, store, U256::from(min_amount), current_slot)?;
     statement
         .value_as_u128_checked()
@@ -1199,6 +1239,9 @@ pub fn claim_atomic_u256(
 /// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
 /// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts target contract
 /// identity, derives the deterministic statement nullifier, checks for replay, and credits tokens.
+#[deprecated(
+    note = "Use `claim_atomic_u256` for full U256 precision to prevent overflow/truncation of amounts > u64::MAX"
+)]
 pub fn claim_atomic(
     args: AtomicErc20ClaimArgs,
     nullifiers: &mut NullifierSet,
@@ -1507,6 +1550,7 @@ impl Erc20Ledger {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -2644,6 +2688,67 @@ mod tests {
         // Replay rejection
         let replay = ledger.mint_deposit_tokens(&claim, &mut nullifiers);
         assert_eq!(replay.unwrap_err(), ReceiverError::AlreadyClaimed);
+    }
+
+    #[test]
+    fn test_claim_authenticated_pda_u256_provenance_verification() {
+        let mut nullifiers = NullifierSet::new();
+        let deposit_contract = [0x42; 20];
+        let token = [0xaa; 20];
+        let sender = [0x11; 20];
+        let recipient = [0x22; 32];
+        let amount = 500_000_000_000_000_000_000u128; // 500 tokens
+
+        let statement = make_erc20_deposit_statement(
+            ETH_MAINNET_CHAIN_ID,
+            true,
+            amount,
+            MOSOO_PROGRAM_ID,
+            deposit_contract,
+            token,
+            sender,
+            recipient,
+        );
+
+        // 1. Adversary fabricates statement account with fake owner program ID
+        let fake_owner = [0x99; 32];
+        let fabricated_account = StatementAccount {
+            owner: fake_owner,
+            pda_address: derive_statement_pda(statement.chain_id, &statement.statement_id),
+            statement: statement.clone(),
+        };
+        let err =
+            claim_authenticated_pda_u256(&fabricated_account, &mut nullifiers, U256::from(100u64))
+                .expect_err("Fabricated account with fake owner must be rejected");
+        assert_eq!(err, ReceiverError::UnauthenticatedAttester);
+
+        // 2. Adversary fabricates statement account with mismatched PDA address
+        let fake_pda = [0x88; 32];
+        let tampered_pda_account = StatementAccount {
+            owner: MOSOO_PROGRAM_ID,
+            pda_address: fake_pda,
+            statement: statement.clone(),
+        };
+        let err2 = claim_authenticated_pda_u256(
+            &tampered_pda_account,
+            &mut nullifiers,
+            U256::from(100u64),
+        )
+        .expect_err("Account with tampered PDA address must be rejected");
+        assert_eq!(err2, ReceiverError::UnauthenticatedAttester);
+
+        // 3. Authentic statement account succeeds
+        let authentic_account = StatementAccount::new_authentic(statement);
+        let minted =
+            claim_authenticated_pda_u256(&authentic_account, &mut nullifiers, U256::from(100u64))
+                .expect("Authentic statement account must be accepted");
+        assert_eq!(minted, U256::from(amount));
+
+        // 4. Replay rejected
+        let replay =
+            claim_authenticated_pda_u256(&authentic_account, &mut nullifiers, U256::from(100u64))
+                .expect_err("Replay claim on statement account must be rejected");
+        assert_eq!(replay, ReceiverError::AlreadyClaimed);
     }
 
     // Chain IDs used in tests above

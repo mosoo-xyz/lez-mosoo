@@ -10,6 +10,8 @@
 //! 4. Logos Core Verified-Proxy endpoint conformance & headers
 //! 5. End-to-end multi-consumer settlement under LEZ v0.4 runtime rules
 
+#![allow(deprecated)]
+
 use erc20_receiver::{claim_erc20_transfer, Erc20TransferClaim, NullifierSet};
 use ether_receiver::{claim_native_eth_deposit, EtherNullifierSet, NativeEthDepositClaim};
 use mosoo_core::inclusion::{test_helpers, ProofTarget, StateProof};

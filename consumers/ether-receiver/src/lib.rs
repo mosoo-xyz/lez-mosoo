@@ -1,8 +1,10 @@
 use alloy_primitives::{keccak256, U256};
 pub use mosoo_core::predicate::derive_eth_deposit_subject_key;
+pub use mosoo_core::types::derive_statement_pda;
+pub use mosoo_core::types::StatementAccount as EtherStatementAccount;
 use mosoo_core::types::{
-    AccountStore, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID,
-    PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
+    AccountStore, StatementAccount, StatementBinding, VerifiedStatement, ETH_MAINNET_CHAIN_ID,
+    MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -152,6 +154,7 @@ impl EtherNullifierSet {
 /// # Examples
 ///
 /// ```
+/// # #[allow(deprecated)]
 /// use ether_receiver::{claim_ether, EtherNullifierSet};
 /// use mosoo_core::types::{VerifiedStatement, StatementBinding, ETH_MAINNET_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ACCOUNT_BALANCE};
 /// use mosoo_core::predicate::derive_statement_id_from_raw;
@@ -185,6 +188,9 @@ impl EtherNullifierSet {
 ///     .expect("valid ether claim succeeds");
 /// assert_eq!(wei, 1_000_000_000_000_000_000);
 /// ```
+#[deprecated(
+    note = "Use `claim_ether_atomic_u256` for in-guest atomic execution or `claim_ether_authenticated_pda_u256` for on-chain PDA account provenance"
+)]
 pub fn claim_ether(
     statement: &VerifiedStatement,
     nullifiers: &mut EtherNullifierSet,
@@ -317,9 +323,38 @@ pub fn claim_ether(
     Ok(verified_wei)
 }
 
+/// Claim native Ether / mETH from an authentic on-chain Statement Account committed by `MOSOO_PROGRAM_ID`.
+///
+/// Cryptographically verifies on-chain provenance:
+/// 1. Account owner is strictly `MOSOO_PROGRAM_ID` (enforced on-chain by LEZ VM).
+/// 2. PDA address matches `derive_statement_pda(chain_id, statement_id)`.
+/// 3. Re-derives canonical statement ID and subject key.
+/// 4. Enforces nullifier replay protection with full U256 precision.
+pub fn claim_ether_authenticated_pda_u256(
+    statement_account: &StatementAccount,
+    nullifiers: &mut EtherNullifierSet,
+    min_wei: U256,
+) -> Result<U256, EtherReceiverError> {
+    if statement_account.owner != MOSOO_PROGRAM_ID {
+        return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+    let expected_pda = derive_statement_pda(
+        statement_account.statement.chain_id,
+        &statement_account.statement.statement_id,
+    );
+    if statement_account.pda_address != expected_pda {
+        return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+    #[allow(deprecated)]
+    claim_ether_u256(&statement_account.statement, nullifiers, min_wei)
+}
+
 /// Verify an Ether statement with full 256-bit (U256) precision and credit LEZ-side ether.
 ///
 /// Prevents truncation or rejection for high-value transfers > u64::MAX (e.g. >18.45 ETH in wei).
+#[deprecated(
+    note = "Use `claim_ether_atomic_u256` for in-guest atomic execution or `claim_ether_authenticated_pda_u256` for on-chain PDA account provenance"
+)]
 pub fn claim_ether_u256(
     statement: &VerifiedStatement,
     nullifiers: &mut EtherNullifierSet,
@@ -441,11 +476,13 @@ pub fn claim_ether_u256(
 }
 
 /// Verify an Ether statement with u128 precision.
+#[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_u128(
     statement: &VerifiedStatement,
     nullifiers: &mut EtherNullifierSet,
     min_wei: u128,
 ) -> Result<u128, EtherReceiverError> {
+    #[allow(deprecated)]
     claim_ether_u256(statement, nullifiers, U256::from(min_wei))?;
     statement
         .value_as_u128_checked()
@@ -454,6 +491,7 @@ pub fn claim_ether_u128(
 
 /// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
 /// writes the spent nullifier PDA record into `store`, and returns the credited amount.
+#[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_with_store<S: AccountStore>(
     statement: &VerifiedStatement,
     store: &mut S,
@@ -609,6 +647,7 @@ pub fn claim_ether_with_store<S: AccountStore>(
 }
 
 /// Atomically verifies an Ether statement with full 256-bit (U256) precision against persistent PDA nullifiers in AccountStore.
+#[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_with_store_u256<S: AccountStore>(
     statement: &VerifiedStatement,
     store: &mut S,
@@ -754,12 +793,14 @@ pub fn claim_ether_with_store_u256<S: AccountStore>(
 }
 
 /// Atomically verifies an Ether statement with u128 precision against persistent PDA nullifiers in AccountStore.
+#[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_with_store_u128<S: AccountStore>(
     statement: &VerifiedStatement,
     store: &mut S,
     min_wei: u128,
     current_slot: u64,
 ) -> Result<u128, EtherReceiverError> {
+    #[allow(deprecated)]
     claim_ether_with_store_u256(statement, store, U256::from(min_wei), current_slot)?;
     statement
         .value_as_u128_checked()
@@ -1030,6 +1071,9 @@ pub fn claim_ether_atomic_u256(
 /// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
 /// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts account identity,
 /// derives the deterministic statement nullifier, checks for replay, and credits wei.
+#[deprecated(
+    note = "Use `claim_ether_atomic_u256` for full U256 precision to prevent overflow/truncation of amounts > u64::MAX"
+)]
 pub fn claim_ether_atomic(
     args: AtomicEtherClaimArgs,
     nullifiers: &mut EtherNullifierSet,
@@ -1545,6 +1589,7 @@ impl MethLedger {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
 
@@ -2830,8 +2875,109 @@ mod tests {
             },
         };
 
+        #[allow(deprecated)]
         let claimed = claim_ether_u128(&statement, &mut nullifiers, large_wei)
             .expect("claim_ether_u128 for > u64::MAX wei must succeed");
         assert_eq!(claimed, large_wei);
+    }
+
+    #[test]
+    fn test_claim_ether_authenticated_pda_u256_provenance_verification() {
+        let mut nullifiers = EtherNullifierSet::new();
+        let deposit_contract = [0x11; 20];
+        let sender = [0x22; 20];
+        let recipient = [0x33; 32];
+        let block_hash = [0x44; 32];
+        let slot = 10_500_000;
+        let tx_index = 1;
+        let log_index = 0;
+        let wei = U256::from(50_000_000_000_000_000_000u128); // 50 ETH
+
+        let subject_key = derive_eth_deposit_subject_key(
+            &block_hash,
+            slot,
+            tx_index,
+            log_index,
+            &deposit_contract,
+            &sender,
+            &recipient,
+        );
+        let mut val_bytes = [0u8; 32];
+        val_bytes.copy_from_slice(&wei.to_be_bytes::<32>());
+
+        let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
+            ETH_MAINNET_CHAIN_ID,
+            &subject_key,
+            PROOF_TYPE_ETH_DEPOSIT,
+            &val_bytes,
+        );
+
+        let statement = VerifiedStatement {
+            chain_id: ETH_MAINNET_CHAIN_ID,
+            attester_program_id: MOSOO_PROGRAM_ID,
+            statement_id,
+            predicate_holds: true,
+            verified_value: val_bytes,
+            subject_key,
+            proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+            binding: StatementBinding::NativeEthDeposit {
+                execution_block_hash: block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            },
+        };
+
+        // 1. Adversary fabricates statement account with fake owner program ID
+        let fake_owner = [0x99; 32];
+        let fabricated_account = StatementAccount {
+            owner: fake_owner,
+            pda_address: derive_statement_pda(statement.chain_id, &statement.statement_id),
+            statement: statement.clone(),
+        };
+        let err = claim_ether_authenticated_pda_u256(
+            &fabricated_account,
+            &mut nullifiers,
+            U256::from(100u64),
+        )
+        .expect_err("Fabricated account with fake owner must be rejected");
+        assert_eq!(err, EtherReceiverError::UnauthenticatedAttester);
+
+        // 2. Adversary fabricates statement account with mismatched PDA address
+        let fake_pda = [0x88; 32];
+        let tampered_pda_account = StatementAccount {
+            owner: MOSOO_PROGRAM_ID,
+            pda_address: fake_pda,
+            statement: statement.clone(),
+        };
+        let err2 = claim_ether_authenticated_pda_u256(
+            &tampered_pda_account,
+            &mut nullifiers,
+            U256::from(100u64),
+        )
+        .expect_err("Account with tampered PDA address must be rejected");
+        assert_eq!(err2, EtherReceiverError::UnauthenticatedAttester);
+
+        // 3. Authentic statement account succeeds
+        let authentic_account = StatementAccount::new_authentic(statement);
+        let claimed = claim_ether_authenticated_pda_u256(
+            &authentic_account,
+            &mut nullifiers,
+            U256::from(100u64),
+        )
+        .expect("Authentic statement account must be accepted");
+        assert_eq!(claimed, wei);
+
+        // 4. Replay rejected
+        let replay = claim_ether_authenticated_pda_u256(
+            &authentic_account,
+            &mut nullifiers,
+            U256::from(100u64),
+        )
+        .expect_err("Replay claim on statement account must be rejected");
+        assert_eq!(replay, EtherReceiverError::AlreadyClaimed);
     }
 }

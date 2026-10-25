@@ -1078,6 +1078,7 @@ pub struct CheckpointVerificationReport {
     pub current_committee_branch_valid: bool,
     pub next_committee_branch_valid: bool,
     pub matches_trusted_block_root: Option<bool>,
+    pub header_anchored_to_trusted_root: bool,
     pub is_valid: bool,
 }
 
@@ -1199,6 +1200,34 @@ pub fn verify_weak_subjectivity_checkpoint(
         current_committee_branch_valid: true,
         next_committee_branch_valid: next_branch_valid || initial_next_committee.is_none(),
         matches_trusted_block_root: matches_trusted,
+        header_anchored_to_trusted_root: matches_trusted == Some(true),
         is_valid: true,
     })
+}
+
+/// Strictly anchored checkpoint verification API where `trusted_block_root` is mandatory.
+/// This prevents unanchored bootstrap checkpoints from being accepted in production.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_anchored_checkpoint(
+    chain_id: u64,
+    bootstrap_header: &BeaconBlockHeader,
+    current_sync_committee: &SyncCommittee,
+    current_sync_committee_branch: &[[u8; 32]],
+    initial_next_committee: Option<&SyncCommittee>,
+    initial_next_committee_branch: Option<&[[u8; 32]]>,
+    trusted_head_slot: u64,
+    trusted_block_root: [u8; 32],
+    network_config: Option<&NetworkConfig>,
+) -> Result<CheckpointVerificationReport, MosooError> {
+    verify_weak_subjectivity_checkpoint(
+        chain_id,
+        bootstrap_header,
+        current_sync_committee,
+        current_sync_committee_branch,
+        initial_next_committee,
+        initial_next_committee_branch,
+        trusted_head_slot,
+        Some(trusted_block_root),
+        network_config,
+    )
 }

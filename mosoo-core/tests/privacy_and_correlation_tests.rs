@@ -1,3 +1,5 @@
+#![allow(deprecated)]
+
 use alloy_primitives::{Address, B256, U256};
 use erc20_receiver::{claim, NullifierSet};
 use ether_receiver::{claim_ether, EtherNullifierSet};

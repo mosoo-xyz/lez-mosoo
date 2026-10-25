@@ -4,6 +4,8 @@
 //! mutated headers, forged Merkle branches, insufficient quorums,
 //! cross-chain replays, and duplicate claim attacks.
 
+#![allow(deprecated)]
+
 use blst::min_pk::SecretKey;
 use erc20_receiver::{
     claim, claim_erc20_transfer, Erc20TransferClaim, NullifierSet, ReceiverError,
