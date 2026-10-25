@@ -56,15 +56,34 @@ contract MosooLocker {
 
     // --- Rate Limiting & Timelock Defense-in-Depth ---
 
+    /// @dev Continuous rolling 24-hour window record
+    struct WithdrawalRecord {
+        uint64 timestamp;
+        uint192 amount;
+    }
+
+    uint256 public constant ROLLING_WINDOW = 1 days;
+
     /// @notice Rolling daily withdrawal limit for ETH (0 = disabled/unlimited)
     uint256 public dailyWithdrawalLimitETH;
-    uint256 public currentDayWindowETH;
-    uint256 public dailyWithdrawnETH;
+    WithdrawalRecord[] private _ethWithdrawals;
+    uint256 private _ethWithdrawalHead;
+    uint256 private _rollingWithdrawnETH;
 
     /// @notice Rolling daily withdrawal limits for ERC-20 tokens (token => limit)
     mapping(address => uint256) public dailyWithdrawalLimitERC20;
-    mapping(address => uint256) public currentDayWindowERC20;
-    mapping(address => uint256) public dailyWithdrawnERC20;
+    mapping(address => WithdrawalRecord[]) private _erc20Withdrawals;
+    mapping(address => uint256) private _erc20WithdrawalHead;
+    mapping(address => uint256) private _rollingWithdrawnERC20;
+
+    /// @notice Multi-signer governance timelock (2-day delay for attester/quorum modifications)
+    uint256 public constant GOVERNANCE_TIMELOCK_DELAY = 2 days;
+    uint256 public pendingQuorum;
+    uint256 public quorumTimelockUnlock;
+    address public pendingAddAttester;
+    uint256 public addAttesterTimelockUnlock;
+    address public pendingRemoveAttester;
+    uint256 public removeAttesterTimelockUnlock;
 
     /// @notice Large withdrawal threshold requiring mandatory timelock delay
     uint256 public constant LARGE_WITHDRAWAL_THRESHOLD_ETH = 10 ether;
@@ -154,6 +173,10 @@ contract MosooLocker {
     event BurnPermanentlyCancelled(bytes32 indexed burnId, address indexed cancelledBy);
     event DailyWithdrawalLimitUpdatedETH(uint256 oldLimit, uint256 newLimit);
     event DailyWithdrawalLimitUpdatedERC20(address indexed token, uint256 oldLimit, uint256 newLimit);
+    event QuorumChangeProposed(uint256 currentQuorum, uint256 proposedQuorum, uint256 unlockTimestamp);
+    event AttesterAddProposed(address indexed proposedAttester, uint256 unlockTimestamp);
+    event AttesterRemoveProposed(address indexed proposedAttester, uint256 unlockTimestamp);
+    event PendingGovernanceCancelled(string action, address indexed cancelledBy);
 
     // --- Errors ---
 
@@ -180,6 +203,9 @@ contract MosooLocker {
     error DuplicateOrUnorderedAttesterSignature();
     error AttesterAlreadyExists();
     error AttesterNotFound();
+    error GovernanceTimelockActive(uint256 currentTime, uint256 unlockTime);
+    error NoPendingGovernanceAction();
+    error DirectGovernanceDeprecated();
 
     // --- Modifiers ---
 
@@ -205,19 +231,32 @@ contract MosooLocker {
     constructor(address _attesterAuthority) {
         if (_attesterAuthority == address(0)) revert ZeroAddress();
         owner = msg.sender;
+        guardian = msg.sender; // Finding M-05 hardening: default non-zero guardian set to deployer
         attesterAuthority = _attesterAuthority;
         isAttester[_attesterAuthority] = true;
         attesterCount = 1;
         requiredQuorum = 1;
         tokenAllowlistEnabled = true; // Enabled by default for strict production safety
-        dailyWithdrawalLimitETH = 100 ether; // Safe default daily withdrawal rate limit (Finding M-05 hardening)
+        dailyWithdrawalLimitETH = 100 ether; // Safe default daily withdrawal rate limit (Finding M-03/M-05 hardening)
+
+        // Finding M-05 hardening: Configure explicit default daily caps for registered canonical testnet tokens
+        address sepoliaUSDC = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;
+        address sepoliaUSDT = 0x7169D38820dfd117C3FA1f22a697dBA58d90BA06;
+        isTokenAllowed[sepoliaUSDC] = true;
+        isTokenAllowed[sepoliaUSDT] = true;
+        dailyWithdrawalLimitERC20[sepoliaUSDC] = 50_000 * 10**6; // 50,000 USDC per 24h
+        dailyWithdrawalLimitERC20[sepoliaUSDT] = 50_000 * 10**6; // 50,000 USDT per 24h
+
         _status = _NOT_ENTERED;
         emit OwnershipTransferred(address(0), msg.sender);
+        emit GuardianUpdated(address(0), msg.sender);
         emit AttesterAuthorityUpdated(address(0), _attesterAuthority);
         emit AttesterAdded(_attesterAuthority);
         emit QuorumUpdated(0, 1);
         emit TokenAllowlistToggled(true);
         emit DailyWithdrawalLimitUpdatedETH(0, 100 ether);
+        emit DailyWithdrawalLimitUpdatedERC20(sepoliaUSDC, 0, 50_000 * 10**6);
+        emit DailyWithdrawalLimitUpdatedERC20(sepoliaUSDT, 0, 50_000 * 10**6);
     }
 
     // --- Deposit Functions (ETH -> LEZ) ---
@@ -348,18 +387,8 @@ contract MosooLocker {
             }
         }
 
-        // 4. Defense-in-Depth: Rolling 24-hour daily volume limit check
-        if (dailyWithdrawalLimitETH > 0) {
-            uint256 currentDay = block.timestamp / 1 days;
-            if (currentDay > currentDayWindowETH) {
-                currentDayWindowETH = currentDay;
-                dailyWithdrawnETH = 0;
-            }
-            if (dailyWithdrawnETH + amount > dailyWithdrawalLimitETH) {
-                revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - dailyWithdrawnETH);
-            }
-            dailyWithdrawnETH += amount;
-        }
+        // 4. Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
+        _checkAndRecordRollingWithdrawalETH(amount);
 
         // 5. Mark burn nullifier as spent (prevents replay)
         executedBurns[burnId] = true;
@@ -434,19 +463,8 @@ contract MosooLocker {
             revert InvalidBurnProof();
         }
 
-        // 3. Defense-in-Depth: Rolling daily volume limit for token
-        uint256 limit = dailyWithdrawalLimitERC20[token];
-        if (limit > 0) {
-            uint256 currentDay = block.timestamp / 1 days;
-            if (currentDay > currentDayWindowERC20[token]) {
-                currentDayWindowERC20[token] = currentDay;
-                dailyWithdrawnERC20[token] = 0;
-            }
-            if (dailyWithdrawnERC20[token] + amount > limit) {
-                revert DailyLimitExceeded(amount, limit - dailyWithdrawnERC20[token]);
-            }
-            dailyWithdrawnERC20[token] += amount;
-        }
+        // 3. Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
+        _checkAndRecordRollingWithdrawalERC20(token, amount);
 
         // 4. Mark burn nullifier and update accounting
         executedBurns[burnId] = true;
@@ -524,17 +542,8 @@ contract MosooLocker {
             }
         }
 
-        if (dailyWithdrawalLimitETH > 0) {
-            uint256 currentDay = block.timestamp / 1 days;
-            if (currentDay > currentDayWindowETH) {
-                currentDayWindowETH = currentDay;
-                dailyWithdrawnETH = 0;
-            }
-            if (dailyWithdrawnETH + amount > dailyWithdrawalLimitETH) {
-                revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - dailyWithdrawnETH);
-            }
-            dailyWithdrawnETH += amount;
-        }
+        // Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
+        _checkAndRecordRollingWithdrawalETH(amount);
 
         executedBurns[burnId] = true;
         totalUnlockedETH += amount;
@@ -604,18 +613,8 @@ contract MosooLocker {
             revert InvalidBurnProof();
         }
 
-        uint256 limit = dailyWithdrawalLimitERC20[token];
-        if (limit > 0) {
-            uint256 currentDay = block.timestamp / 1 days;
-            if (currentDay > currentDayWindowERC20[token]) {
-                currentDayWindowERC20[token] = currentDay;
-                dailyWithdrawnERC20[token] = 0;
-            }
-            if (dailyWithdrawnERC20[token] + amount > limit) {
-                revert DailyLimitExceeded(amount, limit - dailyWithdrawnERC20[token]);
-            }
-            dailyWithdrawnERC20[token] += amount;
-        }
+        // Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
+        _checkAndRecordRollingWithdrawalERC20(token, amount);
 
         executedBurns[burnId] = true;
         totalLockedERC20[token] -= amount;
@@ -659,6 +658,101 @@ contract MosooLocker {
     }
 
     // --- Internal Helpers ---
+
+    // --- Continuous Rolling 24-Hour Helpers ---
+
+    function _checkAndRecordRollingWithdrawalETH(uint256 amount) internal {
+        if (dailyWithdrawalLimitETH == 0) return;
+
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        uint256 head = _ethWithdrawalHead;
+        uint256 len = _ethWithdrawals.length;
+        uint256 rolling = _rollingWithdrawnETH;
+
+        while (head < len && _ethWithdrawals[head].timestamp < cutoff) {
+            rolling -= _ethWithdrawals[head].amount;
+            delete _ethWithdrawals[head];
+            head++;
+        }
+        _ethWithdrawalHead = head;
+
+        if (rolling + amount > dailyWithdrawalLimitETH) {
+            revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - rolling);
+        }
+
+        _rollingWithdrawnETH = rolling + amount;
+        _ethWithdrawals.push(WithdrawalRecord({
+            timestamp: uint64(block.timestamp),
+            amount: uint192(amount)
+        }));
+    }
+
+    function _checkAndRecordRollingWithdrawalERC20(address token, uint256 amount) internal {
+        uint256 limit = dailyWithdrawalLimitERC20[token];
+        if (limit == 0) return;
+
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        uint256 head = _erc20WithdrawalHead[token];
+        WithdrawalRecord[] storage history = _erc20Withdrawals[token];
+        uint256 len = history.length;
+        uint256 rolling = _rollingWithdrawnERC20[token];
+
+        while (head < len && history[head].timestamp < cutoff) {
+            rolling -= history[head].amount;
+            delete history[head];
+            head++;
+        }
+        _erc20WithdrawalHead[token] = head;
+
+        if (rolling + amount > limit) {
+            revert DailyLimitExceeded(amount, limit - rolling);
+        }
+
+        _rollingWithdrawnERC20[token] = rolling + amount;
+        history.push(WithdrawalRecord({
+            timestamp: uint64(block.timestamp),
+            amount: uint192(amount)
+        }));
+    }
+
+    /// @notice Returns the current rolling 24-hour volume withdrawn for native ETH
+    function getRollingWithdrawnETH() public view returns (uint256) {
+        if (dailyWithdrawalLimitETH == 0) return 0;
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        uint256 rolling = _rollingWithdrawnETH;
+        for (uint256 i = _ethWithdrawalHead; i < _ethWithdrawals.length; i++) {
+            if (_ethWithdrawals[i].timestamp < cutoff) {
+                rolling -= _ethWithdrawals[i].amount;
+            } else {
+                break;
+            }
+        }
+        return rolling;
+    }
+
+    /// @notice Returns the current rolling 24-hour volume withdrawn for an ERC-20 token
+    function getRollingWithdrawnERC20(address token) public view returns (uint256) {
+        if (dailyWithdrawalLimitERC20[token] == 0) return 0;
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        uint256 rolling = _rollingWithdrawnERC20[token];
+        WithdrawalRecord[] storage history = _erc20Withdrawals[token];
+        for (uint256 i = _erc20WithdrawalHead[token]; i < history.length; i++) {
+            if (history[i].timestamp < cutoff) {
+                rolling -= history[i].amount;
+            } else {
+                break;
+            }
+        }
+        return rolling;
+    }
+
+    function dailyWithdrawnETH() external view returns (uint256) {
+        return getRollingWithdrawnETH();
+    }
+
+    function dailyWithdrawnERC20(address token) external view returns (uint256) {
+        return getRollingWithdrawnERC20(token);
+    }
 
     function _verifyBurnSignature(
         bytes32 structHash,
@@ -778,27 +872,107 @@ contract MosooLocker {
         authorityTimelockUnlock = 0;
     }
 
-    function addAttester(address _attester) external onlyOwner {
-        if (_attester == address(0)) revert ZeroAddress();
-        if (isAttester[_attester]) revert AttesterAlreadyExists();
-        isAttester[_attester] = true;
-        attesterCount += 1;
-        emit AttesterAdded(_attester);
+    // --- Timelocked Multisig Governance (Finding M-04 / 4 Hardening) ---
+
+    function proposeQuorum(uint256 _newQuorum) external onlyOwner {
+        if (_newQuorum == 0 || _newQuorum > attesterCount) revert InvalidQuorum();
+        pendingQuorum = _newQuorum;
+        quorumTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit QuorumChangeProposed(requiredQuorum, _newQuorum, quorumTimelockUnlock);
     }
 
-    function removeAttester(address _attester) external onlyOwner {
+    function executeQuorum() external onlyOwner {
+        if (pendingQuorum == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < quorumTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, quorumTimelockUnlock);
+        }
+        if (pendingQuorum > attesterCount) revert InvalidQuorum();
+        uint256 oldQuorum = requiredQuorum;
+        requiredQuorum = pendingQuorum;
+        pendingQuorum = 0;
+        quorumTimelockUnlock = 0;
+        emit QuorumUpdated(oldQuorum, requiredQuorum);
+    }
+
+    function proposeAddAttester(address _attester) external onlyOwner {
+        if (_attester == address(0)) revert ZeroAddress();
+        if (isAttester[_attester]) revert AttesterAlreadyExists();
+        pendingAddAttester = _attester;
+        addAttesterTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit AttesterAddProposed(_attester, addAttesterTimelockUnlock);
+    }
+
+    function executeAddAttester() external onlyOwner {
+        if (pendingAddAttester == address(0)) revert NoPendingGovernanceAction();
+        if (block.timestamp < addAttesterTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, addAttesterTimelockUnlock);
+        }
+        if (isAttester[pendingAddAttester]) revert AttesterAlreadyExists();
+        address attester = pendingAddAttester;
+        isAttester[attester] = true;
+        attesterCount += 1;
+        pendingAddAttester = address(0);
+        addAttesterTimelockUnlock = 0;
+        emit AttesterAdded(attester);
+    }
+
+    function proposeRemoveAttester(address _attester) external onlyOwner {
         if (!isAttester[_attester]) revert AttesterNotFound();
         if (attesterCount <= 1) revert InvalidQuorum();
         if (attesterCount - 1 < requiredQuorum) revert InvalidQuorum();
-        isAttester[_attester] = false;
-        attesterCount -= 1;
-        emit AttesterRemoved(_attester);
+        pendingRemoveAttester = _attester;
+        removeAttesterTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit AttesterRemoveProposed(_attester, removeAttesterTimelockUnlock);
     }
 
-    function setQuorum(uint256 _newQuorum) external onlyOwner {
-        if (_newQuorum == 0 || _newQuorum > attesterCount) revert InvalidQuorum();
-        emit QuorumUpdated(requiredQuorum, _newQuorum);
-        requiredQuorum = _newQuorum;
+    function executeRemoveAttester() external onlyOwner {
+        if (pendingRemoveAttester == address(0)) revert NoPendingGovernanceAction();
+        if (block.timestamp < removeAttesterTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, removeAttesterTimelockUnlock);
+        }
+        if (!isAttester[pendingRemoveAttester]) revert AttesterNotFound();
+        if (attesterCount <= 1) revert InvalidQuorum();
+        if (attesterCount - 1 < requiredQuorum) revert InvalidQuorum();
+        address attester = pendingRemoveAttester;
+        isAttester[attester] = false;
+        attesterCount -= 1;
+        pendingRemoveAttester = address(0);
+        removeAttesterTimelockUnlock = 0;
+        emit AttesterRemoved(attester);
+    }
+
+    function cancelPendingGovernance(uint8 actionType) external {
+        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        if (actionType == 1) {
+            pendingQuorum = 0;
+            quorumTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("quorum", msg.sender);
+        } else if (actionType == 2) {
+            pendingAddAttester = address(0);
+            addAttesterTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("addAttester", msg.sender);
+        } else if (actionType == 3) {
+            pendingRemoveAttester = address(0);
+            removeAttesterTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("removeAttester", msg.sender);
+        } else {
+            revert NoPendingGovernanceAction();
+        }
+    }
+
+    /// @notice Deprecated: direct attester addition without timelock is disabled for production safety.
+    function addAttester(address) external pure {
+        revert DirectGovernanceDeprecated();
+    }
+
+    /// @notice Deprecated: direct attester removal without timelock is disabled for production safety.
+    function removeAttester(address) external pure {
+        revert DirectGovernanceDeprecated();
+    }
+
+    /// @notice Deprecated: direct quorum changes without timelock are disabled for production safety.
+    function setQuorum(uint256) external pure {
+        revert DirectGovernanceDeprecated();
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {

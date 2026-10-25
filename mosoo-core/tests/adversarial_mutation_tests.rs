@@ -23,6 +23,7 @@ use mosoo_core::{
     verifier::*,
 };
 use sha2::Digest;
+use std::collections::HashMap;
 
 fn make_test_committee(count: usize) -> SyncCommittee {
     let pubkeys: Vec<Vec<u8>> = (0..count)
@@ -237,18 +238,20 @@ fn test_mutation_attack_4_forged_committee_branch_rejected() {
 
     // 2. Invoking handle_initialize with corrupted bootstrap branch (gindex 54) MUST fail
     let genuine_bootstrap_root = compute_branch_root(committee_leaf, &genuine_branch, 54);
+    let boot_header = BeaconBlockHeader {
+        slot: 10_000_000,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root: genuine_bootstrap_root,
+        body_root: [0; 32],
+    };
+    let boot_checkpoint_root = hash_tree_root_beacon_header(&boot_header);
     let init_res = handle_initialize(InitializeArgs {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
-        bootstrap_header: BeaconBlockHeader {
-            slot: 10_000_000,
-            proposer_index: 1,
-            parent_root: [0; 32],
-            state_root: genuine_bootstrap_root,
-            body_root: [0; 32],
-        },
-        trusted_checkpoint_root: [0u8; 32],
+        bootstrap_header: boot_header,
+        trusted_checkpoint_root: boot_checkpoint_root,
         current_sync_committee: committee,
         current_sync_committee_branch: corrupted_branch,
         initial_next_committee: None,
@@ -990,13 +993,15 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         body_root: [0x22; 32],
     };
 
+    let bootstrap_checkpoint_root = hash_tree_root_beacon_header(&bootstrap_header);
+
     // Attack 11A: Next committee supplied without branch proof MUST be rejected
     let res_no_branch = handle_initialize(InitializeArgs {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: bootstrap_checkpoint_root,
         current_sync_committee: current_comm.clone(),
         current_sync_committee_branch: current_branch.clone(),
         initial_next_committee: Some(next_comm.clone()),
@@ -1015,7 +1020,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: bootstrap_checkpoint_root,
         current_sync_committee: current_comm.clone(),
         current_sync_committee_branch: current_branch.clone(),
         initial_next_committee: Some(next_comm),
@@ -1033,7 +1038,7 @@ fn test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forg
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header,
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: bootstrap_checkpoint_root,
         current_sync_committee: current_comm,
         current_sync_committee_branch: current_branch,
         initial_next_committee: None,
@@ -1860,12 +1865,13 @@ fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
         body_root: [0; 32],
     };
 
+    let fresh_checkpoint_root = hash_tree_root_beacon_header(&fresh_bootstrap_header);
     let fresh_res = handle_initialize(InitializeArgs {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: fresh_bootstrap_header,
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: fresh_checkpoint_root,
         current_sync_committee: comm,
         current_sync_committee_branch: branch,
         initial_next_committee: None,
@@ -2017,13 +2023,15 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
         body_root: [0; 32],
     };
 
+    let header_checkpoint_root = hash_tree_root_beacon_header(&header);
+
     // Case 1: trusted_head_slot is 0 (missing/zero)
     let err_zero = handle_initialize(InitializeArgs {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: header_checkpoint_root,
         current_sync_committee: committee.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -2039,7 +2047,7 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: header_checkpoint_root,
         current_sync_committee: committee.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -2057,7 +2065,7 @@ fn test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected(
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header,
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: header_checkpoint_root,
         current_sync_committee: committee,
         current_sync_committee_branch: branch,
         initial_next_committee: None,
@@ -2955,13 +2963,15 @@ fn test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_
     let instance_id_a = [0xAA; 32];
     let instance_id_b = [0xBB; 32];
 
+    let header_checkpoint_root = hash_tree_root_beacon_header(&header);
+
     // Initialize Instance A
     let init_a = InitializeArgs {
         instance_id: instance_id_a,
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: header_checkpoint_root,
         current_sync_committee: comm.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -2982,7 +2992,7 @@ fn test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: header_checkpoint_root,
         current_sync_committee: comm.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -3584,4 +3594,122 @@ fn test_security_audit_attack_38_fabricated_instance_rejected() {
 
     let err2 = handle_attest_state(args2).expect_err("Zero-bootstrap instance must be rejected");
     assert!(matches!(err2, MosooError::InvalidBootstrap(_)));
+}
+
+#[test]
+fn test_bootstrap_rejects_zero_trusted_checkpoint_root() {
+    let bootstrap_header = BeaconBlockHeader {
+        slot: 10_000_000,
+        proposer_index: 12345,
+        parent_root: [0x11; 32],
+        state_root: [0x22; 32],
+        body_root: [0x33; 32],
+    };
+
+    // Attacker attempts unanchored initialization by supplying all-zero trusted_checkpoint_root
+    let args = InitializeArgs {
+        instance_id: [0u8; 32],
+        network_config: None,
+        bootstrap_header,
+        current_sync_committee: make_test_committee(512),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        trusted_checkpoint_root: [0u8; 32], // All-zero root MUST be rejected
+        trusted_head_slot: 10_000_000,
+    };
+
+    let err = handle_initialize(args)
+        .expect_err("handle_initialize must reject zero trusted_checkpoint_root");
+    match err {
+        MosooError::InvalidBootstrap(msg) => {
+            assert!(
+                msg.contains("trusted_checkpoint_root is mandatory and cannot be zero"),
+                "Error message must specify mandatory non-zero checkpoint root: {msg}"
+            );
+        }
+        other => panic!("Expected InvalidBootstrap error, got {other:?}"),
+    }
+}
+
+#[test]
+fn test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected() {
+    let mut store = HashMap::<[u8; 32], Vec<u8>>::new();
+
+    let header = HeaderRecord {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0x22; 32],
+        execution_block_hash: [0x33; 32],
+        execution_state_root: [0x44; 32],
+        receipts_root: [0x55; 32],
+    };
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x42),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    // Case 1: Attacker attempts to attest state against an instance PDA not in persistent store
+    let unstored_pda = [0x99; 32];
+    let fake_instance = InstanceAccount {
+        instance_id: unstored_pda,
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        current_header_hash: [0x22; 32],
+        current_state_root: [0x33; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 9_900_000,
+        bootstrap_header_hash: [0x11; 32],
+        initialized: true,
+        current_execution_block_hash: [0x33; 32],
+        current_execution_state_root: [0x44; 32],
+        current_receipts_root: [0x55; 32],
+    };
+
+    let attest_args = AttestStateArgs {
+        instance: fake_instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+    };
+
+    let err1 = handle_attest_state_authenticated(&store, &unstored_pda, None, attest_args.clone())
+        .expect_err("handle_attest_state_authenticated must reject unstored instance PDA");
+    assert!(matches!(err1, MosooError::NotInitialized));
+
+    // Case 2: Attacker stores data under an address that does not match derived canonical PDA
+    let mismatched_pda = [0x77; 32];
+    let serialized_fake = serde_json::to_vec(&fake_instance).unwrap();
+    store.insert(mismatched_pda, serialized_fake);
+
+    let err2 =
+        handle_attest_state_authenticated(&store, &mismatched_pda, None, attest_args.clone())
+            .expect_err("handle_attest_state_authenticated must reject mismatched PDA address");
+    assert!(matches!(err2, MosooError::DomainSeparationFailed));
+
+    // Case 3: Attacker stores an uninitialized instance
+    let mut uninit_instance = fake_instance.clone();
+    uninit_instance.initialized = false;
+    let canonical_uninit_pda = uninit_instance.pda_address();
+    store.insert(
+        canonical_uninit_pda,
+        serde_json::to_vec(&uninit_instance).unwrap(),
+    );
+
+    let err3 = handle_attest_state_authenticated(&store, &canonical_uninit_pda, None, attest_args)
+        .expect_err("handle_attest_state_authenticated must reject uninitialized instance");
+    assert!(matches!(err3, MosooError::NotInitialized));
 }

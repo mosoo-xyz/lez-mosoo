@@ -15,13 +15,13 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 231 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 238 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
-# 2. Run the full Two-Way Bridge integration test suite
+# 2. Run the full Two-Way Bridge integration test suite (14 passing tests)
 cargo test --test two_way_bridge_tests
 
-# 3. Run the 38 adversarial mutation attack tests
+# 3. Run the 40 adversarial mutation attack tests
 cargo test --test adversarial_mutation_tests
 
 # 4. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
@@ -76,12 +76,12 @@ Detailed testnet parameters, fee state, and verification steps are documented at
   Enforces 1,728,000 slot (~240 days bound, 14–30 days operational) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Per ADR-004, instances are strictly immutable and never rewritten in place. Stalled instances after network partitions are retired and replaced with fresh instances initialized via `bootstrap_instance` with `verify_anchored_checkpoint`.
 
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
-- **Two-Way Bridge & Asymmetric Trust Architecture (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Inbound bridging (Ethereum -> LEZ) is 100% trustless zkVM consensus and MPT state verification (RFP-021 target); Outbound settlement (LEZ -> Ethereum) is witness-attested via an M-of-N multisig committee with rolling daily limits, 24h timelock for large withdrawals, and Guardian cancellation veto (leaving reverse zkVM L1 verification for RFP-022). Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
-- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting both atomic same-transaction verification (`claim_atomic_u256`, `mint_deposit_atomic_u256`) and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
+- **Two-Way Bridge & Hardened Rate-Limiting Architecture (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Inbound bridging (Ethereum -> LEZ) is 100% trustless zkVM consensus and MPT state verification (RFP-021 target); Outbound settlement (LEZ -> Ethereum) is witness-attested via an M-of-N multisig committee protected by a true continuous rolling 24-hour rate limit sliding window (immune to midnight boundary attacks), 2-step timelocked governance on all committee & quorum modifications (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), mandatory 24h timelock for large withdrawals (>= 10 ETH), and non-zero Guardian veto protection. Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
+- **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`), atomic same-transaction verification (`claim_atomic_u256`, `mint_deposit_atomic_u256`), and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **231 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix**: Includes 38 adversarial mutation tests, 10 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 14 daemon tests, 22 light-client tests, 4 sequencer E2E tests, 2 e2e consumer tests, 42 ERC-20 receiver tests, 39 Ether receiver tests, 45 core unit tests, 3 CLI tests, and 3 doc tests.
+- **238 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix**: Includes 40 adversarial mutation tests, 14 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 14 daemon tests, 22 light-client tests, 4 sequencer E2E tests, 2 e2e consumer tests, 42 ERC-20 receiver tests, 39 Ether receiver tests, 45 core unit tests, 3 CLI tests, and 3 doc tests.
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
 

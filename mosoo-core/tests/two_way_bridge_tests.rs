@@ -23,6 +23,14 @@ use mosoo_core::types::{
 };
 use std::collections::HashMap;
 
+#[derive(Clone, Copy, Debug)]
+pub struct WithdrawalRecord {
+    pub timestamp: u64,
+    pub amount: u128,
+}
+
+pub const GOVERNANCE_TIMELOCK_DELAY: u64 = 172_800; // 2 days in seconds
+
 /// Mock simulation of Ethereum `MosooLocker.sol` state machine
 struct MockEthereumLocker {
     pub locked_eth_wei: u128,
@@ -40,6 +48,13 @@ struct MockEthereumLocker {
     pub allowed_tokens: HashMap<[u8; 20], bool>,
     pub daily_withdrawal_limit_eth: u128,
     pub daily_withdrawn_eth: u128,
+    pub eth_withdrawals: Vec<WithdrawalRecord>,
+    pub eth_withdrawal_head: usize,
+    pub rolling_withdrawn_eth: u128,
+    pub erc20_withdrawals: HashMap<[u8; 20], Vec<WithdrawalRecord>>,
+    pub erc20_withdrawal_head: HashMap<[u8; 20], usize>,
+    pub rolling_withdrawn_erc20: HashMap<[u8; 20], u128>,
+    pub daily_withdrawal_limit_erc20: HashMap<[u8; 20], u128>,
     pub large_withdrawal_threshold_eth: u128,
     pub large_withdrawal_delay: u64,
     pub queued_withdrawals: HashMap<[u8; 32], u64>,
@@ -47,6 +62,12 @@ struct MockEthereumLocker {
     pub is_attester: HashMap<[u8; 20], bool>,
     pub attester_count: usize,
     pub required_quorum: usize,
+    pub pending_quorum: Option<usize>,
+    pub quorum_timelock_unlock: u64,
+    pub pending_add_attester: Option<[u8; 20]>,
+    pub add_attester_timelock_unlock: u64,
+    pub pending_remove_attester: Option<[u8; 20]>,
+    pub remove_attester_timelock_unlock: u64,
 }
 
 pub const AUTHORITY_CHANGE_DELAY: u64 = 86_400; // 1 day in seconds
@@ -72,6 +93,13 @@ impl MockEthereumLocker {
             allowed_tokens: HashMap::new(),
             daily_withdrawal_limit_eth: 0,
             daily_withdrawn_eth: 0,
+            eth_withdrawals: Vec::new(),
+            eth_withdrawal_head: 0,
+            rolling_withdrawn_eth: 0,
+            erc20_withdrawals: HashMap::new(),
+            erc20_withdrawal_head: HashMap::new(),
+            rolling_withdrawn_erc20: HashMap::new(),
+            daily_withdrawal_limit_erc20: HashMap::new(),
             large_withdrawal_threshold_eth: LARGE_WITHDRAWAL_THRESHOLD_ETH,
             large_withdrawal_delay: 86_400,
             queued_withdrawals: HashMap::new(),
@@ -79,12 +107,117 @@ impl MockEthereumLocker {
             is_attester,
             attester_count: 1,
             required_quorum: 1,
+            pending_quorum: None,
+            quorum_timelock_unlock: 0,
+            pending_add_attester: None,
+            add_attester_timelock_unlock: 0,
+            pending_remove_attester: None,
+            remove_attester_timelock_unlock: 0,
         }
     }
 
     fn add_attester(&mut self, attester: [u8; 20]) {
         self.is_attester.insert(attester, true);
         self.attester_count = self.is_attester.len();
+    }
+
+    fn propose_quorum(
+        &mut self,
+        new_quorum: usize,
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        if new_quorum == 0 || new_quorum > self.attester_count {
+            return Err("InvalidQuorum");
+        }
+        self.pending_quorum = Some(new_quorum);
+        let unlock = current_time + GOVERNANCE_TIMELOCK_DELAY;
+        self.quorum_timelock_unlock = unlock;
+        Ok(unlock)
+    }
+
+    fn execute_quorum(&mut self, current_time: u64) -> Result<usize, &'static str> {
+        let proposed = self.pending_quorum.ok_or("NoPendingGovernanceAction")?;
+        if current_time < self.quorum_timelock_unlock {
+            return Err("GovernanceTimelockActive");
+        }
+        if proposed > self.attester_count {
+            return Err("InvalidQuorum");
+        }
+        self.required_quorum = proposed;
+        self.pending_quorum = None;
+        self.quorum_timelock_unlock = 0;
+        Ok(proposed)
+    }
+
+    fn propose_add_attester(
+        &mut self,
+        attester: [u8; 20],
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        if attester == [0u8; 20] {
+            return Err("ZeroAddress");
+        }
+        if self.is_attester.get(&attester).copied().unwrap_or(false) {
+            return Err("AttesterAlreadyExists");
+        }
+        self.pending_add_attester = Some(attester);
+        let unlock = current_time + GOVERNANCE_TIMELOCK_DELAY;
+        self.add_attester_timelock_unlock = unlock;
+        Ok(unlock)
+    }
+
+    fn execute_add_attester(&mut self, current_time: u64) -> Result<[u8; 20], &'static str> {
+        let proposed = self
+            .pending_add_attester
+            .ok_or("NoPendingGovernanceAction")?;
+        if current_time < self.add_attester_timelock_unlock {
+            return Err("GovernanceTimelockActive");
+        }
+        if self.is_attester.get(&proposed).copied().unwrap_or(false) {
+            return Err("AttesterAlreadyExists");
+        }
+        self.is_attester.insert(proposed, true);
+        self.attester_count = self.is_attester.len();
+        self.pending_add_attester = None;
+        self.add_attester_timelock_unlock = 0;
+        Ok(proposed)
+    }
+
+    fn propose_remove_attester(
+        &mut self,
+        attester: [u8; 20],
+        current_time: u64,
+    ) -> Result<u64, &'static str> {
+        if !self.is_attester.get(&attester).copied().unwrap_or(false) {
+            return Err("AttesterNotFound");
+        }
+        if self.attester_count <= 1 || self.attester_count - 1 < self.required_quorum {
+            return Err("InvalidQuorum");
+        }
+        self.pending_remove_attester = Some(attester);
+        let unlock = current_time + GOVERNANCE_TIMELOCK_DELAY;
+        self.remove_attester_timelock_unlock = unlock;
+        Ok(unlock)
+    }
+
+    fn execute_remove_attester(&mut self, current_time: u64) -> Result<[u8; 20], &'static str> {
+        let proposed = self
+            .pending_remove_attester
+            .ok_or("NoPendingGovernanceAction")?;
+        if current_time < self.remove_attester_timelock_unlock {
+            return Err("GovernanceTimelockActive");
+        }
+        if !self.is_attester.get(&proposed).copied().unwrap_or(false) {
+            return Err("AttesterNotFound");
+        }
+        if self.attester_count <= 1 || self.attester_count - 1 < self.required_quorum {
+            return Err("InvalidQuorum");
+        }
+        self.is_attester.remove(&proposed);
+        self.attester_count = self.is_attester.len();
+        self.pending_remove_attester = None;
+        self.remove_attester_timelock_unlock = 0;
+        Ok(proposed)
     }
 
     fn set_quorum(&mut self, quorum: usize) -> Result<(), &'static str> {
@@ -339,12 +472,28 @@ impl MockEthereumLocker {
             }
         }
 
-        // Daily volume limit check
+        // Continuous rolling 24-hour volume limit check (Finding M-04 / 3 hardening)
         if self.daily_withdrawal_limit_eth > 0 {
-            if self.daily_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
+            let cutoff = current_timestamp.saturating_sub(86_400);
+            while self.eth_withdrawal_head < self.eth_withdrawals.len()
+                && self.eth_withdrawals[self.eth_withdrawal_head].timestamp < cutoff
+            {
+                self.rolling_withdrawn_eth = self
+                    .rolling_withdrawn_eth
+                    .saturating_sub(self.eth_withdrawals[self.eth_withdrawal_head].amount);
+                self.eth_withdrawal_head += 1;
+            }
+
+            if self.rolling_withdrawn_eth + amount_wei > self.daily_withdrawal_limit_eth {
                 return Err("DailyLimitExceeded");
             }
-            self.daily_withdrawn_eth += amount_wei;
+
+            self.rolling_withdrawn_eth += amount_wei;
+            self.eth_withdrawals.push(WithdrawalRecord {
+                timestamp: current_timestamp,
+                amount: amount_wei,
+            });
+            self.daily_withdrawn_eth = self.rolling_withdrawn_eth;
         }
 
         self.executed_burns.insert(burn_id, true);
@@ -353,9 +502,13 @@ impl MockEthereumLocker {
         Ok(())
     }
 
-    /// Simulates `unlockERC20(bytes32 burnId, address token, uint256 amount, ...)`
+    fn set_daily_withdrawal_limit_erc20(&mut self, token: [u8; 20], limit: u128) {
+        self.daily_withdrawal_limit_erc20.insert(token, limit);
+    }
+
+    /// Simulates `unlockERC20` with continuous 24h rolling rate limit
     #[allow(clippy::too_many_arguments)]
-    fn unlock_erc20(
+    fn unlock_erc20_with_time(
         &mut self,
         burn_id: [u8; 32],
         token: [u8; 20],
@@ -364,6 +517,7 @@ impl MockEthereumLocker {
         eth_recipient: [u8; 20],
         burn_nonce: u64,
         lez_slot: u64,
+        current_timestamp: u64,
     ) -> Result<(), &'static str> {
         if amount == 0 {
             return Err("ZeroAmount");
@@ -389,12 +543,60 @@ impl MockEthereumLocker {
             return Err("InvalidBurnProof");
         }
 
+        if let Some(&limit) = self.daily_withdrawal_limit_erc20.get(&token) {
+            if limit > 0 {
+                let cutoff = current_timestamp.saturating_sub(86_400);
+                let head = self.erc20_withdrawal_head.entry(token).or_insert(0);
+                let history = self.erc20_withdrawals.entry(token).or_default();
+                let rolling = self.rolling_withdrawn_erc20.entry(token).or_insert(0);
+
+                while *head < history.len() && history[*head].timestamp < cutoff {
+                    *rolling = rolling.saturating_sub(history[*head].amount);
+                    *head += 1;
+                }
+
+                if *rolling + amount > limit {
+                    return Err("DailyLimitExceeded");
+                }
+
+                *rolling += amount;
+                history.push(WithdrawalRecord {
+                    timestamp: current_timestamp,
+                    amount,
+                });
+            }
+        }
+
         self.executed_burns.insert(burn_id, true);
         let entry = self.locked_erc20.entry(token).or_insert(0);
         *entry -= amount;
         let unlocked_entry = self.unlocked_erc20.entry(token).or_insert(0);
         *unlocked_entry += amount;
         Ok(())
+    }
+
+    /// Simulates `unlockERC20(bytes32 burnId, address token, uint256 amount, ...)`
+    #[allow(clippy::too_many_arguments)]
+    fn unlock_erc20(
+        &mut self,
+        burn_id: [u8; 32],
+        token: [u8; 20],
+        amount: u128,
+        lez_owner: [u8; 32],
+        eth_recipient: [u8; 20],
+        burn_nonce: u64,
+        lez_slot: u64,
+    ) -> Result<(), &'static str> {
+        self.unlock_erc20_with_time(
+            burn_id,
+            token,
+            amount,
+            lez_owner,
+            eth_recipient,
+            burn_nonce,
+            lez_slot,
+            0,
+        )
     }
 }
 
@@ -1052,4 +1254,246 @@ fn test_two_way_bridge_multi_signer_quorum_and_rejection() {
         &[attester1, attester2],
     );
     assert_eq!(err_replay.unwrap_err(), "BurnAlreadyExecuted");
+}
+
+#[test]
+fn test_mosoo_locker_midnight_boundary_rolling_limit_enforced() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    let total_deposit: u128 = 20_000_000_000_000_000_000; // 20 ETH
+    locker.deposit_eth(total_deposit);
+
+    // Daily withdrawal limit = 5 ETH
+    let daily_limit: u128 = 5_000_000_000_000_000_000;
+    locker.set_daily_withdrawal_limit_eth(daily_limit);
+
+    // 1. Withdrawal of 3 ETH at 23:59:59 of Day 1 (timestamp 86399)
+    let burn_id_1 = derive_burn_id(
+        1,
+        &lez_owner,
+        &eth_recipient,
+        3_000_000_000_000_000_000,
+        1,
+        100,
+    );
+    let res1 = locker.unlock_eth_with_time(
+        burn_id_1,
+        3_000_000_000_000_000_000,
+        lez_owner,
+        eth_recipient,
+        1,
+        100,
+        86399,
+    );
+    assert!(
+        res1.is_ok(),
+        "First withdrawal of 3 ETH at 23:59:59 must succeed"
+    );
+
+    // 2. Withdrawal of 3 ETH at 00:00:01 of Day 2 (timestamp 86401, 2 seconds later)
+    // Under calendar-day / 1 days, this would have reset to 0 and bypassed the limit!
+    // Under continuous rolling 24-hour window, 86399 is within [86401 - 86400, 86401], so limit is strictly enforced!
+    let burn_id_2 = derive_burn_id(
+        1,
+        &lez_owner,
+        &eth_recipient,
+        3_000_000_000_000_000_000,
+        2,
+        101,
+    );
+    let res2 = locker.unlock_eth_with_time(
+        burn_id_2,
+        3_000_000_000_000_000_000,
+        lez_owner,
+        eth_recipient,
+        2,
+        101,
+        86401,
+    );
+    assert_eq!(
+        res2.unwrap_err(),
+        "DailyLimitExceeded",
+        "Midnight boundary attack (2 seconds later) must be strictly rejected under rolling 24h window"
+    );
+
+    // 3. Withdrawal after 24 full hours have elapsed (timestamp 172800 > 86399 + 86400)
+    // Old withdrawal at 86399 is pruned and new withdrawal of 3 ETH succeeds!
+    let burn_id_3 = derive_burn_id(
+        1,
+        &lez_owner,
+        &eth_recipient,
+        3_000_000_000_000_000_000,
+        3,
+        102,
+    );
+    let res3 = locker.unlock_eth_with_time(
+        burn_id_3,
+        3_000_000_000_000_000_000,
+        lez_owner,
+        eth_recipient,
+        3,
+        102,
+        172800,
+    );
+    assert!(
+        res3.is_ok(),
+        "Withdrawal after 24h rolling window expires must succeed"
+    );
+}
+
+#[test]
+fn test_mosoo_locker_quorum_timelock_governance() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let attester1 = [0x10; 20];
+    let attester2 = [0x20; 20];
+    locker.add_attester(attester1);
+    locker.add_attester(attester2);
+    assert_eq!(locker.required_quorum, 1);
+
+    let current_time = 1_000_000u64;
+    // 1. Propose quorum change from 1 to 2
+    let unlock_time = locker
+        .propose_quorum(2, current_time)
+        .expect("proposing quorum 2 must succeed");
+    assert_eq!(unlock_time, current_time + GOVERNANCE_TIMELOCK_DELAY);
+
+    // 2. Early execution attempt before timelock expires strictly fails
+    let early_res = locker.execute_quorum(current_time + 10_000);
+    assert_eq!(early_res.unwrap_err(), "GovernanceTimelockActive");
+    assert_eq!(locker.required_quorum, 1);
+
+    // 3. Execution after 2-day timelock delay succeeds
+    let exec_res = locker.execute_quorum(unlock_time);
+    assert_eq!(exec_res.unwrap(), 2);
+    assert_eq!(locker.required_quorum, 2);
+    assert_eq!(locker.pending_quorum, None);
+}
+
+#[test]
+fn test_mosoo_locker_attester_timelock_governance() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    assert_eq!(locker.attester_count, 1);
+
+    let new_attester = [0x77; 20];
+    let current_time = 500_000u64;
+
+    // 1. Propose adding new attester
+    let unlock_time = locker
+        .propose_add_attester(new_attester, current_time)
+        .expect("proposing attester must succeed");
+    assert_eq!(unlock_time, current_time + GOVERNANCE_TIMELOCK_DELAY);
+
+    // 2. Early execution attempt fails
+    let early_res = locker.execute_add_attester(current_time + 100);
+    assert_eq!(early_res.unwrap_err(), "GovernanceTimelockActive");
+    assert_eq!(locker.attester_count, 1);
+
+    // 3. Execution after timelock delay succeeds
+    let ok_res = locker.execute_add_attester(unlock_time);
+    assert_eq!(ok_res.unwrap(), new_attester);
+    assert_eq!(locker.attester_count, 2);
+    assert!(locker.is_attester.get(&new_attester).copied().unwrap());
+
+    // 4. Propose removing the attester
+    let remove_unlock = locker
+        .propose_remove_attester(new_attester, unlock_time + 10)
+        .expect("proposing removal must succeed");
+    assert_eq!(remove_unlock, unlock_time + 10 + GOVERNANCE_TIMELOCK_DELAY);
+
+    // 5. Early removal fails
+    let early_remove = locker.execute_remove_attester(unlock_time + 100);
+    assert_eq!(early_remove.unwrap_err(), "GovernanceTimelockActive");
+    assert_eq!(locker.attester_count, 2);
+
+    // 6. Removal after timelock succeeds
+    let ok_remove = locker.execute_remove_attester(remove_unlock);
+    assert_eq!(ok_remove.unwrap(), new_attester);
+    assert_eq!(locker.attester_count, 1);
+    assert!(!locker
+        .is_attester
+        .get(&new_attester)
+        .copied()
+        .unwrap_or(false));
+}
+
+#[test]
+fn test_mosoo_locker_erc20_rolling_limit_enforced() {
+    let mut locker = MockEthereumLocker::new([0x11; 20]);
+    let token = [0x55; 20];
+    let lez_owner = [0xAA; 32];
+    let eth_recipient = [0x33; 20];
+    let initial_locked: u128 = 100_000 * 1_000_000;
+    locker.locked_erc20.insert(token, initial_locked);
+
+    let daily_limit: u128 = 10_000 * 1_000_000;
+    locker.set_daily_withdrawal_limit_erc20(token, daily_limit);
+
+    // 1. Withdrawal of 6,000 at timestamp 86399 succeeds
+    let burn_id_1 = derive_burn_erc20_id(
+        1,
+        &token,
+        &lez_owner,
+        &eth_recipient,
+        6_000 * 1_000_000,
+        1,
+        100,
+    );
+    assert!(locker
+        .unlock_erc20_with_time(
+            burn_id_1,
+            token,
+            6_000 * 1_000_000,
+            lez_owner,
+            eth_recipient,
+            1,
+            100,
+            86399,
+        )
+        .is_ok());
+
+    // 2. Withdrawal of 6,000 at timestamp 86401 (2 seconds later) exceeds limit (6k + 6k = 12k > 10k)
+    let burn_id_2 = derive_burn_erc20_id(
+        1,
+        &token,
+        &lez_owner,
+        &eth_recipient,
+        6_000 * 1_000_000,
+        2,
+        101,
+    );
+    let res2 = locker.unlock_erc20_with_time(
+        burn_id_2,
+        token,
+        6_000 * 1_000_000,
+        lez_owner,
+        eth_recipient,
+        2,
+        101,
+        86401,
+    );
+    assert_eq!(res2.unwrap_err(), "DailyLimitExceeded");
+
+    // 3. Withdrawal after 24 hours (timestamp 172800) succeeds
+    let burn_id_3 = derive_burn_erc20_id(
+        1,
+        &token,
+        &lez_owner,
+        &eth_recipient,
+        6_000 * 1_000_000,
+        3,
+        102,
+    );
+    assert!(locker
+        .unlock_erc20_with_time(
+            burn_id_3,
+            token,
+            6_000 * 1_000_000,
+            lez_owner,
+            eth_recipient,
+            3,
+            102,
+            172800,
+        )
+        .is_ok());
 }

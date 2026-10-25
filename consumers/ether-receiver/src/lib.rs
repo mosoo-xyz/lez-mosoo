@@ -1381,6 +1381,135 @@ pub fn claim_native_eth_deposit_atomic_with_config(
     })
 }
 
+/// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit backed by an
+/// authenticated InstanceAccount loaded directly from the persistent LEZ AccountStore.
+pub fn claim_native_eth_deposit_authenticated_store_with_config<
+    S: mosoo_core::types::AccountStore,
+>(
+    store: &S,
+    instance_pda: &[u8; 32],
+    header_pda: Option<&[u8; 32]>,
+    args: AtomicEtherClaimArgs,
+    nullifiers: &mut EtherNullifierSet,
+    config: &TrustedBridgeConfig,
+) -> Result<EthDepositReceipt, EtherReceiverError> {
+    if !is_supported_chain_id(args.instance.chain_id) {
+        return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+    }
+    if args.expected_address == [0u8; 20] {
+        return Err(EtherReceiverError::DepositBackingRequired);
+    }
+    let trusted_locker = config
+        .get_trusted_locker(args.instance.chain_id)
+        .ok_or(EtherReceiverError::UntrustedLocker(args.instance.chain_id))?;
+    if args.expected_address != trusted_locker {
+        return Err(EtherReceiverError::ContractMismatch {
+            expected: trusted_locker,
+            actual: args.expected_address,
+        });
+    }
+
+    let attest_args = mosoo_core::verifier::AttestStateArgs {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
+        proof: args.proof,
+        predicate: args.predicate,
+    };
+
+    let output = mosoo_core::verifier::handle_attest_state_authenticated(
+        store,
+        instance_pda,
+        header_pda,
+        attest_args,
+    )
+    .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+
+    let statement = match output {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => {
+            return Err(EtherReceiverError::AttestationFailed(
+                "unexpected instruction output from handle_attest_state".into(),
+            ))
+        }
+    };
+
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+
+    let (deposit_contract, sender, recipient, execution_block_hash, slot, tx_index, log_index) =
+        match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                if *deposit_contract != trusted_locker {
+                    return Err(EtherReceiverError::ContractMismatch {
+                        expected: trusted_locker,
+                        actual: *deposit_contract,
+                    });
+                }
+                if *recipient != args.recipient {
+                    return Err(EtherReceiverError::RecipientMismatch {
+                        expected: args.recipient,
+                        actual: *recipient,
+                    });
+                }
+                (
+                    *deposit_contract,
+                    *sender,
+                    *recipient,
+                    *execution_block_hash,
+                    *slot,
+                    *tx_index,
+                    *log_index as u64,
+                )
+            }
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+        };
+
+    let verified_wei = statement.value_as_u256();
+    if verified_wei < U256::from(args.min_wei) {
+        return Err(EtherReceiverError::BalanceTooLowU256 {
+            actual: verified_wei,
+            required: U256::from(args.min_wei),
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
+
+    Ok(EthDepositReceipt {
+        statement_id: statement.statement_id,
+        deposit_contract,
+        sender,
+        recipient,
+        amount_wei: verified_wei,
+        execution_block_hash,
+        slot,
+        tx_index,
+        log_index,
+    })
+}
+
 /// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol`:
 /// `keccak256(abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot))`
 pub fn derive_burn_id(

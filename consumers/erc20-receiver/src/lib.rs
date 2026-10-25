@@ -1367,6 +1367,155 @@ pub fn claim_atomic(
     Ok(val_u64)
 }
 
+/// Execute atomic same-transaction ERC-20 token claim backed by an authenticated InstanceAccount
+/// loaded directly from the persistent LEZ AccountStore.
+pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
+    store: &S,
+    instance_pda: &[u8; 32],
+    header_pda: Option<&[u8; 32]>,
+    args: AtomicErc20ClaimArgsU256,
+    nullifiers: &mut NullifierSet,
+) -> Result<U256, ReceiverError> {
+    let attest_args = mosoo_core::verifier::AttestStateArgs {
+        instance: args.instance,
+        header: args.header,
+        header_history_branch: args.header_history_branch,
+        historical_execution_proof: args.historical_execution_proof,
+        proof: args.proof,
+        predicate: args.predicate,
+    };
+
+    let output = mosoo_core::verifier::handle_attest_state_authenticated(
+        store,
+        instance_pda,
+        header_pda,
+        attest_args,
+    )
+    .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
+
+    let statement = match output {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => {
+            return Err(ReceiverError::AttestationFailed(
+                "unexpected instruction output from handle_attest_state".into(),
+            ))
+        }
+    };
+
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+
+    match &statement.binding {
+        StatementBinding::Storage { contract, .. } => {
+            if *contract != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *contract,
+                });
+            }
+        }
+        StatementBinding::ReceiptLog { emitter, .. } => {
+            if *emitter != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *emitter,
+                });
+            }
+        }
+        StatementBinding::Erc20Transfer {
+            token_contract,
+            sender,
+            recipient,
+            ..
+        } => {
+            if *token_contract != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *token_contract,
+                });
+            }
+            if let Some(expected_sender) = args.expected_sender {
+                if *sender != expected_sender {
+                    return Err(ReceiverError::SenderMismatch {
+                        expected: expected_sender,
+                        actual: *sender,
+                    });
+                }
+            }
+            if *recipient != args.recipient {
+                return Err(ReceiverError::RecipientMismatch {
+                    expected: args.recipient,
+                    actual: *recipient,
+                });
+            }
+        }
+        StatementBinding::Erc20Deposit {
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+            ..
+        } => {
+            if args.expected_deposit_contract == [0u8; 20] {
+                return Err(ReceiverError::DepositBackingRequired);
+            }
+            if *deposit_contract != args.expected_deposit_contract {
+                return Err(ReceiverError::DepositContractMismatch {
+                    expected: args.expected_deposit_contract,
+                    actual: *deposit_contract,
+                });
+            }
+            if *token_contract != args.expected_token_contract {
+                return Err(ReceiverError::TokenContractMismatch {
+                    expected: args.expected_token_contract,
+                    actual: *token_contract,
+                });
+            }
+            if let Some(expected_sender) = args.expected_sender {
+                if *sender != expected_sender {
+                    return Err(ReceiverError::SenderMismatch {
+                        expected: expected_sender,
+                        actual: *sender,
+                    });
+                }
+            }
+            if *recipient != args.recipient {
+                return Err(ReceiverError::RecipientMismatch {
+                    expected: args.recipient,
+                    actual: *recipient,
+                });
+            }
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ));
+        }
+    }
+
+    let verified_val = statement.value_as_u256();
+
+    if verified_val < args.min_amount {
+        return Err(ReceiverError::AmountTooLow {
+            min_amount: args.min_amount.to::<u128>(),
+            actual: verified_val.to::<u128>(),
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id)
+        || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+    {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    if statement.subject_key != [0u8; 32] {
+        nullifiers.mark_used(statement.subject_key);
+    }
+
+    Ok(verified_val)
+}
+
 /// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol:unlockERC20`:
 /// `keccak256(abi.encodePacked("mosoo_burn_erc20_v1", block.chainid, token, lezOwner, recipient, amount, burnNonce, lezSlot))`
 pub fn derive_burn_erc20_id(

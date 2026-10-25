@@ -1019,13 +1019,15 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         body_root: [0; 32],
     };
 
+    let bootstrap_checkpoint_root = hash_tree_root_beacon_header(&bootstrap_header);
+
     // 1. Stale bootstrap rejected: trusted network head slot is 3,000,000 (> 1,728,000 slots older)
     let init_stale = mosoo_core::verifier::handle_initialize(InitializeArgs {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: bootstrap_checkpoint_root,
         current_sync_committee: committee.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -1049,7 +1051,7 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: bootstrap_header.clone(),
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: bootstrap_checkpoint_root,
         current_sync_committee: committee.clone(),
         current_sync_committee_branch: branch.clone(),
         initial_next_committee: None,
@@ -1079,12 +1081,13 @@ fn test_weak_subjectivity_and_stale_instance_recovery() {
         body_root: [0; 32],
     };
 
+    let new_bootstrap_root = hash_tree_root_beacon_header(&new_bootstrap_header);
     let fresh_init = mosoo_core::verifier::handle_initialize(InitializeArgs {
         instance_id: [0u8; 32],
         network_config: None,
         chain_id: ETH_MAINNET_CHAIN_ID,
         bootstrap_header: new_bootstrap_header,
-        trusted_checkpoint_root: [0u8; 32],
+        trusted_checkpoint_root: new_bootstrap_root,
         current_sync_committee: committee,
         current_sync_committee_branch: branch,
         initial_next_committee: None,

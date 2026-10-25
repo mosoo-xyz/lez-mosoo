@@ -491,6 +491,18 @@ pub struct HeaderRecord {
     pub receipts_root: [u8; 32],
 }
 
+impl HeaderRecord {
+    /// Computes the deterministic 32-byte PDA address of this HeaderRecord on LEZ.
+    /// PDA seed: `["mosoo_header", chain_id.to_le_bytes(), slot.to_le_bytes()]`
+    pub fn pda_address(&self) -> [u8; 32] {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"mosoo_header");
+        hasher.update(self.chain_id.to_le_bytes());
+        hasher.update(self.slot.to_le_bytes());
+        hasher.finalize().into()
+    }
+}
+
 /// Complete cryptographic proof binding a historical header's beacon block root
 /// and its execution roots to the light client's authenticated `current_state_root`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

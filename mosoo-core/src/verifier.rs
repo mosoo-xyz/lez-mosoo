@@ -56,6 +56,22 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         return Err(MosooError::UnsupportedChain(args.chain_id));
     }
 
+    // Mandatory Root-of-Trust Checkpoint Anchor:
+    // In strict adherence to Ethereum light client specifications and Logos RFP-021,
+    // the trusted_checkpoint_root is MANDATORY and CANNOT be zero.
+    // An instance cannot be initialized without binding to an authentic beacon block root anchor.
+    if args.trusted_checkpoint_root == [0u8; 32] {
+        return Err(MosooError::InvalidBootstrap(
+            "trusted_checkpoint_root is mandatory and cannot be zero".into(),
+        ));
+    }
+    let header_hash = crypto::hash_tree_root_beacon_header(&args.bootstrap_header);
+    if header_hash != args.trusted_checkpoint_root {
+        return Err(MosooError::InvalidBootstrap(
+            "bootstrap header root does not match trusted_checkpoint_root anchor".into(),
+        ));
+    }
+
     // Guard: bootstrap slot must be non-zero (freshness / sanity).
     if args.bootstrap_header.slot == 0 {
         return Err(MosooError::InvalidBootstrap(
@@ -126,16 +142,6 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
         if computed_next != args.bootstrap_header.state_root {
             return Err(MosooError::BootstrapNextCommitteeBranchInvalid);
         }
-    }
-
-    let header_hash = crypto::hash_tree_root_beacon_header(&args.bootstrap_header);
-
-    // Cryptographic validation: verify bootstrap header hash matches trusted_checkpoint_root anchor.
-    // If trusted_checkpoint_root is specified (non-zero), strict equality is enforced.
-    if args.trusted_checkpoint_root != [0u8; 32] && header_hash != args.trusted_checkpoint_root {
-        return Err(MosooError::InvalidBootstrap(
-            "bootstrap header root does not match trusted_checkpoint_root anchor".into(),
-        ));
     }
 
     let instance = InstanceAccount {
@@ -849,6 +855,40 @@ pub fn verify_instance_account_authenticity<S: AccountStore>(
         return Err(MosooError::DomainSeparationFailed);
     }
     Ok(instance)
+}
+
+/// Authenticated state attestation entrypoint that loads and authenticates the InstanceAccount
+/// (and optionally HeaderRecord) directly from the persistent LEZ AccountStore.
+/// Guarantees that only canonical, program-owned instances previously committed on-chain
+/// can attest execution states or issue verified statements.
+pub fn handle_attest_state_authenticated<S: AccountStore>(
+    store: &S,
+    instance_pda: &[u8; 32],
+    header_pda: Option<&[u8; 32]>,
+    mut args: AttestStateArgs,
+) -> Result<InstructionOutput, MosooError> {
+    // 1. Strictly load and authenticate InstanceAccount from persistent store
+    let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
+    args.instance = authentic_instance;
+
+    // 2. If a header PDA is provided, load and authenticate HeaderRecord from store
+    if let Some(h_pda) = header_pda {
+        let h_data = store
+            .get_account(h_pda)
+            .ok_or(MosooError::UnauthenticatedHeaderRecord)?;
+        let stored_header: HeaderRecord = serde_json::from_slice(&h_data).map_err(|e| {
+            MosooError::Internal(format!("Failed to deserialize HeaderRecord: {e}"))
+        })?;
+        if stored_header.pda_address() != *h_pda {
+            return Err(MosooError::DomainSeparationFailed);
+        }
+        if stored_header.chain_id != args.instance.chain_id {
+            return Err(MosooError::DomainSeparationFailed);
+        }
+        args.header = stored_header;
+    }
+
+    handle_attest_state(args)
 }
 
 /// Verify that `finalized_header` appears in the `attested_header` state trie
