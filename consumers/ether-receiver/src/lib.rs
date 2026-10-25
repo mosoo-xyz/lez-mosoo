@@ -1431,6 +1431,8 @@ impl MethLedger {
     }
 
     /// Mint synthetic `mETH` via atomic same-transaction verification.
+    /// Strictly validates escrow deposit backing from MosooLocker, converts U256 to u128 with
+    /// checked arithmetic, and verifies balance additions BEFORE consuming nullifiers.
     pub fn mint_meth_atomic(
         &mut self,
         args: AtomicEtherClaimArgs,
@@ -1445,12 +1447,91 @@ impl MethLedger {
             return Err(EtherReceiverError::DepositBackingRequired);
         }
 
-        let deposit_receipt = claim_native_eth_deposit_atomic(args, nullifiers)?;
-        let recipient = deposit_receipt.recipient;
-        let amount = deposit_receipt
-            .amount_wei
+        if !is_supported_chain_id(args.instance.chain_id) {
+            return Err(EtherReceiverError::WrongChain(args.instance.chain_id));
+        }
+
+        let attest_args = mosoo_core::verifier::AttestStateArgs {
+            instance: args.instance,
+            header: args.header,
+            header_history_branch: args.header_history_branch,
+            historical_execution_proof: args.historical_execution_proof,
+            proof: args.proof,
+            predicate: args.predicate,
+        };
+
+        let output = mosoo_core::verifier::handle_attest_state(attest_args)
+            .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+
+        let statement = match output {
+            mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+            _ => {
+                return Err(EtherReceiverError::AttestationFailed(
+                    "unexpected instruction output from handle_attest_state".into(),
+                ))
+            }
+        };
+
+        if !statement.predicate_holds {
+            return Err(EtherReceiverError::PredicateFailed);
+        }
+
+        let (deposit_contract, recipient) = match &statement.binding {
+            StatementBinding::NativeEthDeposit {
+                deposit_contract,
+                recipient,
+                ..
+            } => (*deposit_contract, *recipient),
+            _ => {
+                return Err(EtherReceiverError::DepositBackingRequired);
+            }
+        };
+
+        if deposit_contract != args.expected_address {
+            return Err(EtherReceiverError::ContractMismatch {
+                expected: args.expected_address,
+                actual: deposit_contract,
+            });
+        }
+        if recipient != args.recipient {
+            return Err(EtherReceiverError::RecipientMismatch {
+                expected: args.recipient,
+                actual: recipient,
+            });
+        }
+
+        let verified_wei = statement.value_as_u256();
+        if verified_wei < U256::from(args.min_wei) {
+            return Err(EtherReceiverError::BalanceTooLowU256 {
+                actual: verified_wei,
+                required: U256::from(args.min_wei),
+            });
+        }
+
+        let amount_u128: u128 = verified_wei
             .try_into()
             .map_err(|_| EtherReceiverError::Overflow)?;
+
+        let current_balance = self.get_balance(&recipient);
+        let new_balance = current_balance
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        let new_supply = self
+            .total_supply_wei
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        if nullifiers.is_used(&statement.statement_id)
+            || (statement.subject_key != [0u8; 32] && nullifiers.is_used(&statement.subject_key))
+        {
+            return Err(EtherReceiverError::AlreadyClaimed);
+        }
+
+        nullifiers.mark_used(statement.statement_id);
+        if statement.subject_key != [0u8; 32] {
+            nullifiers.mark_used(statement.subject_key);
+        }
 
         let entry = self
             .accounts
@@ -1462,40 +1543,71 @@ impl MethLedger {
                 burn_count: 0,
             });
 
-        entry.balance_wei = entry
-            .balance_wei
-            .checked_add(amount)
-            .ok_or(EtherReceiverError::Overflow)?;
+        entry.balance_wei = new_balance;
         entry.deposit_count += 1;
 
-        self.total_supply_wei = self
-            .total_supply_wei
-            .checked_add(amount)
-            .ok_or(EtherReceiverError::Overflow)?;
+        self.total_supply_wei = new_supply;
 
-        Ok(entry.balance_wei)
+        Ok(new_balance)
     }
 
     /// Mint synthetic `mETH` from an authentic on-chain StatementAccount PDA.
+    /// Strictly verifies PDA provenance from Mosoo program ID, validates deposit vault address,
+    /// performs checked U256-to-u128 conversion, and verifies balance additions before nullifier consumption.
     pub fn mint_deposit_authenticated_pda_u256(
         &mut self,
         statement_account: &StatementAccount,
+        expected_deposit_contract: [u8; 20],
         nullifiers: &mut EtherNullifierSet,
     ) -> Result<U256, EtherReceiverError> {
-        let amount_u256 =
-            claim_ether_authenticated_pda_u256(statement_account, nullifiers, U256::ZERO)?;
-        let recipient = match &statement_account.statement.binding {
-            StatementBinding::NativeEthDeposit { recipient, .. } => *recipient,
+        if statement_account.owner != MOSOO_PROGRAM_ID {
+            return Err(EtherReceiverError::UnauthenticatedAttester);
+        }
+        let expected_pda = derive_statement_pda(
+            statement_account.statement.chain_id,
+            &statement_account.statement.statement_id,
+        );
+        if statement_account.pda_address != expected_pda {
+            return Err(EtherReceiverError::UnauthenticatedAttester);
+        }
+
+        let (deposit_contract, recipient) = match &statement_account.statement.binding {
+            StatementBinding::NativeEthDeposit {
+                deposit_contract,
+                recipient,
+                ..
+            } => (*deposit_contract, *recipient),
             _ => {
                 return Err(EtherReceiverError::InvalidStatementType(
                     statement_account.statement.proof_type_tag,
-                ))
+                ));
             }
         };
+
+        if expected_deposit_contract != [0u8; 20] && deposit_contract != expected_deposit_contract {
+            return Err(EtherReceiverError::ContractMismatch {
+                expected: expected_deposit_contract,
+                actual: deposit_contract,
+            });
+        }
+
+        let amount_u256 = statement_account.statement.value_as_u256();
         let amount_u128: u128 = amount_u256
             .try_into()
             .map_err(|_| EtherReceiverError::Overflow)?;
 
+        let current_balance = self.get_balance(&recipient);
+        let new_balance = current_balance
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        let new_supply = self
+            .total_supply_wei
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        claim_ether_authenticated_pda_u256(statement_account, nullifiers, U256::ZERO)?;
+
         let entry = self
             .accounts
             .entry(recipient)
@@ -1506,16 +1618,10 @@ impl MethLedger {
                 burn_count: 0,
             });
 
-        entry.balance_wei = entry
-            .balance_wei
-            .checked_add(amount_u128)
-            .ok_or(EtherReceiverError::Overflow)?;
+        entry.balance_wei = new_balance;
         entry.deposit_count += 1;
 
-        self.total_supply_wei = self
-            .total_supply_wei
-            .checked_add(amount_u128)
-            .ok_or(EtherReceiverError::Overflow)?;
+        self.total_supply_wei = new_supply;
 
         Ok(amount_u256)
     }
@@ -3119,20 +3225,39 @@ mod tests {
             pda_address: [0xdd; 32],
             statement: statement.clone(),
         };
-        let err = ledger.mint_deposit_authenticated_pda_u256(&fabricated, &mut nullifiers);
+        let err = ledger.mint_deposit_authenticated_pda_u256(
+            &fabricated,
+            deposit_contract,
+            &mut nullifiers,
+        );
         assert_eq!(err, Err(EtherReceiverError::UnauthenticatedAttester));
 
-        // 2. Authentic account mints 50 ETH successfully
+        // 2. Mismatched deposit vault rejected
         let authentic = StatementAccount::new_authentic(statement);
+        let mismatch =
+            ledger.mint_deposit_authenticated_pda_u256(&authentic, [0xee; 20], &mut nullifiers);
+        assert_eq!(
+            mismatch,
+            Err(EtherReceiverError::ContractMismatch {
+                expected: [0xee; 20],
+                actual: deposit_contract,
+            })
+        );
+
+        // 3. Authentic account mints 50 ETH successfully
         let minted = ledger
-            .mint_deposit_authenticated_pda_u256(&authentic, &mut nullifiers)
+            .mint_deposit_authenticated_pda_u256(&authentic, deposit_contract, &mut nullifiers)
             .expect("Authentic PDA mint must succeed");
         assert_eq!(minted, amount_wei);
         assert_eq!(ledger.get_balance(&recipient), amount_wei.to::<u128>());
         assert_eq!(ledger.total_supply_wei, amount_wei.to::<u128>());
 
-        // 3. Double-mint replay rejected by nullifier
-        let replay = ledger.mint_deposit_authenticated_pda_u256(&authentic, &mut nullifiers);
+        // 4. Double-mint replay rejected by nullifier
+        let replay = ledger.mint_deposit_authenticated_pda_u256(
+            &authentic,
+            deposit_contract,
+            &mut nullifiers,
+        );
         assert_eq!(replay, Err(EtherReceiverError::AlreadyClaimed));
     }
 }

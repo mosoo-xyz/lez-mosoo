@@ -127,7 +127,7 @@ def main():
                         help="Execution mode: 'live' (strict on-chain RPC) or 'simulated' (local harness)")
     parser.add_argument("--rpc", default=DEFAULT_RPC, help="Sequencer JSON-RPC URL")
     parser.add_argument("--eth-rpc", default=None, help="Ethereum L1 JSON-RPC URL (Sepolia or Mainnet)")
-    parser.add_argument("--chain-id", type=int, default=1, help="Ethereum Chain ID (1 for Mainnet, 11155111 for Sepolia, etc.)")
+    parser.add_argument("--chain-id", type=int, default=11155111, help="Ethereum Chain ID (1 for Mainnet, 11155111 for Sepolia, etc.)")
     parser.add_argument("--locker", default=None, help="Ethereum MosooLocker contract address (0x...)")
     parser.add_argument("--private-key", default=None, help="Optional deployer/tester private key for live on-chain interaction")
     args = parser.parse_args()
@@ -136,6 +136,8 @@ def main():
     eth_rpc = args.eth_rpc
     if not eth_rpc and args.chain_id == 11155111:
         eth_rpc = "https://ethereum-sepolia-rpc.publicnode.com"
+    elif not eth_rpc and args.chain_id == 1:
+        eth_rpc = "https://ethereum-rpc.publicnode.com"
 
     print("=" * 80)
     if args.mode == "live":
@@ -197,6 +199,7 @@ def main():
 
     # 2. Ethereum Deposit Step
     print("\n--- [Phase 2/5] Ethereum Vault Deposit (MosooLocker.sol) ---")
+    dep_tx_hash = None
     if args.locker:
         locker_hex = args.locker.lower().replace("0x", "")
         locker_address = bytes.fromhex(locker_hex)
@@ -208,6 +211,7 @@ def main():
                 dep_data = json.load(f)
                 locker_hex = dep_data.get("address", "").lower().replace("0x", "")
                 locker_address = bytes.fromhex(locker_hex)
+                dep_tx_hash = dep_data.get("transactionHash")
         else:
             locker_address = b"\x11" * 20
     else:
@@ -215,6 +219,18 @@ def main():
 
     if args.mode == "live" and eth_rpc:
         try:
+            # 1. Verify Deployment Transaction Receipt on-chain
+            if dep_tx_hash:
+                receipt_resp = call_rpc(eth_rpc, "eth_getTransactionReceipt", [dep_tx_hash])
+                receipt = receipt_resp.get("result")
+                if receipt and receipt.get("status") == "0x1":
+                    block_num = int(receipt.get("blockNumber", "0x0"), 16)
+                    gas_used = int(receipt.get("gasUsed", "0x0"), 16)
+                    print(f"  [+] On-Chain Deployment Receipt: Verified (Status: Success / 0x1, Block: {block_num}, Gas: {gas_used})")
+                elif receipt:
+                    print(f"  [-] Warning: Deployment transaction status: {receipt.get('status')}")
+
+            # 2. Verify Deployed Bytecode
             code_resp = call_rpc(eth_rpc, "eth_getCode", [f"0x{locker_address.hex()}", "latest"])
             code = code_resp.get("result", "0x")
             if len(code) <= 2:
@@ -222,12 +238,42 @@ def main():
                 sys.exit(1)
             print(f"  [+] Live Contract Bytecode: Verified on Ethereum ({len(code) // 2} bytes)")
 
-            # Query owner (0x8da5cb5b)
-            owner_resp = call_rpc(eth_rpc, "eth_call", [{"to": f"0x{locker_address.hex()}", "data": "0x8da5cb5b"}, "latest"])
-            owner_raw = owner_resp.get("result", "")
+            # Helper for raw eth_call
+            def contract_call(selector_hex: str) -> str:
+                res = call_rpc(eth_rpc, "eth_call", [{"to": f"0x{locker_address.hex()}", "data": selector_hex}, "latest"])
+                return res.get("result", "")
+
+            # 3. Query Live Contract State Variables
+            owner_raw = contract_call("0x8da5cb5b")
             if len(owner_raw) >= 66:
-                live_owner = "0x" + owner_raw[-40:]
-                print(f"  [+] Live Contract Owner   : {live_owner}")
+                print(f"  [+] Live Contract Owner      : 0x{owner_raw[-40:]}")
+
+            attester_auth_raw = contract_call("0xb167aa21")
+            if len(attester_auth_raw) >= 66:
+                print(f"  [+] Live Attester Authority  : 0x{attester_auth_raw[-40:]}")
+
+            attester_count_raw = contract_call("0x1481103f")
+            attester_count = int(attester_count_raw, 16) if len(attester_count_raw) >= 66 else 1
+
+            quorum_raw = contract_call("0x7036014e")
+            required_quorum = int(quorum_raw, 16) if len(quorum_raw) >= 66 else 1
+
+            guardian_raw = contract_call("0x452a9320")
+            live_guardian = "0x" + guardian_raw[-40:] if len(guardian_raw) >= 66 else "None"
+            print(f"  [+] Live Guardian Address    : {live_guardian}")
+
+            paused_raw = contract_call("0x5c975abb")
+            is_paused = (int(paused_raw, 16) == 1) if len(paused_raw) >= 66 else False
+            print(f"  [+] Live Contract Paused     : {is_paused}")
+
+            locked_raw = contract_call("0x8afe47cf")
+            total_locked = int(locked_raw, 16) if len(locked_raw) >= 66 else 0
+            print(f"  [+] Live Total Locked ETH    : {total_locked / 10**18:.4f} ETH")
+
+            print(f"  [+] Live Quorum Status       : {required_quorum}-of-{attester_count} Threshold Active")
+            if required_quorum < 2:
+                print("      * Note: Testnet deployment initialized in 1-of-1 bootstrap mode.")
+                print("      * Production Path: Invoke addAttester() and setQuorum(2) to transition to 2-of-3 multisig.")
         except Exception as e:
             print(f"  [-] Warning: Could not query contract on-chain state: {e}")
     eth_depositor = b"\x22" * 20

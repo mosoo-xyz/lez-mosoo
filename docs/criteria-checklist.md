@@ -79,7 +79,7 @@ Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **219 automated tests** (216 unit/integration + 3 doc tests) passing with 0 warnings:
+The repository test suite consists of **224 automated tests** (221 unit/integration + 3 doc tests) passing with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
@@ -91,8 +91,8 @@ The repository test suite consists of **219 automated tests** (216 unit/integrat
 | **Privacy & Zero-Correlation** | `tests/privacy_and_correlation_tests.rs` | 5 | Address shielding, unlinkability, byte-level state-diff inspection |
 | **Sequencer E2E Suite** | `tests/sequencer_e2e_tests.rs` | 4 | Full 3-Tx lifecycle on mock sequencer, instance account authenticity, and persistent PDA nullifiers across node restarts |
 | **Consumer Integration Suite** | `tests/e2e_consumer_tests.rs` | 2 | Cross-slot nullifier uniqueness, duplicate mint prevention |
-| **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 33 (32 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, PDA nullifier export/restore, persistent AccountStore claims, canonical DepositERC20 event verification, burn & unlock, u128/u256 value preservation, atomic U256 large amount claims, and on-chain StatementAccount PDA provenance verification |
-| **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 35 (34 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, PDA nullifier export/restore, persistent AccountStore claims, BurnReceipt generation, canonical DepositETH event verification, typed balance & deposit receipts, u128/u256 value preservation, atomic U256 large wei claims, and on-chain StatementAccount PDA provenance verification |
+| **Reference Consumer (ERC-20)** | `consumers/erc20-receiver/src/lib.rs` | 41 (40 unit + 1 doc) | Atomic same-tx claims, receipt log proofs, ERC-20 token ledger, PDA nullifier export/restore, persistent AccountStore claims, canonical DepositERC20 event verification, burn & unlock, u128/u256 value preservation, atomic U256 large amount claims, strict proof-type binding (`DepositERC20`), canonical locker address validation, checked U256-to-u128 conversion with pre-nullifier overflow assertions, and on-chain StatementAccount PDA provenance verification |
+| **Reference Consumer & mETH Ledger** | `consumers/ether-receiver/src/lib.rs` | 38 (37 unit + 1 doc) | Native balance proofs, mETH token mint/burn/transfer ledger, PDA nullifier export/restore, persistent AccountStore claims, BurnReceipt generation, canonical DepositETH event verification, typed balance & deposit receipts, u128/u256 value preservation, atomic U256 large wei claims, pre-nullifier overflow checks, and on-chain StatementAccount PDA provenance verification |
 | **Daemon Operational Suite** | `daemon/src/main.rs` | 14 | Beacon parsing, randomized jitter, local transaction signing without raw key transmission, proxy URL derivations, next sync committee parsing, fail-closed period boundary sync, strict branch node length validation |
 | **CLI Suite** | `cli/src/main.rs` | 5 | CLI argument parser, test vector loading, multi-target MPT generation (balance, storage, deposit), fail-closed live RPC extraction, weak-subjectivity checkpoint verification command with live beacon head query, anchored checkpoint verification, and local signing dry-run pipeline |
 | **Two-Way Bridge Testnet Pipeline** | `scripts/testnet-two-way-bridge.py` | 1 script (5 phases) | Live testnet sequencer connectivity, deposit, 3-tx split, mint, burn, unlock with pure Keccak-256 and dynamic chain ID |
@@ -104,7 +104,7 @@ The repository test suite consists of **219 automated tests** (216 unit/integrat
 
 ## 5. Development Roadmap & Independent Security Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 219 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 224 passing tests, reproducibility scripts, live testnet pipeline, and empirical benchmarks.
 - **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
 - **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.

@@ -15,7 +15,7 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 219 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 224 unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the full Two-Way Bridge integration test suite
@@ -29,7 +29,8 @@ cargo test --test sequencer_e2e_tests
 
 # 5. Run the Two-Way Bridge pipeline (simulated demo or live testnet mode)
 python3 scripts/testnet-two-way-bridge.py --mode simulated
-python3 scripts/testnet-two-way-bridge.py --mode live --rpc https://testnet.lez.logos.co --chain-id 11155111 --locker 0x74625D146B8d9413F3c3976B323d94A739be7856
+# Live mode connects directly to live LEZ Sequencer and Ethereum Sepolia RPC:
+python3 scripts/testnet-two-way-bridge.py --mode live
 # Deployed Sepolia Locker: 0x74625D146B8d9413F3c3976B323d94A739be7856 (https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856)
 
 # 6. Verify live testnet sequencer health, gas limits, and blocks
@@ -79,8 +80,8 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting both atomic same-transaction verification (`claim_atomic`) and decoupled relayer flows with nullifier replay rejection.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **219 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix**: Includes 38 adversarial mutation tests, 10 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 14 daemon tests, 21 light-client tests, 4 sequencer E2E tests, 2 e2e consumer tests, 32 ERC-20 receiver tests, 34 Ether receiver tests, 43 core unit tests, 5 CLI tests, and 3 doc tests.
+- **224 Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix**: Includes 38 adversarial mutation tests, 10 two-way bridge tests, 4 LEZ v0.4 acceptance tests, 5 privacy tests, 14 daemon tests, 21 light-client tests, 4 sequencer E2E tests, 2 e2e consumer tests, 40 ERC-20 receiver tests, 37 Ether receiver tests, 43 core unit tests, 5 CLI tests, and 3 doc tests.
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
 
@@ -89,7 +90,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Live Public Testnet Deployment (Milestone M1)**: Dependent on Logos Core releasing public LEZ v0.4 devnet RPC endpoints and network freeze. All current traces are verified via the in-memory sequencer harness; live testnet deployment executes in M1.
 - **Logos Core Module Catalog & SPEL Integration (Milestone M2)**: Upstreaming into the official Logos Core module catalog and SPEL compiler tooling.
 - **Production Daemon Telemetry (Milestone M3)**: Multi-RPC weighted failover, automated re-org detection, and Prometheus metrics.
-- **Independent Security Audit (Milestone M4)**: Formal third-party engagement with an external security firm (\$10,000 / 3 weeks budgeted upon grant approval).
+- **Independent Security Audit (Milestone M4)**: Formal third-party engagement with an external security firm ($10,000 / 3 weeks budgeted upon grant approval).
 
 ### Lifecycle & Verification Matrix
 
@@ -97,7 +98,7 @@ To ensure absolute transparency regarding what is functioning today versus what 
 
 | Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
 | :--- | :---: | :--- | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (219/219 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (224/224 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
 | **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | M0 (Delivered) | 38 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |

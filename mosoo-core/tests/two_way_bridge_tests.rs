@@ -459,7 +459,7 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     // 4. Mint 10 mETH on LEZ via authentic on-chain StatementAccount PDA
     let statement_account = StatementAccount::new_authentic(statement);
     let minted_u256 = lez_ledger
-        .mint_deposit_authenticated_pda_u256(&statement_account, &mut lez_nullifiers)
+        .mint_deposit_authenticated_pda_u256(&statement_account, locker_addr, &mut lez_nullifiers)
         .unwrap();
     assert_eq!(minted_u256, U256::from(deposit_amount));
     assert_eq!(lez_ledger.get_balance(&alice_lez), deposit_amount);
@@ -528,8 +528,11 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     assert_eq!(replay_unlock.unwrap_err(), "BurnAlreadyExecuted");
 
     // 10. Replay Attack Prevention on LEZ: Repeating the same deposit mint is strictly rejected
-    let replay_mint =
-        lez_ledger.mint_deposit_authenticated_pda_u256(&statement_account, &mut lez_nullifiers);
+    let replay_mint = lez_ledger.mint_deposit_authenticated_pda_u256(
+        &statement_account,
+        locker_addr,
+        &mut lez_nullifiers,
+    );
     assert!(matches!(
         replay_mint,
         Err(EtherReceiverError::AlreadyClaimed)

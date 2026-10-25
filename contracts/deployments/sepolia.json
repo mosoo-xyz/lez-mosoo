@@ -5,9 +5,12 @@
   "address": "0x74625D146B8d9413F3c3976B323d94A739be7856",
   "deployer": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
   "attesterAuthority": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
+  "initialQuorum": 1,
+  "initialAttesterCount": 1,
   "transactionHash": "0x1b492d89631c7fb398008285e777781d95f48c1a07c9d6ca2d6be5459941b28b",
   "blockNumber": 11989329,
   "gasUsed": "22000376",
   "deployedAt": "2026-10-25T07:16:17.607Z",
-  "rpcUsed": "https://ethereum-sepolia-rpc.publicnode.com"
+  "rpcUsed": "https://ethereum-sepolia-rpc.publicnode.com",
+  "notes": "Testnet contract initialized with 1-of-1 attester authority for pipeline verification. Supports on-chain addAttester and setQuorum for M-of-N multisig transition."
 }
