@@ -3728,6 +3728,7 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
     config.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, approved_checkpoint);
 
     let mut store = ProgramAccountStore::new();
+    config.save_to_store(&mut store).unwrap();
 
     // Attacker fabricates an instance with unapproved instance PDA
     let unpinned_checkpoint = [0x88; 32];
@@ -3840,6 +3841,7 @@ fn test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account()
     rogue_checkpoint_instance.bootstrap_header_hash = [0x99; 32]; // Rogue checkpoint
     let rogue_pda = rogue_checkpoint_instance.pda_address();
     config.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, rogue_pda);
+    config.save_to_store(&mut store).unwrap();
     store.insert_program_account(
         rogue_pda,
         serde_json::to_vec(&rogue_checkpoint_instance).unwrap(),
@@ -3978,6 +3980,7 @@ fn test_mutation_attack_42_checkpoint_verified_on_store_loaded_instance_not_call
 
     config.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, instance_pda);
     config.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, trusted_checkpoint);
+    config.save_to_store(&mut store).unwrap();
 
     store.insert_program_account(
         instance_pda,
@@ -4127,4 +4130,144 @@ fn test_mutation_attack_43_atomic_persistent_nullifier_replay_prevention() {
     assert!(!eth_nullifiers_after_restart.is_used(&statement_id));
     assert!(store.get_account(&eth_nullifier_pda).is_some());
     assert!(store.get_account(&eth_subject_pda).is_some());
+}
+
+/// Attack 44: Program-Owned TrustedBridgeConfig Strict Enforcement (P0/P1 Bypass Prevention).
+/// Ensures that without a program-owned TrustedBridgeConfig PDA stored at derive_bridge_config_pda()
+/// and owned by MOSOO_PROGRAM_ID, claims strictly fail closed and reject caller-supplied fallback config.
+#[test]
+fn test_mutation_attack_44_strict_program_config_pda_enforcement() {
+    let mut store = ProgramAccountStore::new();
+    let instance = InstanceAccount {
+        instance_id: [0x11; 32],
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        current_header_hash: [0x22; 32],
+        current_state_root: [0x33; 32],
+        current_slot: 10_000_000,
+        current_sync_committee: make_test_committee(512),
+        next_sync_committee: None,
+        bootstrap_slot: 9_900_000,
+        bootstrap_header_hash: [0x44; 32],
+        initialized: true,
+        current_execution_block_hash: [0x55; 32],
+        current_execution_state_root: [0x66; 32],
+        current_receipts_root: [0x77; 32],
+    };
+    let instance_pda = instance.pda_address();
+    store.insert_program_account(
+        instance_pda,
+        serde_json::to_vec(&instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let header = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot: 10_000_000,
+        beacon_block_root: [0x22; 32],
+        execution_block_hash: [0x55; 32],
+        execution_state_root: [0x66; 32],
+        receipts_root: [0x77; 32],
+    };
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x42),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    let caller_config = TrustedBridgeConfig::canonical();
+
+    // 1. Missing config account in store: Must fail closed
+    let erc20_args = AtomicErc20ClaimArgsU256 {
+        instance: instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_deposit_contract: [0x11; 20],
+        expected_token_contract: [0x22; 20],
+        expected_sender: None,
+        recipient: [0xaa; 32],
+        min_amount: alloy_primitives::U256::ZERO,
+    };
+    let mut erc20_nullifiers = NullifierSet::new();
+
+    let err = claim_authenticated_store_u256(
+        &mut store,
+        &instance_pda,
+        None,
+        erc20_args,
+        &mut erc20_nullifiers,
+        &caller_config,
+    )
+    .expect_err("Must reject claim when store has no program-owned config");
+    assert!(
+        matches!(err, ReceiverError::AttestationFailed(ref msg) if msg.contains("program-owned config verification failed")),
+        "Expected config verification error, got: {err:?}"
+    );
+
+    // 2. Untrusted owner on config account: Must fail closed
+    let config_pda = mosoo_core::types::derive_bridge_config_pda();
+    store.insert_program_account(
+        config_pda,
+        serde_json::to_vec(&caller_config).unwrap(),
+        [0x99; 32], // Rogue owner
+    );
+
+    let eth_args = AtomicEtherClaimArgs {
+        instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        expected_address: [0x11; 20],
+        recipient: [0xaa; 32],
+        min_wei: 0,
+    };
+    let mut eth_nullifiers = EtherNullifierSet::new();
+
+    let eth_err = claim_native_eth_deposit_authenticated_store_with_config(
+        &mut store,
+        &instance_pda,
+        None,
+        eth_args,
+        &mut eth_nullifiers,
+        &caller_config,
+    )
+    .expect_err("Must reject claim when config owner is not MOSOO_PROGRAM_ID");
+    assert!(
+        matches!(eth_err, EtherReceiverError::AttestationFailed(ref msg) if msg.contains("program-owned config verification failed")),
+        "Expected untrusted config owner error, got: {eth_err:?}"
+    );
+}
+
+/// Attack 45: Priority 2 Verification — Atomic Fallible AccountStore Operations.
+/// Verifies that simulate_write_failure triggers fail-closed behavior on try_set_account_with_owner.
+#[test]
+fn test_mutation_attack_45_account_store_fallible_write_simulation() {
+    let mut store = ProgramAccountStore::new();
+    let addr = [0x42; 32];
+    let data = vec![1, 2, 3, 4];
+
+    // Standard write succeeds
+    assert!(store
+        .try_set_account_with_owner(&addr, data.clone(), MOSOO_PROGRAM_ID)
+        .is_ok());
+    assert_eq!(store.get_account(&addr), Some(data));
+
+    // Simulated write failure fails closed
+    store.simulate_write_failure = true;
+    let fail_addr = [0x43; 32];
+    let res = store.try_set_account_with_owner(&fail_addr, vec![5, 6], MOSOO_PROGRAM_ID);
+    assert!(matches!(res, Err(mosoo_core::types::StoreError::WriteFailed(a)) if a == fail_addr));
+    assert_eq!(store.get_account(&fail_addr), None);
 }

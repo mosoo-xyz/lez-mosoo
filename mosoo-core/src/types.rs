@@ -62,6 +62,20 @@ pub fn derive_bridge_config_pda() -> [u8; 32] {
     sha2::Digest::finalize(h).into()
 }
 
+/// Errors encountered during program-owned configuration loading and verification.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    #[error("program-owned config account not found at {0:?}")]
+    ConfigNotFound([u8; 32]),
+    #[error("untrusted config owner: expected {expected:?}, actual {actual:?}")]
+    UntrustedOwner {
+        expected: [u8; 32],
+        actual: Option<[u8; 32]>,
+    },
+    #[error("failed to deserialize program configuration: {0}")]
+    DeserializationError(String),
+}
+
 /// Authenticated program-owned configuration specifying trusted locker contracts, approved light-client instances, and allowed tokens per chain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrustedBridgeConfig {
@@ -118,6 +132,38 @@ impl TrustedBridgeConfig {
             trusted_instances,
             trusted_checkpoints,
         }
+    }
+
+    /// Strictly loads the authenticated TrustedBridgeConfig from persistent storage.
+    /// Fails closed if the account is missing, the owner is not MOSOO_PROGRAM_ID,
+    /// or deserialization fails. Never falls back to default or caller configuration.
+    pub fn load_strict<S: AccountStore>(store: &S) -> Result<Self, ConfigError> {
+        let pda = derive_bridge_config_pda();
+        let owner = store.get_account_owner(&pda);
+        if owner != Some(MOSOO_PROGRAM_ID) {
+            if store.get_account(&pda).is_none() {
+                return Err(ConfigError::ConfigNotFound(pda));
+            } else {
+                return Err(ConfigError::UntrustedOwner {
+                    expected: MOSOO_PROGRAM_ID,
+                    actual: owner,
+                });
+            }
+        }
+        let bytes = store
+            .get_account(&pda)
+            .ok_or(ConfigError::ConfigNotFound(pda))?;
+        serde_json::from_slice::<Self>(&bytes)
+            .map_err(|e| ConfigError::DeserializationError(e.to_string()))
+    }
+
+    /// Stores this configuration as a program-owned account in the given store.
+    pub fn save_to_store<S: AccountStore>(&self, store: &mut S) -> Result<[u8; 32], StoreError> {
+        let pda = derive_bridge_config_pda();
+        let encoded = serde_json::to_vec(self)
+            .map_err(|e| StoreError::Custom(format!("failed to serialize config: {e}")))?;
+        store.try_set_account_with_owner(&pda, encoded, MOSOO_PROGRAM_ID)?;
+        Ok(pda)
     }
 
     /// Loads the authenticated TrustedBridgeConfig from persistent storage if present and owned by MOSOO_PROGRAM_ID,
@@ -509,6 +555,19 @@ impl InstanceAccount {
     }
 }
 
+/// Storage operation errors for LEZ AccountStore implementations.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum StoreError {
+    #[error("storage write failed for address {0:?}")]
+    WriteFailed([u8; 32]),
+    #[error("account storage quota exceeded")]
+    QuotaExceeded,
+    #[error("unauthorized storage operation")]
+    Unauthorized,
+    #[error("storage error: {0}")]
+    Custom(String),
+}
+
 /// Persistent storage abstraction for LEZ Program-Derived Accounts (PDAs).
 pub trait AccountStore {
     fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>>;
@@ -520,6 +579,19 @@ pub trait AccountStore {
     }
     /// Write account data with an explicit program owner. Mandatory method to prevent silent ownership discard.
     fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, owner: [u8; 32]);
+
+    /// Fallible account write operation enforcing explicit program ownership.
+    /// Default implementation delegates to set_account_with_owner and returns Ok(()).
+    fn try_set_account_with_owner(
+        &mut self,
+        address: &[u8; 32],
+        data: Vec<u8>,
+        owner: [u8; 32],
+    ) -> Result<(), StoreError> {
+        self.set_account_with_owner(address, data, owner);
+        Ok(())
+    }
+
     fn has_account(&self, address: &[u8; 32]) -> bool {
         self.get_account(address).is_some()
     }
@@ -542,6 +614,15 @@ impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
     fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, _owner: [u8; 32]) {
         self.insert(*address, data);
     }
+    fn try_set_account_with_owner(
+        &mut self,
+        address: &[u8; 32],
+        data: Vec<u8>,
+        _owner: [u8; 32],
+    ) -> Result<(), StoreError> {
+        self.insert(*address, data);
+        Ok(())
+    }
 }
 
 /// Program-owned account record on LEZ (matching runtime AccountInfo).
@@ -555,12 +636,14 @@ pub struct ProgramAccount {
 #[derive(Debug, Clone, Default)]
 pub struct ProgramAccountStore {
     pub accounts: HashMap<[u8; 32], ProgramAccount>,
+    pub simulate_write_failure: bool,
 }
 
 impl ProgramAccountStore {
     pub fn new() -> Self {
         Self {
             accounts: HashMap::new(),
+            simulate_write_failure: false,
         }
     }
 
@@ -589,6 +672,19 @@ impl AccountStore for ProgramAccountStore {
     fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, owner: [u8; 32]) {
         self.accounts
             .insert(*address, ProgramAccount { owner, data });
+    }
+    fn try_set_account_with_owner(
+        &mut self,
+        address: &[u8; 32],
+        data: Vec<u8>,
+        owner: [u8; 32],
+    ) -> Result<(), StoreError> {
+        if self.simulate_write_failure {
+            return Err(StoreError::WriteFailed(*address));
+        }
+        self.accounts
+            .insert(*address, ProgramAccount { owner, data });
+        Ok(())
     }
 }
 
