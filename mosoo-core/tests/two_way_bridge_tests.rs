@@ -345,6 +345,8 @@ impl MockEthereumLocker {
         }
         let old_authority = self.attester_authority;
         let new_authority = pending;
+
+        let mut projected_count = self.attester_count;
         if old_authority != new_authority {
             if self
                 .is_attester
@@ -352,17 +354,67 @@ impl MockEthereumLocker {
                 .copied()
                 .unwrap_or(false)
             {
-                self.is_attester.remove(&old_authority);
+                projected_count -= 1;
             }
+            if !self
+                .is_attester
+                .get(&new_authority)
+                .copied()
+                .unwrap_or(false)
+            {
+                projected_count += 1;
+            }
+        }
+
+        if projected_count < self.required_quorum {
+            return Err("InvalidQuorum");
+        }
+
+        if old_authority != new_authority {
+            self.is_attester.remove(&old_authority);
             self.is_attester.insert(new_authority, true);
-            self.attester_count = self.is_attester.len();
+            self.attester_count = projected_count;
         }
         self.attester_authority = new_authority;
         self.pending_attester_authority = None;
         self.authority_timelock_unlock = 0;
+        Ok(())
+    }
 
-        if self.attester_count < self.required_quorum {
-            self.required_quorum = self.attester_count.max(1);
+    fn cancel_pending_governance(
+        &mut self,
+        caller: [u8; 20],
+        action_type: u8,
+    ) -> Result<(), &'static str> {
+        if caller != self.owner && caller != self.guardian {
+            return Err("Unauthorized");
+        }
+        match action_type {
+            1 => {
+                self.pending_quorum = None;
+                self.quorum_timelock_unlock = 0;
+            }
+            2 => {
+                self.pending_add_attester = None;
+                self.add_attester_timelock_unlock = 0;
+            }
+            3 => {
+                self.pending_remove_attester = None;
+                self.remove_attester_timelock_unlock = 0;
+            }
+            4 => {
+                self.pending_daily_withdrawal_limit_eth = None;
+                self.daily_withdrawal_limit_eth_timelock_unlock = 0;
+            }
+            5 => {
+                self.pending_guardian = None;
+                self.guardian_timelock_unlock = 0;
+            }
+            6 => {
+                self.pending_attester_authority = None;
+                self.authority_timelock_unlock = 0;
+            }
+            _ => return Err("NoPendingGovernanceAction"),
         }
         Ok(())
     }
@@ -2013,8 +2065,36 @@ fn test_authority_rotation_updates_committee_count_and_preserves_quorum() {
     locker
         .propose_attester_authority(attester2, 400_000)
         .expect("propose authority");
-    locker
+
+    // Authority rotation attempting to drop active committee count below quorum must strictly revert!
+    let err = locker
         .execute_attester_authority(400_000 + AUTHORITY_CHANGE_DELAY)
+        .unwrap_err();
+    assert_eq!(
+        err, "InvalidQuorum",
+        "Authority rotation must revert if count drops below quorum"
+    );
+
+    // Guardian can cancel the pending authority rotation
+    let guardian = locker.guardian;
+    locker
+        .cancel_pending_governance(guardian, 6)
+        .expect("guardian cancel authority rotation");
+    assert_eq!(locker.pending_attester_authority, None);
+
+    // Correct governance path: First reduce quorum to 2 via propose/execute quorum with 2-day timelock
+    locker.propose_quorum(2, 500_000).expect("propose quorum 2");
+    locker
+        .execute_quorum(500_000 + GOVERNANCE_TIMELOCK_DELAY)
+        .expect("exec quorum 2");
+    assert_eq!(locker.required_quorum, 2);
+
+    // Now re-propose and execute authority rotation to attester2
+    locker
+        .propose_attester_authority(attester2, 700_000)
+        .expect("propose authority");
+    locker
+        .execute_attester_authority(700_000 + AUTHORITY_CHANGE_DELAY)
         .expect("exec authority");
 
     // Old authority [0xaa; 20] removed, attester2 was already in committee
@@ -2023,11 +2103,8 @@ fn test_authority_rotation_updates_committee_count_and_preserves_quorum() {
         locker.attester_count, 2,
         "attester count must accurately update to 2"
     );
-    // Quorum was 3, but now count is 2. Quorum must automatically adjust down to 2 to prevent lockup
-    assert_eq!(
-        locker.required_quorum, 2,
-        "required quorum must adjust down to 2"
-    );
+    // Quorum was 2 and remains 2 (never silently downgraded)
+    assert_eq!(locker.required_quorum, 2, "required quorum remains 2");
 }
 
 #[test]

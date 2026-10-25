@@ -754,12 +754,13 @@ contract MosooLocker {
         _ethWithdrawalHead = head;
 
         if (rolling + amount > dailyWithdrawalLimitETH) {
-            _rollingWithdrawnETH = rolling;
             revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - rolling);
         }
 
         if (head == len) {
-            delete _ethWithdrawals;
+            assembly {
+                sstore(_ethWithdrawals.slot, 0)
+            }
             _ethWithdrawalHead = 0;
         }
 
@@ -805,12 +806,13 @@ contract MosooLocker {
         _erc20WithdrawalHead[token] = head;
 
         if (rolling + amount > limit) {
-            _rollingWithdrawnERC20[token] = rolling;
             revert DailyLimitExceeded(amount, limit - rolling);
         }
 
         if (head == len) {
-            delete _erc20Withdrawals[token];
+            assembly {
+                sstore(history.slot, 0)
+            }
             _erc20WithdrawalHead[token] = 0;
         }
 
@@ -841,7 +843,9 @@ contract MosooLocker {
         _rollingWithdrawnETH = rolling;
 
         if (head == len) {
-            delete _ethWithdrawals;
+            assembly {
+                sstore(_ethWithdrawals.slot, 0)
+            }
             _ethWithdrawalHead = 0;
         }
     }
@@ -868,7 +872,9 @@ contract MosooLocker {
         _rollingWithdrawnERC20[token] = rolling;
 
         if (head == len) {
-            delete _erc20Withdrawals[token];
+            assembly {
+                sstore(history.slot, 0)
+            }
             _erc20WithdrawalHead[token] = 0;
         }
     }
@@ -1026,36 +1032,44 @@ contract MosooLocker {
     }
 
     /// @notice Executes a proposed attester authority rotation after timelock expiration.
-    /// @dev Synchronizes attesterCount set accounting. If rotating authority decreases the active
-    /// committee below requiredQuorum, requiredQuorum is adjusted down to attesterCount (or 1)
-    /// as an explicit safety invariant to prevent permanent withdrawal freeze/deadlock.
+    /// @dev Synchronizes attesterCount set accounting.
+    /// Invariant: If rotating authority decreases the active committee below requiredQuorum,
+    /// the transaction strictly reverts to prevent silent quorum degradation.
+    /// Quorum modifications are restricted exclusively to proposeQuorum / executeQuorum.
     function executeAttesterAuthority() external onlyOwner {
         if (pendingAttesterAuthority == address(0)) revert NoPendingAuthority();
         if (block.timestamp < authorityTimelockUnlock) revert AuthorityTimelockActive(block.timestamp, authorityTimelockUnlock);
         address oldAuthority = attesterAuthority;
         address newAuthority = pendingAttesterAuthority;
+
+        uint256 newAttesterCount = attesterCount;
+        if (oldAuthority != newAuthority) {
+            if (isAttester[oldAuthority]) {
+                newAttesterCount -= 1;
+            }
+            if (!isAttester[newAuthority]) {
+                newAttesterCount += 1;
+            }
+        }
+
+        if (newAttesterCount < requiredQuorum) {
+            revert InvalidQuorum();
+        }
+
         emit AttesterAuthorityUpdated(oldAuthority, newAuthority);
 
         if (oldAuthority != newAuthority) {
             if (isAttester[oldAuthority]) {
                 isAttester[oldAuthority] = false;
-                attesterCount -= 1;
             }
             if (!isAttester[newAuthority]) {
                 isAttester[newAuthority] = true;
-                attesterCount += 1;
             }
+            attesterCount = newAttesterCount;
         }
         attesterAuthority = newAuthority;
         pendingAttesterAuthority = address(0);
         authorityTimelockUnlock = 0;
-
-        // Quorum safety invariant: if attesterCount < requiredQuorum, adjust requiredQuorum to attesterCount
-        if (attesterCount < requiredQuorum) {
-            uint256 oldQuorum = requiredQuorum;
-            requiredQuorum = attesterCount > 0 ? attesterCount : 1;
-            emit QuorumUpdated(oldQuorum, requiredQuorum);
-        }
     }
 
     // --- Timelocked Multisig Governance (Finding M-04 / 4 Hardening) ---
@@ -1153,6 +1167,10 @@ contract MosooLocker {
             pendingGuardian = address(0);
             guardianTimelockUnlock = 0;
             emit PendingGovernanceCancelled("guardian", msg.sender);
+        } else if (actionType == 6) {
+            pendingAttesterAuthority = address(0);
+            authorityTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("attesterAuthority", msg.sender);
         } else {
             revert NoPendingGovernanceAction();
         }

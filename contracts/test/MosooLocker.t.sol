@@ -387,13 +387,34 @@ contract MosooLockerTest is Test {
         // Rotate authority to attester2 (who is already in the committee)
         locker.proposeAttesterAuthority(attester2);
         vm.warp(locker.authorityTimelockUnlock());
+
+        // Attempting to execute authority rotation when active committee count drops below quorum strictly reverts!
+        try locker.executeAttesterAuthority() {
+            revert("Expected revert with InvalidQuorum");
+        } catch {
+            // Success: authority rotation rejected when resulting count < requiredQuorum
+        }
+
+        // Guardian can cancel the pending authority rotation
+        vm.prank(guardian);
+        locker.cancelPendingGovernance(6);
+        assertEq(locker.pendingAttesterAuthority(), address(0), "pending authority must be cleared by guardian");
+
+        // Proper governance path: Reduce quorum to 2 via proposeQuorum with full 2-day timelock
+        locker.proposeQuorum(2);
+        vm.warp(locker.quorumTimelockUnlock());
+        locker.executeQuorum();
+        assertEq(locker.requiredQuorum(), 2, "quorum reduced to 2 via governance");
+
+        // Now re-propose authority rotation to attester2
+        locker.proposeAttesterAuthority(attester2);
+        vm.warp(locker.authorityTimelockUnlock());
         locker.executeAttesterAuthority();
 
         // Old authority (attesterAuthority) was removed, attester2 was already in committee
         // Active attesters now: attester2, attester3 (count = 2)
         assertEq(locker.attesterCount(), 2, "attester count must accurately update to 2");
-        // Quorum was 3, but now count is 2. Quorum must automatically adjust to 2 to prevent freeze
-        assertEq(locker.requiredQuorum(), 2, "quorum must adjust to 2");
+        assertEq(locker.requiredQuorum(), 2, "quorum remains 2");
 
         // Verify quorum of 2 can unlock successfully
         vm.prank(user);
@@ -505,5 +526,58 @@ contract MosooLockerTest is Test {
         // Verify permissionless prune function also operates correctly
         uint256 pruned = locker.pruneExpiredWithdrawalsETH(50);
         assertEq(pruned, 0, "nothing left to prune");
+    }
+
+    function test_permissionless_prune_bounded_batches() public {
+        vm.prank(user);
+        locker.depositETH{value: 20 ether}(bytes32(uint256(0xAA)));
+
+        locker.proposeDailyWithdrawalLimitETH(10 ether);
+        vm.warp(locker.dailyLimitETHTimelockUnlock());
+        locker.executeDailyWithdrawalLimitETH();
+
+        bytes32 lezOwner = bytes32(uint256(0xAA));
+        address payable recipient = payable(user);
+
+        // Perform 25 small withdrawals
+        for (uint64 i = 1; i <= 25; i++) {
+            bytes32 burnId = keccak256(
+                abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, uint256(0.1 ether), i, uint64(5000 + i))
+            );
+            bytes32 structHash = keccak256(
+                abi.encode(
+                    locker.BURN_ETH_TYPEHASH(),
+                    burnId,
+                    recipient,
+                    uint256(0.1 ether),
+                    lezOwner,
+                    i,
+                    uint64(5000 + i)
+                )
+            );
+            bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+            (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
+            locker.unlockETH(burnId, 0.1 ether, recipient, lezOwner, i, 5000 + i, abi.encodePacked(r, s, v));
+        }
+
+        assertEq(locker.dailyWithdrawnETH(), 2.5 ether, "daily withdrawn should be 2.5 ETH");
+
+        // Warp past 24 hours so all 25 records expire
+        vm.warp(block.timestamp + 25 hours);
+
+        // Pruning with maxBatch = 10 prunes exactly 10 records
+        uint256 prunedFirst = locker.pruneExpiredWithdrawalsETH(10);
+        assertEq(prunedFirst, 10, "first prune batch must be exactly 10");
+
+        // Pruning remaining with maxBatch = 0 (defaults to MAX_CLEANUP_BATCH = 32)
+        uint256 prunedSecond = locker.pruneExpiredWithdrawalsETH(0);
+        assertEq(prunedSecond, 15, "second prune batch must prune remaining 15");
+
+        // Daily withdrawn ETH must now be reset to 0
+        assertEq(locker.dailyWithdrawnETH(), 0, "daily withdrawn should be 0 after pruning");
+
+        // Calling prune again when empty returns 0 without reverting
+        uint256 prunedEmpty = locker.pruneExpiredWithdrawalsETH(10);
+        assertEq(prunedEmpty, 0, "empty prune must return 0");
     }
 }
