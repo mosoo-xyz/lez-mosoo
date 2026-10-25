@@ -1394,23 +1394,45 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
         mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
             .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
 
-    // 2. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01)
+    // 2. Guard: Light-client instance must be pinned in TrustedBridgeConfig (Finding M-01 / P0)
     let loaded_config = TrustedBridgeConfig::load_or_canonical(store);
-    if !config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
-        && !loaded_config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
-    {
+
+    let has_store_config = store
+        .get_account(&mosoo_core::types::derive_bridge_config_pda())
+        .is_some();
+    let is_trusted = if has_store_config {
+        loaded_config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
+    } else {
+        loaded_config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
+            || config.is_trusted_instance(authentic_instance.chain_id, instance_pda)
+    };
+
+    if !is_trusted {
         return Err(ReceiverError::UntrustedInstanceAccount(*instance_pda));
     }
 
+    // Reject conflicting trusted checkpoint configuration between caller and store
+    let caller_cp = config.get_trusted_checkpoint(authentic_instance.chain_id);
+    let store_cp = loaded_config.get_trusted_checkpoint(authentic_instance.chain_id);
+    if let (Some(c_cp), Some(s_cp)) = (caller_cp, store_cp) {
+        if c_cp != s_cp {
+            return Err(ReceiverError::AttestationFailed(
+                "conflicting trusted checkpoint between caller and store configuration".into(),
+            ));
+        }
+    }
+
     // 3. Guard: Verify authentic stored instance's bootstrap root matches pinned trusted checkpoint (Finding P0 / Chat 19)
-    let expected_checkpoint = config
-        .get_trusted_checkpoint(authentic_instance.chain_id)
-        .or_else(|| loaded_config.get_trusted_checkpoint(authentic_instance.chain_id))
-        .ok_or_else(|| {
-            ReceiverError::AttestationFailed(
-                "trusted checkpoint root absent from configuration for target chain".into(),
-            )
-        })?;
+    let expected_checkpoint = if has_store_config {
+        store_cp
+    } else {
+        store_cp.or(caller_cp)
+    }
+    .ok_or_else(|| {
+        ReceiverError::AttestationFailed(
+            "trusted checkpoint root absent from configuration for target chain".into(),
+        )
+    })?;
 
     if authentic_instance.bootstrap_header_hash != expected_checkpoint {
         return Err(ReceiverError::AttestationFailed(
@@ -1573,11 +1595,12 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
         spent_slot: current_slot,
         is_spent: true,
     };
-    if let Ok(encoded) = serde_json::to_vec(&nullifier_rec) {
-        store.set_account_with_owner(&nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID);
-        if let Some(sub_pda) = subject_pda {
-            store.set_account_with_owner(&sub_pda, encoded, MOSOO_PROGRAM_ID);
-        }
+    let encoded = serde_json::to_vec(&nullifier_rec).map_err(|e| {
+        ReceiverError::AttestationFailed(format!("failed to serialize nullifier PDA: {e}"))
+    })?;
+    store.set_account_with_owner(&nullifier_pda, encoded.clone(), MOSOO_PROGRAM_ID);
+    if let Some(sub_pda) = subject_pda {
+        store.set_account_with_owner(&sub_pda, encoded, MOSOO_PROGRAM_ID);
     }
 
     nullifiers.mark_used(statement.statement_id);
