@@ -30,3 +30,7 @@ __pycache__/
 
 # Benchmark output (keep the docs, not raw dumps)
 benchmarks/*.json.raw
+
+
+# Local scratch
+scratch/
