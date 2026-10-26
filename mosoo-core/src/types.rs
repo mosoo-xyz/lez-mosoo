@@ -1,7 +1,7 @@
 //! Core account and message types shared between the guest program and the host.
 
 use serde::{Deserialize, Serialize};
-use sha2::Digest;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
@@ -1037,6 +1037,108 @@ pub enum StatementBinding {
         sender: [u8; 20],
         recipient: [u8; 32],
     },
+    /// Shielded privacy-preserving statement binding (RFP-021 Functionality #8)
+    /// Hides Ethereum accounts, contracts, and LEZ recipients behind a cryptographic commitment.
+    Shielded { commitment: [u8; 32] },
+}
+
+impl StatementBinding {
+    /// Compute a 32-byte cryptographic commitment (SHA-256) of the binding parameters,
+    /// enabling privacy-preserving verification without exposing source/recipient addresses on-chain.
+    pub fn compute_commitment(&self) -> [u8; 32] {
+        match self {
+            StatementBinding::Shielded { commitment } => *commitment,
+            StatementBinding::Account { address } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_account:");
+                hasher.update(address);
+                hasher.finalize().into()
+            }
+            StatementBinding::Storage { contract, slot } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_storage:");
+                hasher.update(contract);
+                hasher.update(slot);
+                hasher.finalize().into()
+            }
+            StatementBinding::ReceiptLog { emitter, topic0 } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_receipt:");
+                hasher.update(emitter);
+                hasher.update(topic0);
+                hasher.finalize().into()
+            }
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_eth_deposit:");
+                hasher.update(execution_block_hash);
+                hasher.update(slot.to_le_bytes());
+                hasher.update(tx_index.to_le_bytes());
+                hasher.update((*log_index as u64).to_le_bytes());
+                hasher.update(deposit_contract);
+                hasher.update(sender);
+                hasher.update(recipient);
+                hasher.finalize().into()
+            }
+            StatementBinding::Erc20Transfer {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                token_contract,
+                sender,
+                recipient,
+            } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_erc20_transfer:");
+                hasher.update(execution_block_hash);
+                hasher.update(slot.to_le_bytes());
+                hasher.update(tx_index.to_le_bytes());
+                hasher.update((*log_index as u64).to_le_bytes());
+                hasher.update(token_contract);
+                hasher.update(sender);
+                hasher.update(recipient);
+                hasher.finalize().into()
+            }
+            StatementBinding::Erc20Deposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_erc20_deposit:");
+                hasher.update(execution_block_hash);
+                hasher.update(slot.to_le_bytes());
+                hasher.update(tx_index.to_le_bytes());
+                hasher.update((*log_index as u64).to_le_bytes());
+                hasher.update(deposit_contract);
+                hasher.update(token_contract);
+                hasher.update(sender);
+                hasher.update(recipient);
+                hasher.finalize().into()
+            }
+        }
+    }
+
+    /// Converts this binding into a privacy-preserving shielded variant.
+    pub fn to_shielded(&self) -> Self {
+        StatementBinding::Shielded {
+            commitment: self.compute_commitment(),
+        }
+    }
 }
 
 impl Default for StatementBinding {
@@ -1048,20 +1150,32 @@ impl Default for StatementBinding {
 /// The result emitted by the attestation module for consumer programs.
 ///
 /// `statement_id` is a collision-resistant nullifier derived deterministically
-/// from `sha256(chain_id || subject_key || proof_type_tag || value || predicate)`.
+/// from raw verified Ethereum state facts (ADR-010):
+/// - V2 (Instance-bound): `sha256("mosoo_statement_v2" || chain_id || gvr || source_instance_pda || subject_key || proof_type_tag || verified_value)`
+/// - V1 (Legacy): `sha256("mosoo_statement_v1" || chain_id || subject_key || proof_type_tag || verified_value)`
+///
 /// The `subject_key` encodes the immutable on-chain identity (account address,
 /// contract+storage-slot, or transfer/deposit event binding), so proving the same balance
 /// at a different block slot yields the same nullifier, preventing cross-slot double-spending.
 ///
 /// **Consumer Security:** Consuming contracts verify `attester_program_id == MOSOO_PROGRAM_ID`,
-/// enforce parameter binding via `binding` & `subject_key`, and derive settlement amounts
-/// strictly from `verified_value`.
+/// enforce parameter binding via `binding` & `subject_key`, verify `source_instance_pda` against
+/// pinned instances in `TrustedBridgeConfig`, and derive settlement amounts strictly from `verified_value`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedStatement {
     pub chain_id: u64,
+    /// Genesis validators root of the consensus network (Finding 3 / RFP compliance).
+    #[serde(default)]
+    pub genesis_validators_root: [u8; 32],
+    /// Canonical source light client instance ID (Finding 3 / RFP Functionality #15).
+    #[serde(default)]
+    pub source_instance_id: [u8; 32],
+    /// Canonical source light client instance PDA (Finding 3 / RFP Functionality #15).
+    #[serde(default)]
+    pub source_instance_pda: [u8; 32],
     /// LEZ program ID of the authentic Mosoo attester program that emitted this statement.
     pub attester_program_id: [u8; 32],
-    /// sha256(chain_id_le8 || subject_key_32 || proof_type_u8 || value_be32 || predicate_json)
+    /// Canonical statement ID.
     pub statement_id: [u8; 32],
     /// Whether the requested predicate held over the verified state.
     pub predicate_holds: bool,
@@ -1079,15 +1193,34 @@ pub struct VerifiedStatement {
 }
 
 impl VerifiedStatement {
-    /// Recomputes the canonical 32-byte statement identifier from the underlying verified state facts:
-    /// `sha256("mosoo_statement_v1" || chain_id_le8 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+    /// Recomputes the canonical 32-byte statement identifier from the underlying verified state facts.
+    /// Uses V2 when `source_instance_pda` is configured, otherwise falls back to V1 for backwards compatibility.
     pub fn derive_canonical_id(&self) -> [u8; 32] {
-        crate::predicate::derive_statement_id_from_raw(
-            self.chain_id,
-            &self.subject_key,
-            self.proof_type_tag,
-            &self.verified_value,
-        )
+        if self.source_instance_pda != [0u8; 32] {
+            crate::predicate::derive_statement_id_v2(
+                self.chain_id,
+                &self.genesis_validators_root,
+                &self.source_instance_pda,
+                &self.subject_key,
+                self.proof_type_tag,
+                &self.verified_value,
+            )
+        } else {
+            crate::predicate::derive_statement_id_from_raw(
+                self.chain_id,
+                &self.subject_key,
+                self.proof_type_tag,
+                &self.verified_value,
+            )
+        }
+    }
+
+    /// Converts this verified statement into a shielded statement (RFP-021 Functionality #8),
+    /// replacing the verbose provenance binding with its cryptographic commitment.
+    pub fn shield(&self) -> Self {
+        let mut shielded = self.clone();
+        shielded.binding = self.binding.to_shielded();
+        shielded
     }
 
     /// Decode the verified 32-byte EVM value as a U256 (big-endian).
@@ -1133,6 +1266,24 @@ impl VerifiedStatement {
         let mut buf = [0u8; 8];
         buf.copy_from_slice(&self.verified_value[24..32]);
         u64::from_be_bytes(buf)
+    }
+}
+
+impl Default for VerifiedStatement {
+    fn default() -> Self {
+        Self {
+            chain_id: 1,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
+            attester_program_id: MOSOO_PROGRAM_ID,
+            statement_id: [0u8; 32],
+            predicate_holds: false,
+            verified_value: [0u8; 32],
+            subject_key: [0u8; 32],
+            proof_type_tag: 0,
+            binding: StatementBinding::default(),
+        }
     }
 }
 
@@ -1211,7 +1362,7 @@ pub fn derive_statement_pda(chain_id: u64, statement_id: &[u8; 32]) -> [u8; 32] 
     hasher.finalize().into()
 }
 
-pub use crate::verifier::{AttestStateArgs, InstructionOutput};
+pub use crate::verifier::{AttestStateArgs, GuestInstruction, InstructionOutput};
 
 #[cfg(test)]
 mod tests {

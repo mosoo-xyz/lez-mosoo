@@ -383,6 +383,9 @@ fn test_mutation_attack_6_cross_chain_replay_rejected() {
     let mut erc20_nullifiers = NullifierSet::new();
     let mut statement_sepolia = VerifiedStatement {
         chain_id: ETH_SEPOLIA_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -430,6 +433,9 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
     let mut nullifiers = NullifierSet::new();
     let mut failed_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: false, // Predicate failed!
@@ -468,6 +474,9 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
     );
     let mut valid_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -505,6 +514,9 @@ fn test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected() {
     let eth_subject_key: [u8; 32] = sha2::Sha256::digest(eth_user).into();
     let mut eth_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -799,6 +811,9 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
 
     let stmt_a = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: id_a,
         predicate_holds: true,
@@ -817,6 +832,9 @@ fn test_mutation_attack_9_cross_block_event_nullifier_uniqueness() {
     };
     let stmt_b = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: id_b,
         predicate_holds: true,
@@ -1342,6 +1360,9 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
     val_1[24..32].copy_from_slice(&500_000u64.to_be_bytes());
     let mut stmt_1 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -1366,6 +1387,9 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
     val_2[24..32].copy_from_slice(&1_000_000u64.to_be_bytes());
     let mut stmt_2 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -1436,6 +1460,9 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
 
     let mut eth_stmt_1 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -1466,6 +1493,9 @@ fn test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_
 
     let mut eth_stmt_2 = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -1518,6 +1548,9 @@ fn test_security_audit_attack_14_silent_u64_truncation_overflow_rejected() {
 
     let mut stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -1739,6 +1772,9 @@ fn test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevent
 
     let mut stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -3285,6 +3321,9 @@ fn test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_reject
     // StatementBinding::Account proves Alice owns 10 ETH on Ethereum
     let mut account_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -3408,6 +3447,9 @@ fn test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected
 
     let mut valid_erc20_stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -3457,6 +3499,9 @@ fn test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected
         derive_eth_deposit_subject_key(&block_hash, slot, 0, 0, &locker, &sender, &recipient);
     let mut valid_eth_stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,

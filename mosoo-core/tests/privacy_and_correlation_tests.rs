@@ -205,6 +205,9 @@ fn test_privacy_adversary_cannot_correlate_statements() {
 
     let mut stmt = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: mosoo_core::types::MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,

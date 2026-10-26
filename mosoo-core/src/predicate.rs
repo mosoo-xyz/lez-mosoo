@@ -34,19 +34,14 @@ pub fn evaluate(
     subject_key: [u8; 32],
     proof_type_tag: u8,
 ) -> Result<VerifiedStatement, MosooError> {
-    let holds = check(predicate, value)?;
-    let statement_id =
-        derive_statement_id(chain_id, &subject_key, proof_type_tag, value, predicate);
-    Ok(VerifiedStatement {
+    evaluate_with_binding(
+        predicate,
+        value,
         chain_id,
-        attester_program_id: crate::types::MOSOO_PROGRAM_ID,
-        statement_id,
-        predicate_holds: holds,
-        verified_value: value.as_bytes32(),
         subject_key,
         proof_type_tag,
-        binding: crate::types::StatementBinding::default(),
-    })
+        crate::types::StatementBinding::default(),
+    )
 }
 
 /// Evaluate a `Predicate` over a `VerifiedValue` and produce a `VerifiedStatement`.
@@ -74,11 +69,51 @@ pub fn evaluate_with_binding(
     proof_type_tag: u8,
     binding: crate::types::StatementBinding,
 ) -> Result<VerifiedStatement, MosooError> {
+    evaluate_with_binding_v2(
+        predicate,
+        value,
+        chain_id,
+        [0u8; 32],
+        [0u8; 32],
+        [0u8; 32],
+        subject_key,
+        proof_type_tag,
+        binding,
+    )
+}
+
+/// Evaluate a `Predicate` over a `VerifiedValue` cryptographically bound to a source light-client instance
+/// and consensus genesis validators root (Finding 3 / RFP Functionality #15).
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_with_binding_v2(
+    predicate: &Predicate,
+    value: &VerifiedValue,
+    chain_id: u64,
+    genesis_validators_root: [u8; 32],
+    source_instance_id: [u8; 32],
+    source_instance_pda: [u8; 32],
+    subject_key: [u8; 32],
+    proof_type_tag: u8,
+    binding: crate::types::StatementBinding,
+) -> Result<VerifiedStatement, MosooError> {
     let holds = check(predicate, value)?;
-    let statement_id =
-        derive_statement_id(chain_id, &subject_key, proof_type_tag, value, predicate);
+    let statement_id = if source_instance_pda != [0u8; 32] {
+        derive_statement_id_v2(
+            chain_id,
+            &genesis_validators_root,
+            &source_instance_pda,
+            &subject_key,
+            proof_type_tag,
+            &value.as_bytes32(),
+        )
+    } else {
+        derive_statement_id(chain_id, &subject_key, proof_type_tag, value, predicate)
+    };
     Ok(VerifiedStatement {
         chain_id,
+        genesis_validators_root,
+        source_instance_id,
+        source_instance_pda,
         attester_program_id: crate::types::MOSOO_PROGRAM_ID,
         statement_id,
         predicate_holds: holds,
@@ -153,6 +188,28 @@ pub fn derive_statement_id_from_raw(
     let mut h = Sha256::new();
     h.update(b"mosoo_statement_v1");
     h.update(chain_id.to_le_bytes());
+    h.update(subject_key);
+    h.update([proof_type_tag]);
+    h.update(verified_value);
+    h.finalize().into()
+}
+
+/// Derives the V2 canonical statement identifier cryptographically bound to the source light-client instance PDA
+/// and network genesis validators root (Finding 3 / Finding 6 / RFP-021 Functionality #15):
+/// `sha256("mosoo_statement_v2" || chain_id_le8 || genesis_validators_root_32 || source_instance_pda_32 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+pub fn derive_statement_id_v2(
+    chain_id: u64,
+    genesis_validators_root: &[u8; 32],
+    source_instance_pda: &[u8; 32],
+    subject_key: &[u8; 32],
+    proof_type_tag: u8,
+    verified_value: &[u8; 32],
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"mosoo_statement_v2");
+    h.update(chain_id.to_le_bytes());
+    h.update(genesis_validators_root);
+    h.update(source_instance_pda);
     h.update(subject_key);
     h.update([proof_type_tag]);
     h.update(verified_value);

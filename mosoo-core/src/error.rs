@@ -192,6 +192,12 @@ pub enum MosooError {
     #[error("unauthorized account or owner: account does not belong to program")]
     UnauthorizedAccount,
 
+    #[error("instance account is unauthenticated or PDA does not match expected address")]
+    UnauthenticatedInstance,
+
+    #[error("job account is unauthenticated or PDA does not match expected address")]
+    UnauthenticatedJobAccount,
+
     #[error("persistent storage write failed: {0}")]
     StorageWriteFailed(String),
 

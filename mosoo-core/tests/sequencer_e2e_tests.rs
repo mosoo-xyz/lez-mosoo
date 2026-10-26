@@ -325,6 +325,9 @@ fn test_sequencer_full_lifecycle_e2e() {
     let eth_subject_key: [u8; 32] = sha2::Sha256::digest(user_addr).into();
     let mut ether_statement = VerifiedStatement {
         chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,
@@ -382,6 +385,9 @@ fn test_sequencer_full_lifecycle_e2e() {
     // Rejection 5: chain_id_mismatch -> ChainIdMismatch
     let mut wrong_chain_statement = VerifiedStatement {
         chain_id: ETH_SEPOLIA_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32],
         attester_program_id: MOSOO_PROGRAM_ID,
         statement_id: [0u8; 32],
         predicate_holds: true,

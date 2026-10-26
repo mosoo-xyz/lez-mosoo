@@ -724,4 +724,38 @@ contract MosooLockerTest is Test {
             revert("Duplicate quorum unlock MUST revert");
         } catch {}
     }
+
+    function test_disable_legacy_routes_governance_and_v2_quorum_preservation() public {
+        vm.deal(user, 5 ether);
+        vm.prank(user);
+        locker.depositETH{value: 2 ether}(bytes32(uint256(0x1111)));
+
+        // 1. Initial state: legacy routes are enabled
+        assertTrue(locker.legacyRoutesEnabled(), "legacy routes should default to enabled");
+
+        // 2. Non-owner cannot toggle legacy routes
+        vm.prank(user);
+        try locker.disableLegacyRoutes() {
+            revert("Non-owner disable legacy routes MUST revert");
+        } catch {}
+
+        // 3. Owner disables legacy routes
+        locker.disableLegacyRoutes();
+        assertTrue(!locker.legacyRoutesEnabled(), "legacy routes should be disabled");
+
+        // 4. Legacy unlockETH MUST revert when legacy routes disabled
+        bytes32 burnId = keccak256("test_legacy_burn");
+        try locker.unlockETH(burnId, 1 ether, payable(user), bytes32(uint256(0x2222)), 1, 100, "") {
+            revert("unlockETH MUST revert when legacy routes disabled");
+        } catch {}
+
+        // 5. Legacy unlockERC20 MUST revert when legacy routes disabled
+        try locker.unlockERC20(burnId, address(0x1234), 1 ether, user, bytes32(uint256(0x2222)), 1, 100, "") {
+            revert("unlockERC20 MUST revert when legacy routes disabled");
+        } catch {}
+
+        // 6. Owner can re-enable legacy routes
+        locker.setLegacyRoutesEnabled(true);
+        assertTrue(locker.legacyRoutesEnabled(), "legacy routes should be re-enabled");
+    }
 }

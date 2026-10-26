@@ -224,6 +224,9 @@ impl NullifierSet {
 /// );
 /// let statement = VerifiedStatement {
 ///     chain_id: ETH_MAINNET_CHAIN_ID,
+///     genesis_validators_root: [0u8; 32],
+///     source_instance_id: [0u8; 32],
+///     source_instance_pda: [0u8; 32],
 ///     attester_program_id: MOSOO_PROGRAM_ID,
 ///     statement_id,
 ///     predicate_holds: true,
@@ -241,6 +244,7 @@ impl NullifierSet {
 ///     },
 /// };
 ///
+/// #[allow(deprecated)]
 /// let minted = claim(&statement, &mut nullifiers, 100).expect("first claim succeeds");
 /// assert_eq!(minted, 100);
 /// ```
@@ -399,6 +403,17 @@ pub fn claim_authenticated_pda_u256(
     );
     if statement_account.pda_address != expected_pda {
         return Err(ReceiverError::UnauthenticatedAttester);
+    }
+    if let Some(pinned_pda) =
+        TrustedBridgeConfig::canonical().get_trusted_instance(statement_account.statement.chain_id)
+    {
+        if statement_account.statement.source_instance_pda != [0u8; 32]
+            && statement_account.statement.source_instance_pda != pinned_pda
+        {
+            return Err(ReceiverError::AttestationFailed(
+                "statement source_instance_pda does not match pinned trusted instance".into(),
+            ));
+        }
     }
     #[allow(deprecated)]
     claim_u256(&statement_account.statement, nullifiers, min_amount)
@@ -1348,7 +1363,7 @@ pub fn claim_atomic_u256(
 /// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts target contract
 /// identity, derives the deterministic statement nullifier, checks for replay, and credits tokens.
 #[deprecated(
-    note = "Use `claim_atomic_u256` for full U256 precision to prevent overflow/truncation of amounts > u64::MAX"
+    note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_authenticated_store_u256 with pinned TrustedBridgeConfig."
 )]
 #[allow(deprecated)]
 pub fn claim_atomic(
@@ -1800,11 +1815,67 @@ impl Erc20Ledger {
         Ok(entry.balance)
     }
 
+    /// Mint synthetic tokens backed by an authentic on-chain light client instance in persistent `AccountStore`.
+    /// Strictly loads authentic InstanceAccount and TrustedBridgeConfig from storage,
+    /// verifies instance pinning and vault contracts, performs atomic in-guest verification,
+    /// and ensures balance additions precede nullifier consumption.
+    pub fn mint_deposit_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
+        &mut self,
+        store: &mut S,
+        instance_pda: &[u8; 32],
+        header_pda: Option<&[u8; 32]>,
+        args: AtomicErc20ClaimArgsU256,
+        nullifiers: &mut NullifierSet,
+    ) -> Result<U256, ReceiverError> {
+        let verified_amount = claim_authenticated_store_u256(
+            store,
+            instance_pda,
+            header_pda,
+            args.clone(),
+            nullifiers,
+            &self.config,
+        )?;
+
+        let amount_u128: u128 = verified_amount
+            .try_into()
+            .map_err(|_| ReceiverError::Overflow)?;
+
+        let token = args.expected_token_contract;
+        let recipient = args.recipient;
+        let current_balance = self.get_balance(&token, &recipient);
+        let new_balance = current_balance
+            .checked_add(amount_u128)
+            .ok_or(ReceiverError::Overflow)?;
+
+        let current_supply = self.get_total_supply(&token);
+        let new_supply = current_supply
+            .checked_add(amount_u128)
+            .ok_or(ReceiverError::Overflow)?;
+
+        let key = (token, recipient);
+        let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
+            token,
+            owner: recipient,
+            balance: 0,
+            deposit_count: 0,
+            burn_count: 0,
+        });
+
+        entry.balance = new_balance;
+        entry.deposit_count += 1;
+        self.total_supplies.insert(token, new_supply);
+
+        Ok(verified_amount)
+    }
+
     /// Mint synthetic tokens from an in-guest atomic execution proof with full 256-bit validation.
     /// Strictly requires an authentic `StatementBinding::Erc20Deposit` binding and validates the
     /// trusted bridge locker address from program configuration, token contract allowlist, depositor,
     /// and recipient before state mutation.
     /// Validates checked U256-to-u128 conversion and balance additions BEFORE consuming nullifiers.
+    #[deprecated(
+        note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use mint_deposit_authenticated_store_u256 or mint_deposit_authenticated_pda_u256."
+    )]
     pub fn mint_deposit_atomic_u256(
         &mut self,
         args: AtomicErc20ClaimArgsU256,
@@ -1974,6 +2045,19 @@ impl Erc20Ledger {
         );
         if statement_account.pda_address != expected_pda {
             return Err(ReceiverError::UnauthenticatedAttester);
+        }
+
+        if let Some(pinned_pda) = self
+            .config
+            .get_trusted_instance(statement_account.statement.chain_id)
+        {
+            if statement_account.statement.source_instance_pda != [0u8; 32]
+                && statement_account.statement.source_instance_pda != pinned_pda
+            {
+                return Err(ReceiverError::AttestationFailed(
+                    "statement source_instance_pda does not match pinned trusted instance".into(),
+                ));
+            }
         }
 
         if expected_deposit_contract == [0u8; 20] {
@@ -2295,6 +2379,9 @@ mod tests {
         };
         VerifiedStatement {
             chain_id,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: attester,
             statement_id,
             predicate_holds: holds,
@@ -3296,6 +3383,9 @@ mod tests {
         );
         VerifiedStatement {
             chain_id,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: attester,
             statement_id,
             predicate_holds: holds,

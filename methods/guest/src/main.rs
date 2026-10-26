@@ -25,38 +25,19 @@
 
 use mosoo_core::{
     error::MosooError,
-    types::*,
-    verifier::{
-        handle_attest_state, handle_begin_update, handle_finish_update, handle_initialize,
-        handle_miller_update, AttestStateArgs, BeginUpdateArgs, FinishUpdateArgs,
-        InstructionOutput, MillerUpdateArgs,
-    },
+    verifier::{dispatch_guest_instruction, GuestInstruction, InstructionOutput},
 };
 use risc0_zkvm::guest::env;
-use serde::{Deserialize, Serialize};
 
 risc0_zkvm::guest::entry!(main);
 
-#[derive(Serialize, Deserialize)]
-enum Instruction {
-    Initialize(InitializeArgs),
-    BeginUpdate(BeginUpdateArgs),
-    MillerUpdate(MillerUpdateArgs),
-    FinishUpdate(FinishUpdateArgs),
-    AttestState(AttestStateArgs),
-}
+pub type Instruction = GuestInstruction;
 
 fn main() {
     // The host encodes a tagged instruction envelope.
     let instruction: Instruction = env::read();
 
-    let result: Result<InstructionOutput, MosooError> = match instruction {
-        Instruction::Initialize(args) => handle_initialize(args),
-        Instruction::BeginUpdate(args) => handle_begin_update(args),
-        Instruction::MillerUpdate(args) => handle_miller_update(args),
-        Instruction::FinishUpdate(args) => handle_finish_update(args),
-        Instruction::AttestState(args) => handle_attest_state(args),
-    };
+    let result: Result<InstructionOutput, MosooError> = dispatch_guest_instruction(instruction);
 
     // Commit the result to the journal (public outputs of the zkVM program).
     env::commit(&result.map_err(|e| e.to_string()));

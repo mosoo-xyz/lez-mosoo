@@ -10,6 +10,11 @@ This document formalizes the key architectural decisions, threat models, design 
 - [ADR-003: Cryptographic RLP Block Header Root Derivation for Gloas ePBS](#adr-003-cryptographic-rlp-block-header-root-derivation-for-gloas-epbs)
 - [ADR-004: Instance Immutability & Re-anchoring via Fresh Instance Initialization](#adr-004-instance-immutability--re-anchoring-via-fresh-instance-initialization)
 - [ADR-005: Dual-Nullifier Architecture for Two-Way Bridge Double-Spend Immunity](#adr-005-dual-nullifier-architecture-for-two-way-bridge-double-spend-immunity)
+- [ADR-006: Atomic Same-Transaction Verification & AccountStore Provenance](#adr-006-atomic-same-transaction-verification--accountstore-provenance)
+- [ADR-007: Sepolia Glamsterdam / Gloas Hard Fork Alignment (P1)](#adr-007-sepolia-glamsterdam--gloas-hard-fork-alignment-p1)
+- [ADR-008: Dynamic NetworkConfig Propagation (P1)](#adr-008-dynamic-networkconfig-propagation-p1)
+- [ADR-009: Historical Attestation Window (8,192-Slot Ring Buffer) (P2)](#adr-009-historical-attestation-window-8192-slot-ring-buffer-p2)
+- [ADR-010: Statement Provenance, Cross-Instance Isolation, and Shielded Privacy](#adr-010-statement-provenance-cross-instance-isolation-and-shielded-privacy)
 
 ---
 
@@ -211,3 +216,32 @@ Mosoo enforces a strict fail-closed boundary:
 1. Proofs for blocks within the 8,192-slot window ($0 < \text{current\_slot} - \text{header\_slot} \le 8192$) are verified against `state_root.block_roots` using depth-13 Merkle branches.
 2. Requests for blocks older than 8,192 slots return a typed `MosooError::HistoricalSummariesWindowExceeded` error, preventing false attestations from overwritten ring buffer slots.
 
+---
+
+## ADR-010: Statement Provenance, Cross-Instance Isolation, and Shielded Privacy
+
+### Context & Problem Statement
+The external audit on October 26, 2026 identified 6 critical pre-deployment and integration vulnerabilities:
+1. **P0 Guest Caller-Supplied State**: The zkVM guest entrypoint directly accepted caller-provided `InstanceAccount` and `HeaderRecord` without verifying that their addresses match expected on-chain persistent PDAs.
+2. **P1 Consumer Claim APIs**: Public test harness methods (`mint_meth_atomic`, `claim_atomic_u256`) accepted arbitrary in-memory structs without verifying persistent storage or pinned bridge configurations.
+3. **P1 Multi-Instance Isolation**: `VerifiedStatement` lacked source light-client identity (`source_instance_pda`, `genesis_validators_root`), allowing statements produced by unapproved instances to be accepted by consumers.
+4. **P1 Privacy Leakage (RFP-021 Functionality #8)**: `StatementBinding` exposed plain-text Ethereum addresses, contract vaults, and LEZ recipients in public journals.
+5. **P2 Legacy Solidity Routes**: Legacy withdrawal routes lacked `sourceInstance` EIP-712 domain separation.
+6. **P2/P3 Statement ID Specification Inconsistency**: Documentation described statement IDs as hashing predicate JSON, whereas the canonical specification hashes underlying raw Ethereum facts.
+
+### Decision & Implementation
+1. **Authenticated zkVM Instructions (Finding 1)**:
+   Added `GuestInstruction::AttestStateAuthenticated`, `FinishUpdateAuthenticated`, `BeginUpdateAuthenticated`, and `MillerUpdateAuthenticated` in `mosoo-core/src/verifier.rs` and dispatched via `methods/guest/src/main.rs`. Verifies `args.instance.pda_address() == expected_instance_pda` and `args.header.pda_address() == expected_header_pda` before executing state verification.
+2. **Persistent Store-Backed Consumer Minting (Finding 2)**:
+   Implemented `MethLedger::mint_deposit_authenticated_store_u256` and `Erc20Ledger::mint_deposit_authenticated_store_u256`. Pinned `TrustedBridgeConfig` strictly verifies persistent storage provenance before token issuance. Deprecated legacy test harnesses.
+3. **Cross-Instance Isolation & V2 Statement ID (Finding 3)**:
+   Added `genesis_validators_root: [u8; 32]`, `source_instance_id: [u8; 32]`, and `source_instance_pda: [u8; 32]` to `VerifiedStatement`.
+   Implemented `derive_statement_id_v2`:
+   $$\text{statement\_id} = \text{SHA-256}(\text{"mosoo\_statement\_v2"} \parallel \text{chain\_id} \parallel \text{gvr} \parallel \text{source\_instance\_pda} \parallel \text{subject\_key} \parallel \text{proof\_type} \parallel \text{verified\_value})$$
+   Guarantees distinct statement nullifiers for identical state facts across independent light-client instances.
+4. **Shielded Statement Binding (Finding 4)**:
+   Added `StatementBinding::Shielded { commitment: [u8; 32] }` and `VerifiedStatement::shield(&self)`. Cryptographically hashes account and transaction metadata into a 32-byte commitment, eliminating all plain-text address leakage in the public journal.
+5. **Solidity Legacy Route Governance (Finding 5)**:
+   Added `legacyRoutesEnabled`, `disableLegacyRoutes()`, and `error LegacyRoutesDisabled()` to `contracts/MosooLocker.sol`. Legacy routes can be disabled while instance-bound V2 quorum routes remain active.
+6. **Canonical Invariant Documentation (Finding 6)**:
+   Corrected `VerifiedStatement` documentation to reflect that statement nullifiers represent raw verified Ethereum state facts, ensuring invariance across predicate variants ($AtLeast(10) \equiv AtLeast(50)$) to prevent nullifier bypass.

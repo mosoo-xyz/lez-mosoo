@@ -36,6 +36,112 @@ pub struct AttestStateArgs {
     pub predicate: Predicate,
 }
 
+/// Top-level zkVM instruction envelope dispatched by the Logos Execution Zone guest program.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum GuestInstruction {
+    Initialize(InitializeArgs),
+    BeginUpdate(BeginUpdateArgs),
+    MillerUpdate(MillerUpdateArgs),
+    FinishUpdate(FinishUpdateArgs),
+    AttestState(AttestStateArgs),
+    /// Authenticated instruction: Enforces that caller-supplied instance & header state
+    /// matches expected LEZ persistent PDA addresses before verifying state attestation.
+    AttestStateAuthenticated {
+        expected_instance_pda: [u8; 32],
+        expected_header_pda: Option<[u8; 32]>,
+        args: AttestStateArgs,
+    },
+    /// Authenticated instruction: Enforces that caller-supplied instance & job state
+    /// matches expected LEZ persistent PDA addresses before finalizing chain update.
+    FinishUpdateAuthenticated {
+        expected_instance_pda: [u8; 32],
+        expected_job_pda: [u8; 32],
+        args: FinishUpdateArgs,
+    },
+    /// Authenticated instruction: Enforces that caller-supplied instance
+    /// matches expected LEZ persistent PDA addresses before beginning chain update.
+    BeginUpdateAuthenticated {
+        expected_instance_pda: [u8; 32],
+        args: BeginUpdateArgs,
+    },
+    /// Authenticated instruction: Enforces that caller-supplied instance & job
+    /// matches expected LEZ persistent PDA addresses before performing Miller loop.
+    MillerUpdateAuthenticated {
+        expected_instance_pda: [u8; 32],
+        expected_job_pda: [u8; 32],
+        args: MillerUpdateArgs,
+    },
+}
+
+/// Dispatches a guest instruction inside zkVM, enforcing persistent PDA authentication invariants.
+pub fn dispatch_guest_instruction(
+    instruction: GuestInstruction,
+) -> Result<InstructionOutput, MosooError> {
+    match instruction {
+        GuestInstruction::Initialize(args) => handle_initialize(args),
+        GuestInstruction::BeginUpdate(args) => handle_begin_update(args),
+        GuestInstruction::MillerUpdate(args) => handle_miller_update(args),
+        GuestInstruction::FinishUpdate(args) => handle_finish_update(args),
+        GuestInstruction::AttestState(args) => handle_attest_state(args),
+        GuestInstruction::AttestStateAuthenticated {
+            expected_instance_pda,
+            expected_header_pda,
+            args,
+        } => {
+            if args.instance.pda_address() != expected_instance_pda {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
+            if let Some(expected_h_pda) = expected_header_pda {
+                if args.header.pda_address() != expected_h_pda {
+                    return Err(MosooError::UnauthenticatedHeaderRecord);
+                }
+            }
+            handle_attest_state(args)
+        }
+        GuestInstruction::FinishUpdateAuthenticated {
+            expected_instance_pda,
+            expected_job_pda,
+            args,
+        } => {
+            if args.instance.pda_address() != expected_instance_pda {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
+            if args.job.pda_address() != expected_job_pda {
+                return Err(MosooError::UnauthenticatedJobAccount);
+            }
+            if args.job.instance_pda() != expected_instance_pda {
+                return Err(MosooError::DomainSeparationFailed);
+            }
+            handle_finish_update(args)
+        }
+        GuestInstruction::BeginUpdateAuthenticated {
+            expected_instance_pda,
+            args,
+        } => {
+            if args.instance.pda_address() != expected_instance_pda {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
+            handle_begin_update(args)
+        }
+        GuestInstruction::MillerUpdateAuthenticated {
+            expected_instance_pda,
+            expected_job_pda,
+            args,
+        } => {
+            if args.instance.pda_address() != expected_instance_pda {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
+            if args.job.pda_address() != expected_job_pda {
+                return Err(MosooError::UnauthenticatedJobAccount);
+            }
+            if args.job.instance_pda() != expected_instance_pda {
+                return Err(MosooError::DomainSeparationFailed);
+            }
+            handle_miller_update(args)
+        }
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum InstructionOutput {
@@ -811,10 +917,15 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             )
         }
     };
-    let statement = predicate::evaluate_with_binding(
+    let gvr = crate::crypto::genesis_validators_root(args.header.chain_id);
+    let source_instance_pda = args.instance.pda_address();
+    let statement = predicate::evaluate_with_binding_v2(
         &args.predicate,
         &verified_value,
         args.header.chain_id,
+        gvr,
+        args.instance.instance_id,
+        source_instance_pda,
         subject_key,
         proof_type_tag,
         binding,

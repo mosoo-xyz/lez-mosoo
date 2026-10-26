@@ -185,6 +185,9 @@ impl EtherNullifierSet {
 ///
 /// let statement = VerifiedStatement {
 ///     chain_id: ETH_MAINNET_CHAIN_ID,
+///     genesis_validators_root: [0u8; 32],
+///     source_instance_id: [0u8; 32],
+///     source_instance_pda: [0u8; 32],
 ///     attester_program_id: MOSOO_PROGRAM_ID,
 ///     statement_id,
 ///     predicate_holds: true,
@@ -194,6 +197,7 @@ impl EtherNullifierSet {
 ///     binding: StatementBinding::Account { address: user_addr },
 /// };
 ///
+/// #[allow(deprecated)]
 /// let wei = claim_ether(&statement, &mut nullifiers, 1_000_000_000_000_000_000)
 ///     .expect("valid ether claim succeeds");
 /// assert_eq!(wei, 1_000_000_000_000_000_000);
@@ -354,6 +358,17 @@ pub fn claim_ether_authenticated_pda_u256(
     );
     if statement_account.pda_address != expected_pda {
         return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+    if let Some(pinned_pda) =
+        TrustedBridgeConfig::canonical().get_trusted_instance(statement_account.statement.chain_id)
+    {
+        if statement_account.statement.source_instance_pda != [0u8; 32]
+            && statement_account.statement.source_instance_pda != pinned_pda
+        {
+            return Err(EtherReceiverError::AttestationFailed(
+                "statement source_instance_pda does not match pinned trusted instance".into(),
+            ));
+        }
     }
     #[allow(deprecated)]
     claim_ether_u256(&statement_account.statement, nullifiers, min_wei)
@@ -1774,9 +1789,83 @@ impl MethLedger {
         Ok(entry.balance_wei)
     }
 
+    /// Mint synthetic `mETH` backed by an authentic on-chain light client instance in persistent `AccountStore`.
+    /// Strictly loads authentic InstanceAccount and TrustedBridgeConfig from storage,
+    /// verifies instance pinning and vault contracts, performs atomic in-guest verification,
+    /// and ensures balance additions precede nullifier consumption.
+    pub fn mint_deposit_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
+        &mut self,
+        store: &mut S,
+        instance_pda: &[u8; 32],
+        header_pda: Option<&[u8; 32]>,
+        args: AtomicEtherClaimArgs,
+        nullifiers: &mut EtherNullifierSet,
+    ) -> Result<u128, EtherReceiverError> {
+        let receipt = claim_native_eth_deposit_authenticated_store_with_config(
+            store,
+            instance_pda,
+            header_pda,
+            args,
+            nullifiers,
+            &self.config,
+        )?;
+
+        let amount_u128: u128 = receipt
+            .amount_wei
+            .try_into()
+            .map_err(|_| EtherReceiverError::Overflow)?;
+
+        let current_balance = self.get_balance(&receipt.recipient);
+        let new_balance = current_balance
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        let new_supply = self
+            .total_supply_wei
+            .checked_add(amount_u128)
+            .ok_or(EtherReceiverError::Overflow)?;
+
+        let entry = self
+            .accounts
+            .entry(receipt.recipient)
+            .or_insert_with(|| MethAccount {
+                owner: receipt.recipient,
+                balance_wei: 0,
+                deposit_count: 0,
+                burn_count: 0,
+            });
+
+        entry.balance_wei = new_balance;
+        entry.deposit_count += 1;
+        self.total_supply_wei = new_supply;
+
+        Ok(new_balance)
+    }
+
+    /// Convenience alias for `mint_deposit_authenticated_store_u256`.
+    pub fn mint_deposit_authenticated_store<S: mosoo_core::types::AccountStore>(
+        &mut self,
+        store: &mut S,
+        instance_pda: &[u8; 32],
+        header_pda: Option<&[u8; 32]>,
+        args: AtomicEtherClaimArgs,
+        nullifiers: &mut EtherNullifierSet,
+    ) -> Result<u128, EtherReceiverError> {
+        self.mint_deposit_authenticated_store_u256(
+            store,
+            instance_pda,
+            header_pda,
+            args,
+            nullifiers,
+        )
+    }
+
     /// Mint synthetic `mETH` via atomic same-transaction verification.
     /// Strictly validates escrow deposit backing from MosooLocker, converts U256 to u128 with
     /// checked arithmetic, and verifies balance additions BEFORE consuming nullifiers.
+    #[deprecated(
+        note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use mint_deposit_authenticated_store_u256 or mint_deposit_authenticated_pda_u256."
+    )]
     pub fn mint_meth_atomic(
         &mut self,
         args: AtomicEtherClaimArgs,
@@ -1929,6 +2018,19 @@ impl MethLedger {
         );
         if statement_account.pda_address != expected_pda {
             return Err(EtherReceiverError::UnauthenticatedAttester);
+        }
+
+        if let Some(pinned_pda) = self
+            .config
+            .get_trusted_instance(statement_account.statement.chain_id)
+        {
+            if statement_account.statement.source_instance_pda != [0u8; 32]
+                && statement_account.statement.source_instance_pda != pinned_pda
+            {
+                return Err(EtherReceiverError::AttestationFailed(
+                    "statement source_instance_pda does not match pinned trusted instance".into(),
+                ));
+            }
         }
 
         if expected_deposit_contract == [0u8; 20] {
@@ -2163,6 +2265,9 @@ mod tests {
         verified_value[24..32].copy_from_slice(&wei.to_be_bytes());
         let mut stmt = VerifiedStatement {
             chain_id,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: attester,
             statement_id: [0u8; 32],
             predicate_holds: holds,
@@ -2207,6 +2312,9 @@ mod tests {
         );
         let mut stmt = VerifiedStatement {
             chain_id,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: attester,
             statement_id: [0u8; 32],
             predicate_holds: holds,
@@ -3605,6 +3713,9 @@ mod tests {
 
         let statement = VerifiedStatement {
             chain_id: ETH_MAINNET_CHAIN_ID,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3672,6 +3783,9 @@ mod tests {
 
         let statement = VerifiedStatement {
             chain_id: ETH_MAINNET_CHAIN_ID,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3728,6 +3842,9 @@ mod tests {
 
         let statement = VerifiedStatement {
             chain_id: ETH_MAINNET_CHAIN_ID,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3828,6 +3945,9 @@ mod tests {
 
         let statement = VerifiedStatement {
             chain_id: ETH_SEPOLIA_CHAIN_ID,
+            genesis_validators_root: [0u8; 32],
+            source_instance_id: [0u8; 32],
+            source_instance_pda: [0u8; 32],
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,

@@ -54,6 +54,9 @@ contract MosooLocker {
     bool public tokenAllowlistEnabled;
     mapping(address => bool) public isTokenAllowed;
 
+    /// @notice Migration & isolation switch for legacy V1 withdrawal routes lacking sourceInstance binding (Finding 5)
+    bool public legacyRoutesEnabled = true;
+
     // --- Rate Limiting & Timelock Defense-in-Depth ---
 
     /// @dev Continuous rolling 24-hour window record
@@ -205,6 +208,7 @@ contract MosooLocker {
     event DailyLimitETHChangeProposed(uint256 currentLimit, uint256 proposedLimit, uint256 unlockTimestamp);
     event DailyLimitERC20ChangeProposed(address indexed token, uint256 currentLimit, uint256 proposedLimit, uint256 unlockTimestamp);
     event PendingGovernanceCancelled(string action, address indexed cancelledBy);
+    event LegacyRoutesToggled(bool enabled);
 
     // --- Errors ---
 
@@ -235,6 +239,7 @@ contract MosooLocker {
     error GovernanceTimelockActive(uint256 currentTime, uint256 unlockTime);
     error NoPendingGovernanceAction();
     error DirectGovernanceDeprecated();
+    error LegacyRoutesDisabled();
 
     // --- Modifiers ---
 
@@ -366,6 +371,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
+        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
         if (amount == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
@@ -453,6 +459,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
+        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || recipient == address(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();
@@ -849,6 +856,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
+        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
         if (recipient == address(0)) revert ZeroAddress();
         if (amount == 0) revert ZeroAmount();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
@@ -930,6 +938,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
+        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || recipient == address(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();
@@ -1539,6 +1548,18 @@ contract MosooLocker {
         if (token == address(0)) revert ZeroAddress();
         isTokenAllowed[token] = allowed;
         emit TokenAllowedStatusUpdated(token, allowed);
+    }
+
+    /// @notice Governance control to enable or disable legacy V1 withdrawal routes (Finding 5)
+    function setLegacyRoutesEnabled(bool enabled) external onlyOwner {
+        legacyRoutesEnabled = enabled;
+        emit LegacyRoutesToggled(enabled);
+    }
+
+    /// @notice Emergency/migration shutdown to permanently cut off legacy V1 routes lacking source-instance binding (Finding 5)
+    function disableLegacyRoutes() external onlyOwner {
+        legacyRoutesEnabled = false;
+        emit LegacyRoutesToggled(false);
     }
 
     function setTokenAllowlistEnabled(bool enabled) external onlyOwner {
