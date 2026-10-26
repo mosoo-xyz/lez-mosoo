@@ -322,19 +322,23 @@ pub fn verify_state_proof(
             }
 
             let to_topic = verified_log.topics[2];
-            let matches_recipient = if to_topic.0 == *recipient {
-                true
-            } else if recipient[0..12] == [0u8; 12] {
-                to_topic.0[12..32] == recipient[12..32]
-            } else if to_topic.0[0..12] == [0u8; 12] {
-                to_topic.0[12..32] == recipient[12..32] || to_topic.0[12..32] == recipient[0..20]
-            } else {
-                false
-            };
-            if !matches_recipient {
-                return Err(MosooError::Internal(
-                    "recipient mismatch in Deposit log".into(),
-                ));
+            if sig == deposit_eth_canonical_topic0 || sig == deposit_topic0_bytes32 {
+                // Canonical DepositETH(address,bytes32,uint256,uint64) and Deposit(address,bytes32,uint256):
+                // Enforce strict exact 32-byte equality (Finding 2 / P1).
+                if to_topic.0 != *recipient {
+                    return Err(MosooError::RecipientMismatch);
+                }
+            } else if sig == deposit_topic0_addr {
+                // Legacy Deposit(address sender, address recipient, uint256 amount):
+                // The topic encodes an Ethereum address (20 bytes right-aligned, padded with 12 leading zeros).
+                // Recipient must also be canonically padded with 12 leading zeros and match all 32 bytes exactly.
+                // Partial prefix or truncated matches are strictly rejected.
+                if to_topic.0[0..12] != [0u8; 12]
+                    || recipient[0..12] != [0u8; 12]
+                    || to_topic.0 != *recipient
+                {
+                    return Err(MosooError::RecipientMismatch);
+                }
             }
 
             if verified_log.data.len() != 32 {

@@ -35,13 +35,15 @@ pub type Instruction = GuestInstruction;
 
 fn main() {
     // The host encodes a tagged instruction envelope.
+    // In production LEZ transactions, instructions are wrapped in GuestInstruction::StoreBacked
+    // to strictly load and authenticate program-owned accounts from persistent storage.
     let instruction: Instruction = env::read();
 
     let result: Result<InstructionOutput, MosooError> = dispatch_guest_instruction(instruction);
 
-    // Privacy-preserving public journal emission (RFP-021 Functionality #8):
+    // Privacy-preserving public journal emission (RFP-021 Functionality #8 & Finding 4):
     // Statements emitted to public zkVM journal are automatically shielded so that
-    // Ethereum addresses, event logs, and LEZ recipients are never exposed publicly.
+    // Ethereum addresses, event logs, subject keys, and LEZ recipients are never exposed publicly.
     let safe_result = result.map(|output| match output {
         InstructionOutput::StatementIssued(stmt) => {
             InstructionOutput::StatementIssued(stmt.shield())

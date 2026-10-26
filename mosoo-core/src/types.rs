@@ -397,6 +397,27 @@ impl TrustedBridgeConfig {
         true
     }
 
+    /// Registers or updates the approved root-of-trust beacon checkpoint root with administrative authorization.
+    pub fn register_trusted_checkpoint_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+    ) -> bool {
+        let Some(expected_admin) = self.admin_authority else {
+            return false;
+        };
+        if *caller != expected_admin {
+            return false;
+        }
+        self.register_trusted_checkpoint(chain_id, checkpoint_root)
+    }
+
+    /// Registers a custom network with its independently verified checkpoint root anchor.
+    pub fn register_custom_network(&mut self, chain_id: u64, checkpoint_root: [u8; 32]) -> bool {
+        self.register_trusted_checkpoint(chain_id, checkpoint_root)
+    }
+
     /// Returns the approved root-of-trust beacon checkpoint root for a given chain ID.
     pub fn get_trusted_checkpoint(&self, chain_id: u64) -> Option<[u8; 32]> {
         self.trusted_checkpoints.get(&chain_id).copied()
@@ -539,6 +560,9 @@ pub fn compute_sync_committee_period(slot: u64) -> u64 {
 pub struct NetworkConfig {
     pub chain_id: u64,
     pub genesis_validators_root: [u8; 32],
+    /// Independently verified root-of-trust weak subjectivity checkpoint root anchor for this network (Finding 3 / P1).
+    #[serde(default)]
+    pub trusted_checkpoint_root: Option<[u8; 32]>,
     #[serde(default)]
     pub altair_fork_version: [u8; 4],
     #[serde(default)]
@@ -669,6 +693,8 @@ pub enum StoreError {
     Unauthorized,
     #[error("rollback removal failed for address {address:?}: {reason}")]
     RollbackRemovalFailed { address: [u8; 32], reason: String },
+    #[error("rollback restoration failed for address {address:?}: {reason}")]
+    RollbackRestorationFailed { address: [u8; 32], reason: String },
     #[error("batch write aborted due to write error ({original_error}); rollback also encountered failures: {rollback_errors:?}")]
     BatchRollbackPartialFailure {
         original_error: Box<StoreError>,
@@ -718,6 +744,21 @@ pub trait AccountStore {
         Ok(self.remove_account(address))
     }
 
+    /// Restores an account that previously had no recorded program owner (owner was None).
+    /// Prevents silent promotion of unowned accounts into MOSOO_PROGRAM_ID ownership upon rollback (Finding 5 / P2).
+    fn try_restore_account_unowned(
+        &mut self,
+        address: &[u8; 32],
+        _data: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        // Default fail-closed policy: store cannot restore an account without an explicit owner
+        // without corrupting ownership metadata.
+        Err(StoreError::RollbackRestorationFailed {
+            address: *address,
+            reason: "cannot restore unowned account without corrupting ownership metadata".into(),
+        })
+    }
+
     /// Transactional batch account write enforcing atomicity (Finding 3).
     /// If any write fails, all previously written accounts in the batch are immediately
     /// rolled back to their pre-batch state: restoring original data and owner for modified accounts,
@@ -743,13 +784,22 @@ pub trait AccountStore {
                     let mut rollback_errors = Vec::new();
                     for snap in snapshots.into_iter().rev() {
                         if let Some(orig_data) = snap.data {
-                            let orig_owner = snap.owner.unwrap_or(MOSOO_PROGRAM_ID);
-                            if let Err(r_err) = self.try_set_account_with_owner(
-                                &snap.address,
-                                orig_data,
-                                orig_owner,
-                            ) {
-                                rollback_errors.push((snap.address, r_err.to_string()));
+                            if let Some(orig_owner) = snap.owner {
+                                if let Err(r_err) = self.try_set_account_with_owner(
+                                    &snap.address,
+                                    orig_data,
+                                    orig_owner,
+                                ) {
+                                    rollback_errors.push((snap.address, r_err.to_string()));
+                                }
+                            } else {
+                                // For unknown/unowned accounts (owner is None), preserve unowned status
+                                // and NEVER convert to MOSOO_PROGRAM_ID!
+                                if let Err(r_err) =
+                                    self.try_restore_account_unowned(&snap.address, orig_data)
+                                {
+                                    rollback_errors.push((snap.address, r_err.to_string()));
+                                }
                             }
                         } else if let Err(r_err) = self.try_remove_account(&snap.address) {
                             rollback_errors.push((snap.address, r_err.to_string()));
@@ -802,21 +852,59 @@ impl AccountStore for std::collections::HashMap<[u8; 32], Vec<u8>> {
     fn remove_account(&mut self, address: &[u8; 32]) -> bool {
         self.remove(address).is_some()
     }
+    fn try_restore_account_unowned(
+        &mut self,
+        address: &[u8; 32],
+        data: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        self.insert(*address, data);
+        Ok(())
+    }
 }
 
 /// Program-owned account record on LEZ (matching runtime AccountInfo).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgramAccount {
-    pub owner: [u8; 32],
+    pub owner: Option<[u8; 32]>,
     pub data: Vec<u8>,
 }
 
+fn serialize_accounts_map<S>(
+    map: &HashMap<[u8; 32], ProgramAccount>,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::Serialize;
+    let entries: Vec<(&[u8; 32], &ProgramAccount)> = map.iter().collect();
+    entries.serialize(serializer)
+}
+
+fn deserialize_accounts_map<'de, D>(
+    deserializer: D,
+) -> Result<HashMap<[u8; 32], ProgramAccount>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    let entries = Vec::<([u8; 32], ProgramAccount)>::deserialize(deserializer)?;
+    Ok(entries.into_iter().collect())
+}
+
 /// In-memory LEZ AccountStore with program ownership enforcement.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProgramAccountStore {
+    #[serde(
+        serialize_with = "serialize_accounts_map",
+        deserialize_with = "deserialize_accounts_map"
+    )]
     pub accounts: HashMap<[u8; 32], ProgramAccount>,
+    #[serde(default)]
     pub simulate_write_failure: bool,
+    #[serde(default)]
     pub fail_on_address: Option<[u8; 32]>,
+    #[serde(default)]
     pub fail_on_remove: Option<[u8; 32]>,
 }
 
@@ -831,8 +919,18 @@ impl ProgramAccountStore {
     }
 
     pub fn insert_program_account(&mut self, address: [u8; 32], data: Vec<u8>, owner: [u8; 32]) {
+        self.accounts.insert(
+            address,
+            ProgramAccount {
+                owner: Some(owner),
+                data,
+            },
+        );
+    }
+
+    pub fn insert_unowned_account(&mut self, address: [u8; 32], data: Vec<u8>) {
         self.accounts
-            .insert(address, ProgramAccount { owner, data });
+            .insert(address, ProgramAccount { owner: None, data });
     }
 }
 
@@ -844,17 +942,22 @@ impl AccountStore for ProgramAccountStore {
         self.accounts.insert(
             *address,
             ProgramAccount {
-                owner: MOSOO_PROGRAM_ID,
+                owner: Some(MOSOO_PROGRAM_ID),
                 data,
             },
         );
     }
     fn get_account_owner(&self, address: &[u8; 32]) -> Option<[u8; 32]> {
-        self.accounts.get(address).map(|a| a.owner)
+        self.accounts.get(address).and_then(|a| a.owner)
     }
     fn set_account_with_owner(&mut self, address: &[u8; 32], data: Vec<u8>, owner: [u8; 32]) {
-        self.accounts
-            .insert(*address, ProgramAccount { owner, data });
+        self.accounts.insert(
+            *address,
+            ProgramAccount {
+                owner: Some(owner),
+                data,
+            },
+        );
     }
     fn try_set_account_with_owner(
         &mut self,
@@ -865,8 +968,25 @@ impl AccountStore for ProgramAccountStore {
         if self.simulate_write_failure || self.fail_on_address == Some(*address) {
             return Err(StoreError::WriteFailed(*address));
         }
+        self.accounts.insert(
+            *address,
+            ProgramAccount {
+                owner: Some(owner),
+                data,
+            },
+        );
+        Ok(())
+    }
+    fn try_restore_account_unowned(
+        &mut self,
+        address: &[u8; 32],
+        data: Vec<u8>,
+    ) -> Result<(), StoreError> {
+        if self.simulate_write_failure || self.fail_on_address == Some(*address) {
+            return Err(StoreError::WriteFailed(*address));
+        }
         self.accounts
-            .insert(*address, ProgramAccount { owner, data });
+            .insert(*address, ProgramAccount { owner: None, data });
         Ok(())
     }
     fn remove_account(&mut self, address: &[u8; 32]) -> bool {
@@ -1378,11 +1498,39 @@ impl VerifiedStatement {
     }
 
     /// Converts this verified statement into a shielded statement (RFP-021 Functionality #8),
-    /// replacing the verbose provenance binding with its cryptographic commitment.
+    /// replacing the verbose provenance binding with its cryptographic commitment,
+    /// and blinding the subject key and nullifier to prevent correlation to public Ethereum events (Finding 4 / P1).
     pub fn shield(&self) -> Self {
+        if matches!(self.binding, StatementBinding::Shielded { .. }) {
+            return self.clone();
+        }
+        let mut shielded = self.clone();
+        shielded.binding = self.binding.to_shielded();
+
+        // Zero-linkability blinding for subject_key and statement_id nullifier
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_shielded_subject_key_v1:");
+        hasher.update(self.subject_key);
+        shielded.subject_key = hasher.finalize().into();
+
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_shielded_statement_id_v1:");
+        hasher.update(self.statement_id);
+        shielded.statement_id = hasher.finalize().into();
+
+        shielded
+    }
+
+    /// Converts only the binding into a shielded variant without modifying subject_key or statement_id.
+    pub fn shield_binding_only(&self) -> Self {
         let mut shielded = self.clone();
         shielded.binding = self.binding.to_shielded();
         shielded
+    }
+
+    /// Returns true if this statement has been shielded (binding is StatementBinding::Shielded).
+    pub fn is_shielded(&self) -> bool {
+        matches!(self.binding, StatementBinding::Shielded { .. })
     }
 
     /// Converts this verified statement into a shielded statement with a secret 256-bit blinding salt (Finding 5),

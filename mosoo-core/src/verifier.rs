@@ -99,6 +99,13 @@ pub enum GuestInstruction {
         expected_job_pda: [u8; 32],
         args: MillerUpdateArgs,
     },
+    /// Store-backed execution: runs an instruction with an authentic persistent AccountStore.
+    /// Loaded accounts (committee, headers, instance state) are strictly retrieved from
+    /// the store with MOSOO_PROGRAM_ID ownership, preventing any caller fabrication (Finding 1 / P0).
+    StoreBacked {
+        store: ProgramAccountStore,
+        instruction: Box<GuestInstruction>,
+    },
 }
 
 /// Dispatches a guest instruction inside zkVM, enforcing persistent PDA authentication invariants.
@@ -256,6 +263,10 @@ pub fn dispatch_guest_instruction(
             }
             handle_miller_update(args)
         }
+        GuestInstruction::StoreBacked {
+            mut store,
+            instruction,
+        } => dispatch_store_instruction(&mut store, *instruction),
     }
 }
 
@@ -293,7 +304,7 @@ pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
         return Err(MosooError::UnsupportedChain(args.chain_id));
     }
 
-    // 3. Verify bootstrap checkpoint root matches TrustedBridgeConfig canonical checkpoints
+    // 3. Verify bootstrap checkpoint root matches TrustedBridgeConfig canonical checkpoints or verified NetworkConfig anchor
     let canonical_cfg = crate::types::TrustedBridgeConfig::canonical();
     if let Some(expected_checkpoint) = canonical_cfg.trusted_checkpoints.get(&args.chain_id) {
         if args.trusted_checkpoint_root != *expected_checkpoint {
@@ -304,6 +315,18 @@ pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
     } else if let Some(ref net_cfg) = args.network_config {
         if net_cfg.genesis_validators_root == [0u8; 32] {
             return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
+        }
+        // Custom networks MUST provide an independently authenticated root-of-trust checkpoint anchor.
+        // Self-certifying or unanchored custom networks are strictly rejected (Finding 3 / P1).
+        let Some(expected_checkpoint) = net_cfg.trusted_checkpoint_root else {
+            return Err(MosooError::UnconfiguredTrustedCheckpoint {
+                chain_id: args.chain_id,
+            });
+        };
+        if expected_checkpoint == [0u8; 32] || args.trusted_checkpoint_root != expected_checkpoint {
+            return Err(MosooError::UntrustedCheckpoint {
+                chain_id: args.chain_id,
+            });
         }
     } else {
         return Err(MosooError::UnconfiguredTrustedCheckpoint {
@@ -1452,6 +1475,11 @@ pub fn dispatch_store_instruction<S: AccountStore>(
             expected_header_pda.as_ref(),
             args,
         ),
+
+        GuestInstruction::StoreBacked {
+            mut store,
+            instruction,
+        } => dispatch_store_instruction(&mut store, *instruction),
     }
 }
 

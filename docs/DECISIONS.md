@@ -285,3 +285,39 @@ An external re-audit of the codebase identified 5 critical and high-priority edg
    $$\text{salted\_statement\_id} = \text{SHA-256}(\text{"mosoo\_salted\_statement\_id\_v1:"} \parallel \text{salt} \parallel \text{statement\_id})$$
    Provided `verify_salted_blinding()` for consumers holding the blinding salt to authenticate the statement and replay nullifier privately.
    Documented the privacy nullifier trade-off: public deterministic nullifiers prevent double-spend publicly at the expense of unlinkability against public Ethereum event observers; salted blinding provides zero-leakage unlinkability for private consumer redemption routes.
+
+
+---
+
+## ADR-012: Store-Backed Guest Entrypoint Authentication, Native ETH Exact Recipient Equality, Unowned Rollback Preservation, and Custom Checkpoint Trust Registration
+
+### Context & Problem Statement
+A follow-up independent audit (Session 5 - Oct 26, 2026) identified 5 specific findings across guest execution persistence, native ETH deposit event matching, custom network trust verification, statement unlinkability, and rollback edge cases:
+1. **Critical #1 (P0) Actual Guest Entrypoint Persistent Account Authentication**:
+   `methods/guest/src/main.rs` directly called `dispatch_guest_instruction(instruction)`. While `dispatch_store_instruction` existed for LEZ runtime environments, the guest entrypoint lacked a persistent store-backed instruction envelope. `AttestStateAuthenticated` only asserted `args.instance.pda_address() == expected_instance_pda`. Because PDA addresses only bind `(chain_id, instance_id)`, an adversary could supply an altered sync committee or modified consensus state under the canonical PDA without it being loaded from or authenticated by persistent storage accounts.
+2. **High #2 (P1) Native ETH Deposit Recipient-Matching Ambiguity**:
+   In `mosoo-core/src/inclusion.rs` (`ProofTarget::NativeEthDeposit`), canonical `DepositETH(address,bytes32,uint256,uint64)` and legacy `Deposit` events were accepted, but fallback matching allowed matching `recipient[0..20]` against a 20-byte topic even if the remaining 12 bytes differed (`to_topic.0[12..32] == recipient[0..20]`), leading to ambiguous recipient matching semantics.
+3. **High #3 (P1) Custom Network Checkpoint Trust Anchor External Verification**:
+   `validate_initialize()` verified canonical checkpoints for Mainnet, Sepolia, and Holesky, but custom networks lacked a requirement to bind their `trusted_checkpoint_root` to an externally authenticated anchor, allowing self-certified checkpoints to pass initialization without independent verification.
+4. **High for Privacy Compliance #4 (P1) Default Public Statement Linkability**:
+   `methods/guest/src/main.rs` called `stmt.shield()`, but unsalted `shield()` only replaced `binding` with its commitment; `subject_key` and `statement_id` remained linkable to public Ethereum events.
+5. **Medium #5 (P2) Batch Rollback Unknown Owner Edge Case**:
+   In `AccountStore::try_set_accounts_batch_with_owner()`, when restoring an existing account where `snap.owner` was `None` (unowned / unknown owner), the code fell back to `let orig_owner = snap.owner.unwrap_or(MOSOO_PROGRAM_ID)`. This incorrectly converted an unowned account into a program-owned account upon rollback.
+
+### Decision & Implementation
+1. **Store-Backed Guest Instruction Execution (`GuestInstruction::StoreBacked`)**:
+   Added `GuestInstruction::StoreBacked { store: ProgramAccountStore, instruction: Box<GuestInstruction> }`. In `dispatch_guest_instruction`, `StoreBacked` dispatches directly to `dispatch_store_instruction(&mut store, *instruction)`. When an authenticated instruction is dispatched, the genuine `InstanceAccount` (and `HeaderRecord` / `JobAccount`) is loaded strictly from persistent storage accounts owned by `MOSOO_PROGRAM_ID`, overriding any caller-supplied fabricated committee or altered consensus state.
+2. **Strict Exact 32-Byte Recipient Equality on Native ETH Deposits**:
+   In `mosoo-core/src/inclusion.rs`:
+   - For canonical `DepositETH(address,bytes32,uint256,uint64)` and `Deposit(address,bytes32,uint256)`: Enforced strict exact 32-byte equality (`to_topic.0 == *recipient`), returning `MosooError::RecipientMismatch` on mismatch.
+   - For legacy `Deposit(address,address,uint256)`: Strictly required that the event topic has 12 leading zeros (`to_topic.0[0..12] == [0u8; 12]`), the recipient is canonically padded with 12 leading zeros (`recipient[0..12] == [0u8; 12]`), and matches all 32 bytes (`to_topic.0 == *recipient`). Completely eliminated ambiguous partial matching fallbacks (`recipient[0..20]`).
+3. **Independent Trust Anchor Verification for Custom Networks**:
+   - Extended `NetworkConfig` with `trusted_checkpoint_root: Option<[u8; 32]>`. In `validate_initialize()`, custom networks (`!is_supported_chain_id`) MUST provide an externally verified `trusted_checkpoint_root` in `network_config` that matches `args.trusted_checkpoint_root`; otherwise initialization fails closed with `MosooError::UnconfiguredTrustedCheckpoint` or `MosooError::UntrustedCheckpoint`.
+   - Added `TrustedBridgeConfig::register_trusted_checkpoint_authorized` and `TrustedBridgeConfig::register_custom_network` to permit administrative registration of verified custom network trust anchors.
+4. **Zero-Linkability Statement Shielding**:
+   Updated `VerifiedStatement::shield()` to blind `subject_key` and `statement_id` nullifiers in addition to `binding`:
+   - Made `shield()` idempotent when called on already shielded or salted statements.
+   - Preserves salted blinding when `shield_with_salt(&salt)` is used for private consumer redemption.
+5. **Safe Restoration of Unowned Accounts during Batch Rollback**:
+   - Updated `AccountSnapshot.owner` handling: If `snap.owner` is `Some(owner)`, rollback calls `try_set_account_with_owner`. If `snap.owner` is `None`, rollback delegates to `try_restore_account_unowned`, which restores `owner: None` in `ProgramAccountStore` without assigning `MOSOO_PROGRAM_ID`.
+   - Added `StoreError::RollbackRestorationFailed` to report restoration errors without corrupting account ownership.

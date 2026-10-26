@@ -4550,6 +4550,7 @@ fn test_mutation_attack_49_network_config_propagation_custom_signing_domain() {
     let custom_config = NetworkConfig {
         chain_id: custom_chain_id,
         genesis_validators_root: custom_gvr,
+        trusted_checkpoint_root: None,
         altair_fork_version: [0xaa, 0xbb, 0xcc, 0xdd],
         bellatrix_fork_version: [0; 4],
         capella_fork_version: [0; 4],

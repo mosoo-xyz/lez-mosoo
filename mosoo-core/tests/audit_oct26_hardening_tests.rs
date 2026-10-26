@@ -1181,6 +1181,7 @@ fn test_finding16_reinitialization_existing_instance_rejected() {
     let net_cfg = NetworkConfig {
         chain_id,
         genesis_validators_root: [0x88; 32],
+        trusted_checkpoint_root: Some(checkpoint_root),
         altair_fork_version: [0x01; 4],
         bellatrix_fork_version: [0x02; 4],
         capella_fork_version: [0x03; 4],
@@ -1525,6 +1526,471 @@ fn test_finding20_salted_shielding_blinds_subject_key_and_statement_id() {
     // Wrong salt fails verification
     assert!(!shielded1.verify_salted_blinding(
         &salt2,
+        &original.subject_key,
+        &original.statement_id
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 21: Store-Backed Guest Instruction Execution (Critical #1 / P0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() {
+    use mosoo_core::types::{
+        AccountStore, Predicate, ProgramAccountStore, CANONICAL_SEPOLIA_INSTANCE_ID,
+        ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    };
+    use mosoo_core::verifier::{dispatch_guest_instruction, AttestStateArgs, GuestInstruction};
+
+    let mut store = ProgramAccountStore::default();
+    let chain_id = ETH_SEPOLIA_CHAIN_ID;
+    let instance_id = CANONICAL_SEPOLIA_INSTANCE_ID;
+
+    // Genuine instance in store with authentic committee
+    let genuine_instance = make_test_instance(chain_id, instance_id);
+    let instance_pda = genuine_instance.pda_address();
+    let instance_bytes = serde_json::to_vec(&genuine_instance).unwrap();
+    store
+        .try_set_account_with_owner(&instance_pda, instance_bytes.clone(), MOSOO_PROGRAM_ID)
+        .unwrap();
+
+    let genuine_header = make_test_header(&genuine_instance);
+    let header_pda = genuine_header.pda_address();
+    let header_bytes = serde_json::to_vec(&genuine_header).unwrap();
+    store
+        .try_set_account_with_owner(&header_pda, header_bytes, MOSOO_PROGRAM_ID)
+        .unwrap();
+
+    // 1. Attacker crafts a fabricated instance under the SAME PDA with altered committee and header
+    let mut fabricated_instance = genuine_instance.clone();
+    fabricated_instance.current_sync_committee.pubkeys[0] = vec![0xff; 48]; // Altered validator pubkey!
+    fabricated_instance.current_header_hash = [0xde; 32]; // Altered header!
+    assert_eq!(fabricated_instance.pda_address(), instance_pda);
+
+    let args = AttestStateArgs {
+        instance: fabricated_instance, // Attacker provides fabricated instance!
+        header: genuine_header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x01),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+    };
+
+    // Store-backed dispatch must load and authenticate the genuine instance from store,
+    // completely overriding the attacker's fabricated committee and state!
+    let guest_instruction = GuestInstruction::StoreBacked {
+        store: store.clone(),
+        instruction: Box::new(GuestInstruction::AttestStateAuthenticated {
+            expected_instance_pda: instance_pda,
+            expected_header_pda: Some(header_pda),
+            args,
+        }),
+    };
+
+    // In store-backed dispatch, handle_attest_state_authenticated overwrites args.instance with genuine_instance!
+    let out = dispatch_guest_instruction(guest_instruction);
+    // State proof verification on empty proof fails with Trie error (not UnauthenticatedInstance),
+    // proving the store loaded and authenticated the instance!
+    assert!(out.is_err());
+    assert!(!matches!(
+        out.unwrap_err(),
+        MosooError::UnauthenticatedInstance
+    ));
+
+    // 2. Adversary supplying an unauthenticated instance PDA not in store is rejected
+    let random_pda = [0x99; 32];
+    let bad_instruction = GuestInstruction::StoreBacked {
+        store: store.clone(),
+        instruction: Box::new(GuestInstruction::AttestStateAuthenticated {
+            expected_instance_pda: random_pda,
+            expected_header_pda: Some(header_pda),
+            args: AttestStateArgs {
+                instance: genuine_instance.clone(),
+                header: genuine_header.clone(),
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: empty_state_proof(ProofTarget::AccountBalance {
+                    address: alloy_primitives::Address::repeat_byte(0x01),
+                }),
+                predicate: Predicate::Equal {
+                    expected: [0u8; 32],
+                },
+                privacy_salt: None,
+            },
+        }),
+    };
+    let res = dispatch_guest_instruction(bad_instruction);
+    assert!(matches!(res.unwrap_err(), MosooError::NotInitialized));
+
+    // 3. Adversary supplying an instance owned by a foreign program is rejected
+    let attacker_owned_pda = [0x77; 32];
+    store
+        .try_set_account_with_owner(
+            &attacker_owned_pda,
+            instance_bytes.clone(),
+            [0xee; 32], // Not MOSOO_PROGRAM_ID!
+        )
+        .unwrap();
+    let foreign_owner_instruction = GuestInstruction::StoreBacked {
+        store,
+        instruction: Box::new(GuestInstruction::AttestStateAuthenticated {
+            expected_instance_pda: attacker_owned_pda,
+            expected_header_pda: Some(header_pda),
+            args: AttestStateArgs {
+                instance: genuine_instance,
+                header: genuine_header,
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: empty_state_proof(ProofTarget::AccountBalance {
+                    address: alloy_primitives::Address::repeat_byte(0x01),
+                }),
+                predicate: Predicate::Equal {
+                    expected: [0u8; 32],
+                },
+                privacy_salt: None,
+            },
+        }),
+    };
+    let res_foreign = dispatch_guest_instruction(foreign_owner_instruction);
+    assert!(matches!(
+        res_foreign.unwrap_err(),
+        MosooError::DomainSeparationFailed
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 22: Native ETH Deposit Exact 32-Byte Recipient Matching (High #2 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding22_native_eth_deposit_exact_32byte_recipient_matching() {
+    use alloy_primitives::{Address, U256};
+    use mosoo_core::inclusion::{
+        test_helpers::build_test_deposit_eth_canonical_proof, verify_state_proof, ProofTarget,
+        StateProof,
+    };
+    use mosoo_core::types::HeaderRecord;
+
+    let deposit_contract = Address::repeat_byte(0x42);
+    let sender = Address::repeat_byte(0x11);
+    let recipient_exact = [0x22u8; 32];
+    let amount = U256::from(5_000_000_000_000_000_000u128); // 5 ETH
+    let nonce = 10u64;
+
+    let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_eth_canonical_proof(
+        deposit_contract,
+        sender,
+        recipient_exact,
+        amount,
+        nonce,
+    );
+
+    let header = HeaderRecord {
+        chain_id: 1,
+        slot: 10_000_000,
+        beacon_block_root: [0x55; 32],
+        execution_block_hash: [0x66; 32],
+        execution_state_root: [0x77; 32],
+        receipts_root: receipts_root.0,
+    };
+
+    // 1. Exact 32-byte matching succeeds
+    let proof_valid = StateProof {
+        target: ProofTarget::NativeEthDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            sender,
+            recipient: recipient_exact,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes.clone()),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp.clone()),
+    };
+    assert!(verify_state_proof(&proof_valid, &header).is_ok());
+
+    // 2. Ambiguous partial matching (e.g. matching first 20 bytes but differing trailing bytes) is strictly REJECTED
+    let mut recipient_tampered = recipient_exact;
+    recipient_tampered[31] ^= 0xff; // Alter last byte
+    let proof_tampered = StateProof {
+        target: ProofTarget::NativeEthDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            sender,
+            recipient: recipient_tampered,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes.clone()),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp.clone()),
+    };
+    let res = verify_state_proof(&proof_tampered, &header);
+    assert!(matches!(
+        res,
+        Err(mosoo_core::error::MosooError::RecipientMismatch)
+    ));
+
+    // 3. Fallback offset match (first 20 bytes matching 20-byte address) is strictly REJECTED
+    let mut recipient_offset = [0u8; 32];
+    recipient_offset[0..20].copy_from_slice(&recipient_exact[12..32]);
+    let proof_offset = StateProof {
+        target: ProofTarget::NativeEthDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            sender,
+            recipient: recipient_offset,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp),
+    };
+    assert!(matches!(
+        verify_state_proof(&proof_offset, &header),
+        Err(mosoo_core::error::MosooError::RecipientMismatch)
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 23: Batch Write Rollback Preserves Unowned Accounts (Medium #5 / P2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding23_batch_write_rollback_preserves_unowned_account_without_adopting_mosoo_owner() {
+    use mosoo_core::types::{AccountStore, ProgramAccountStore, MOSOO_PROGRAM_ID};
+
+    let mut store = ProgramAccountStore::default();
+    let addr1 = [0x11; 32];
+    let orig_data1 = vec![0xaa; 64];
+
+    // Insert an unowned account (owner is None)
+    store.insert_unowned_account(addr1, orig_data1.clone());
+    assert_eq!(store.get_account(&addr1), Some(orig_data1.clone()));
+    assert_eq!(store.get_account_owner(&addr1), None);
+
+    let addr2 = [0x22; 32];
+    let new_data2 = vec![0xbb; 32];
+
+    let addr3 = [0x33; 32];
+    // Configure simulated failure on 3rd write
+    store.fail_on_address = Some(addr3);
+
+    let batch = vec![
+        (addr1, vec![0xcc; 64], MOSOO_PROGRAM_ID), // Overwrites unowned addr1 with program account
+        (addr2, new_data2, MOSOO_PROGRAM_ID),      // Creates new addr2
+        (addr3, vec![0xdd; 32], MOSOO_PROGRAM_ID), // Fails and triggers rollback
+    ];
+
+    let res = store.try_set_accounts_batch_with_owner(&batch);
+    assert!(res.is_err());
+
+    // CRITICAL (Finding 5): addr1 must be restored to its pre-batch data AND unowned status (owner == None).
+    // It must NEVER be converted into a MOSOO_PROGRAM_ID owned account!
+    assert_eq!(store.get_account(&addr1), Some(orig_data1));
+    assert_eq!(
+        store.get_account_owner(&addr1),
+        None,
+        "Rollback of unowned account must preserve owner == None without adopting MOSOO_PROGRAM_ID"
+    );
+
+    // addr2 was newly created, so it must be removed on rollback
+    assert_eq!(store.get_account(&addr2), None);
+    assert_eq!(store.get_account_owner(&addr2), None);
+}
+
+// ---------------------------------------------------------------------------
+// Finding 24: Custom Network Independent Checkpoint Anchor Registration (High #3 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding24_custom_network_independent_checkpoint_anchor_registration() {
+    use mosoo_core::types::{
+        BeaconBlockHeader, InitializeArgs, NetworkConfig, TrustedBridgeConfig,
+    };
+    use mosoo_core::verifier::validate_initialize;
+
+    let chain_id = 888888u64;
+    let custom_checkpoint = [0x99; 32];
+
+    let header = BeaconBlockHeader {
+        slot: 1_000,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root: [0x55; 32],
+        body_root: [0; 32],
+    };
+    let header_hash = mosoo_core::crypto::hash_tree_root_beacon_header(&header);
+
+    // 1. Custom network without trusted_checkpoint_root in NetworkConfig fails closed
+    let net_cfg_unanchored = NetworkConfig {
+        chain_id,
+        genesis_validators_root: [0x42; 32],
+        trusted_checkpoint_root: None, // Missing independent trust anchor!
+        altair_fork_version: [1; 4],
+        bellatrix_fork_version: [2; 4],
+        capella_fork_version: [3; 4],
+        deneb_fork_version: [4; 4],
+        electra_fork_version: [5; 4],
+        fulu_fork_version: [6; 4],
+        gloas_fork_version: [7; 4],
+    };
+    let init_unanchored = InitializeArgs {
+        instance_id: [1; 32],
+        chain_id,
+        bootstrap_header: header.clone(),
+        trusted_checkpoint_root: header_hash,
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050,
+        network_config: Some(net_cfg_unanchored),
+    };
+    let res = validate_initialize(&init_unanchored);
+    assert!(
+        matches!(
+            res,
+            Err(mosoo_core::error::MosooError::UnconfiguredTrustedCheckpoint { chain_id: 888888 })
+        ),
+        "Unanchored custom network must fail with UnconfiguredTrustedCheckpoint"
+    );
+
+    // 2. Custom network with mismatched checkpoint root is strictly rejected
+    let net_cfg_mismatched = NetworkConfig {
+        chain_id,
+        genesis_validators_root: [0x42; 32],
+        trusted_checkpoint_root: Some(custom_checkpoint), // Different from header_hash!
+        altair_fork_version: [1; 4],
+        bellatrix_fork_version: [2; 4],
+        capella_fork_version: [3; 4],
+        deneb_fork_version: [4; 4],
+        electra_fork_version: [5; 4],
+        fulu_fork_version: [6; 4],
+        gloas_fork_version: [7; 4],
+    };
+    let init_mismatched = InitializeArgs {
+        instance_id: [1; 32],
+        chain_id,
+        bootstrap_header: header.clone(),
+        trusted_checkpoint_root: header_hash, // Does not match net_cfg!
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050,
+        network_config: Some(net_cfg_mismatched),
+    };
+    let res = validate_initialize(&init_mismatched);
+    assert!(
+        matches!(
+            res,
+            Err(mosoo_core::error::MosooError::UntrustedCheckpoint { chain_id: 888888 })
+        ),
+        "Mismatched custom network checkpoint must fail with UntrustedCheckpoint"
+    );
+
+    // 3. Custom network with independently matched checkpoint root succeeds
+    let net_cfg_anchored = NetworkConfig {
+        chain_id,
+        genesis_validators_root: [0x42; 32],
+        trusted_checkpoint_root: Some(header_hash), // Authenticated match!
+        altair_fork_version: [1; 4],
+        bellatrix_fork_version: [2; 4],
+        capella_fork_version: [3; 4],
+        deneb_fork_version: [4; 4],
+        electra_fork_version: [5; 4],
+        fulu_fork_version: [6; 4],
+        gloas_fork_version: [7; 4],
+    };
+    let init_anchored = InitializeArgs {
+        instance_id: [1; 32],
+        chain_id,
+        bootstrap_header: header,
+        trusted_checkpoint_root: header_hash,
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050,
+        network_config: Some(net_cfg_anchored),
+    };
+    assert!(validate_initialize(&init_anchored).is_ok());
+
+    // 4. Verify TrustedBridgeConfig registration APIs for custom network checkpoints
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    let admin = [0x55; 32];
+    bridge_cfg.set_admin_authority(admin);
+    assert!(bridge_cfg.register_trusted_checkpoint_authorized(&admin, chain_id, header_hash));
+    assert_eq!(
+        bridge_cfg.get_trusted_checkpoint(chain_id),
+        Some(header_hash)
+    );
+    assert!(bridge_cfg.is_trusted_checkpoint(chain_id, &header_hash));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 25: Public Statement Shielding Prevents Subject Key Linkability (Privacy Compliance / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding25_public_statement_shielding_prevents_subject_key_linkability() {
+    use mosoo_core::types::{
+        StatementBinding, VerifiedStatement, MOSOO_PROGRAM_ID, PROOF_TYPE_ETH_DEPOSIT,
+    };
+
+    let original = VerifiedStatement {
+        chain_id: 11155111,
+        genesis_validators_root: [0x11; 32],
+        source_instance_id: [0x22; 32],
+        source_instance_pda: [0x33; 32],
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x44; 32],
+        predicate_holds: true,
+        verified_value: [0x55; 32],
+        subject_key: [0x66; 32],
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: StatementBinding::Account {
+            address: [0x77; 20],
+        },
+    };
+
+    // 1. shield() blinds binding, subject_key, and statement_id
+    let shielded = original.shield();
+    assert!(shielded.is_shielded());
+    assert_ne!(shielded.binding, original.binding);
+    assert_ne!(shielded.subject_key, original.subject_key);
+    assert_ne!(shielded.statement_id, original.statement_id);
+
+    // 2. Calling shield() on an already shielded statement is idempotent (does not double-blind)
+    let double_shielded = shielded.shield();
+    assert_eq!(double_shielded.binding, shielded.binding);
+    assert_eq!(double_shielded.subject_key, shielded.subject_key);
+    assert_eq!(double_shielded.statement_id, shielded.statement_id);
+
+    // 3. Calling shield() on an already salted statement preserves the salted blinding
+    let salt = [0x88; 32];
+    let salted = original.shield_with_salt(&salt);
+    let shielded_salted = salted.shield();
+    assert_eq!(shielded_salted.binding, salted.binding);
+    assert_eq!(shielded_salted.subject_key, salted.subject_key);
+    assert_eq!(shielded_salted.statement_id, salted.statement_id);
+    assert!(shielded_salted.verify_salted_blinding(
+        &salt,
         &original.subject_key,
         &original.statement_id
     ));
