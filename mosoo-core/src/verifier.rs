@@ -54,6 +54,8 @@ pub struct AttestStateArgs {
     pub predicate: Predicate,
     #[serde(default)]
     pub privacy_salt: Option<[u8; 32]>,
+    #[serde(default)]
+    pub trusted_head_slot: Option<u64>,
 }
 
 impl AttestStateArgs {
@@ -73,11 +75,17 @@ impl AttestStateArgs {
             proof,
             predicate,
             privacy_salt: None,
+            trusted_head_slot: None,
         }
     }
 
     pub fn with_privacy_salt(mut self, salt: [u8; 32]) -> Self {
         self.privacy_salt = Some(salt);
+        self
+    }
+
+    pub fn with_trusted_head_slot(mut self, slot: u64) -> Self {
+        self.trusted_head_slot = Some(slot);
         self
     }
 }
@@ -161,6 +169,13 @@ pub fn dispatch_guest_instruction(
             expected_header_pda,
             args,
         } => {
+            #[cfg(not(any(test, feature = "test-harness")))]
+            {
+                // RELEASE BLOCKER / P0: In production builds, caller-supplied state accounts without
+                // an authentic persistent AccountStore cannot establish authenticity.
+                // Dispatches MUST use GuestInstruction::StoreBacked or dispatch_store_instruction.
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -191,6 +206,10 @@ pub fn dispatch_guest_instruction(
             expected_job_pda,
             args,
         } => {
+            #[cfg(not(any(test, feature = "test-harness")))]
+            {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -231,6 +250,10 @@ pub fn dispatch_guest_instruction(
             expected_instance_pda,
             args,
         } => {
+            #[cfg(not(any(test, feature = "test-harness")))]
+            {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -256,6 +279,10 @@ pub fn dispatch_guest_instruction(
             expected_job_pda,
             args,
         } => {
+            #[cfg(not(any(test, feature = "test-harness")))]
+            {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -289,13 +316,10 @@ pub fn dispatch_guest_instruction(
             }
             handle_miller_update(args)
         }
-        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::StoreBacked {
             mut store,
             instruction,
         } => dispatch_store_instruction(&mut store, *instruction),
-        #[cfg(not(any(test, feature = "test-harness")))]
-        GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
     }
 }
 
@@ -527,16 +551,21 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
     }
 
     // Guard: weak-subjectivity freshness checks (Finding 2 / High #2).
-    // 1. If trusted_head_slot is provided, verify the active instance has not expired past
-    //    the operational weak-subjectivity window (CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS = 54,000 slots).
-    //    This strictly prevents an adversary from advancing a stale/expired instance using chained small incremental updates!
-    if let Some(head_slot) = args.trusted_head_slot {
-        if instance.is_stale_canonical(head_slot) {
-            return Err(MosooError::WeakSubjectivityExpired {
-                update_slot: head_slot,
-                current_slot: instance.current_slot,
-            });
-        }
+    // 1. Verify that effective head slot does not precede instance.current_slot and that the active instance
+    //    has not expired past the operational weak-subjectivity window (CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS = 54,000 slots).
+    //    If trusted_head_slot is omitted, fallback to checking update.signature_slot freshness.
+    let effective_head_slot = args.trusted_head_slot.unwrap_or(update.signature_slot);
+    if effective_head_slot < instance.current_slot {
+        return Err(MosooError::InvalidBootstrap(format!(
+            "trusted_head_slot ({effective_head_slot}) cannot precede instance.current_slot ({})",
+            instance.current_slot
+        )));
+    }
+    if instance.is_stale_canonical(effective_head_slot) {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: effective_head_slot,
+            current_slot: instance.current_slot,
+        });
     }
 
     // 2. Incremental updates cannot jump beyond the operational weak-subjectivity window (54,000 slots / ~18.75 days)
@@ -891,13 +920,30 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
     }
 
     // 0b. Strict weak-subjectivity freshness guard for state attestation:
-    // If the instance has stalled past the canonical weak-subjectivity window relative to the header slot,
-    // attestation MUST fail closed and require bootstrap reinitialization.
-    if args.instance.is_stale_canonical(args.header.slot) {
+    // 1. Attestation against a historical header older than canonical weak subjectivity window fails closed.
+    if args.instance.current_slot.saturating_sub(args.header.slot)
+        > CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS
+    {
         return Err(MosooError::WeakSubjectivityExpired {
             update_slot: args.header.slot,
             current_slot: args.instance.current_slot,
         });
+    }
+
+    // 2. If trusted_head_slot is provided, verify active instance has not stalled past weak-subjectivity window.
+    if let Some(head_slot) = args.trusted_head_slot {
+        if head_slot < args.instance.current_slot {
+            return Err(MosooError::InvalidBootstrap(format!(
+                "trusted_head_slot ({head_slot}) cannot precede instance current_slot ({})",
+                args.instance.current_slot
+            )));
+        }
+        if args.instance.is_stale_canonical(head_slot) {
+            return Err(MosooError::WeakSubjectivityExpired {
+                update_slot: head_slot,
+                current_slot: args.instance.current_slot,
+            });
+        }
     }
 
     // 1. Assert chain binding between the active instance and the requested header

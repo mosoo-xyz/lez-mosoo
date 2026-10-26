@@ -1219,6 +1219,7 @@ pub fn claim_ether_atomic_u256(
         proof: args.proof,
         predicate: args.predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1372,6 +1373,7 @@ pub fn claim_account_balance_atomic(
         proof: args.proof,
         predicate: args.predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1495,6 +1497,7 @@ pub fn claim_native_eth_deposit_atomic_with_config(
         proof: args.proof,
         predicate: args.predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1662,6 +1665,7 @@ pub fn verify_native_eth_deposit_authenticated_store_details<S: mosoo_core::type
         proof: args.proof,
         predicate: args.predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state_authenticated(
@@ -2134,6 +2138,7 @@ impl MethLedger {
             proof: args.proof,
             predicate: args.predicate,
             privacy_salt: None,
+            trusted_head_slot: None,
         };
 
         let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -2310,7 +2315,7 @@ impl MethLedger {
             .checked_add(amount_u128)
             .ok_or(EtherReceiverError::Overflow)?;
 
-        claim_ether_authenticated_pda_u256(statement_account, nullifiers, U256::ZERO)?;
+        claim_ether_u256_internal(&statement_account.statement, nullifiers, U256::ZERO)?;
 
         let entry = self
             .accounts
@@ -4069,19 +4074,19 @@ mod tests {
         val_bytes.copy_from_slice(&wei.to_be_bytes::<32>());
 
         let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
-            ETH_MAINNET_CHAIN_ID,
+            ETH_SEPOLIA_CHAIN_ID,
             &subject_key,
             PROOF_TYPE_ETH_DEPOSIT,
             &val_bytes,
         );
 
         let mut statement = VerifiedStatement {
-            chain_id: ETH_MAINNET_CHAIN_ID,
+            chain_id: ETH_SEPOLIA_CHAIN_ID,
             genesis_validators_root: mosoo_core::crypto::genesis_validators_root(
-                ETH_MAINNET_CHAIN_ID,
+                ETH_SEPOLIA_CHAIN_ID,
             ),
             source_instance_id: [0u8; 32],
-            source_instance_pda: mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE,
+            source_instance_pda: mosoo_core::types::CANONICAL_SEPOLIA_MOSOO_INSTANCE,
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,

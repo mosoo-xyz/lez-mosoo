@@ -625,6 +625,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         proof: dummy_proof.clone(),
         predicate: dummy_predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(res_a, Err(MosooError::DomainSeparationFailed)),
@@ -648,6 +649,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         proof: dummy_proof.clone(),
         predicate: dummy_predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(
@@ -677,6 +679,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         proof: dummy_proof.clone(),
         predicate: dummy_predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(res_c, Err(MosooError::UnauthenticatedHeaderRecord)),
@@ -715,6 +718,7 @@ fn test_mutation_attack_8_unauthenticated_header_record_rejected() {
         proof: dummy_proof,
         predicate: dummy_predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(res_d, Err(MosooError::UnauthenticatedHeaderRecord)),
@@ -1199,6 +1203,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(res, Ok(InstructionOutput::StatementIssued(_))),
@@ -1220,6 +1225,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(missing_proof_res, Err(MosooError::HistoricalExecutionRootUnauthenticated)),
@@ -1237,6 +1243,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(tampered_res, Err(MosooError::UnauthenticatedHeaderRecord)),
@@ -1255,6 +1262,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(fake_state_res, Err(MosooError::UnauthenticatedHeaderRecord)),
@@ -1275,6 +1283,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(
@@ -1298,6 +1307,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(fake_hash_res, Err(MosooError::UnauthenticatedHeaderRecord)),
@@ -1318,6 +1328,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof.clone(),
         predicate: predicate.clone(),
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(zero_res, Err(MosooError::UnauthenticatedHeaderRecord)),
@@ -1337,6 +1348,7 @@ fn test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_r
         proof: dummy_proof,
         predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     });
     assert!(
         matches!(
@@ -1676,6 +1688,7 @@ fn test_security_audit_attack_16_circular_buffer_aliasing_rejected() {
         proof: dummy_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     });
 
     assert!(
@@ -2195,6 +2208,7 @@ fn test_security_audit_attack_24_false_predicate_fails_closed() {
         proof,
         predicate: failing_predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     });
 
     assert!(
@@ -2736,6 +2750,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         proof: dummy_proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     })
     .expect_err("Attestation with fabricated execution_state_root MUST be rejected");
     assert!(matches!(err_state, MosooError::UnauthenticatedHeaderRecord));
@@ -2760,6 +2775,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         proof: dummy_proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     })
     .expect_err("Attestation with fabricated receipts_root MUST be rejected");
     assert!(matches!(
@@ -2787,6 +2803,7 @@ fn test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_r
         proof: dummy_proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     })
     .expect_err("Attestation with fabricated execution_block_hash MUST be rejected");
     assert!(matches!(
@@ -3634,6 +3651,7 @@ fn test_security_audit_attack_38_fabricated_instance_rejected() {
         proof: proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let err = handle_attest_state(args).expect_err("Uninitialized instance must be rejected");
@@ -3665,6 +3683,7 @@ fn test_security_audit_attack_38_fabricated_instance_rejected() {
         proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let err2 = handle_attest_state(args2).expect_err("Zero-bootstrap instance must be rejected");
@@ -3760,6 +3779,7 @@ fn test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected() {
         proof: proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let err1 = handle_attest_state_authenticated(&store, &unstored_pda, None, attest_args.clone())
@@ -4014,6 +4034,7 @@ fn test_mutation_attack_41_account_store_rejects_unowned_instance_account() {
         proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let err_attest = handle_attest_state_authenticated(&store, &canonical_pda, None, attest_args)

@@ -1423,6 +1423,7 @@ pub fn claim_atomic_u256(
         proof: args.proof,
         predicate: args.predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1645,6 +1646,7 @@ pub fn verify_authenticated_store_erc20_claim_details<S: mosoo_core::types::Acco
         proof: args.proof,
         predicate: args.predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state_authenticated(
@@ -2153,6 +2155,7 @@ impl Erc20Ledger {
             proof: args.proof,
             predicate: args.predicate,
             privacy_salt: None,
+            trusted_head_slot: None,
         };
 
         let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -2359,7 +2362,7 @@ impl Erc20Ledger {
             .checked_add(amount_u128)
             .ok_or(ReceiverError::Overflow)?;
 
-        claim_authenticated_pda_u256(statement_account, nullifiers, U256::ZERO)?;
+        claim_u256_internal(&statement_account.statement, nullifiers, U256::ZERO)?;
 
         let key = (token, recipient);
         let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
@@ -2616,9 +2619,12 @@ mod tests {
             chain_id,
             genesis_validators_root: mosoo_core::crypto::genesis_validators_root(chain_id),
             source_instance_id: [0u8; 32],
-            source_instance_pda: TrustedBridgeConfig::canonical()
-                .get_trusted_instance(chain_id)
-                .unwrap_or([0u8; 32]),
+            source_instance_pda: match chain_id {
+                ETH_SEPOLIA_CHAIN_ID => mosoo_core::types::CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+                ETH_MAINNET_CHAIN_ID => mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE,
+                ETH_HOLESKY_CHAIN_ID => mosoo_core::types::CANONICAL_HOLESKY_MOSOO_INSTANCE,
+                _ => [0u8; 32],
+            },
             attester_program_id: attester,
             statement_id: [0u8; 32],
             predicate_holds: holds,
@@ -3622,9 +3628,12 @@ mod tests {
             chain_id,
             genesis_validators_root: mosoo_core::crypto::genesis_validators_root(chain_id),
             source_instance_id: [0u8; 32],
-            source_instance_pda: TrustedBridgeConfig::canonical()
-                .get_trusted_instance(chain_id)
-                .unwrap_or([0u8; 32]),
+            source_instance_pda: match chain_id {
+                ETH_SEPOLIA_CHAIN_ID => mosoo_core::types::CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+                ETH_MAINNET_CHAIN_ID => mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE,
+                ETH_HOLESKY_CHAIN_ID => mosoo_core::types::CANONICAL_HOLESKY_MOSOO_INSTANCE,
+                _ => [0u8; 32],
+            },
             attester_program_id: attester,
             statement_id: [0u8; 32],
             predicate_holds: holds,
@@ -3752,7 +3761,7 @@ mod tests {
         let amount = 500_000_000_000_000_000_000u128; // 500 tokens
 
         let statement = make_erc20_deposit_statement(
-            ETH_MAINNET_CHAIN_ID,
+            ETH_SEPOLIA_CHAIN_ID,
             true,
             amount,
             MOSOO_PROGRAM_ID,

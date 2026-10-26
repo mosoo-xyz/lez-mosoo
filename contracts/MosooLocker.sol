@@ -57,6 +57,9 @@ contract MosooLocker {
     /// @notice Migration & isolation switch for legacy V1 withdrawal routes lacking sourceInstance binding (Finding 5)
     bool public legacyRoutesEnabled = false;
 
+    /// @notice Irreversible killswitch permanently retiring legacy V1 withdrawal routes (Finding 4 / P2)
+    bool public legacyRoutesPermanentlyDisabled = false;
+
     // --- Rate Limiting & Timelock Defense-in-Depth ---
 
     /// @dev Continuous rolling 24-hour window record
@@ -209,6 +212,7 @@ contract MosooLocker {
     event DailyLimitERC20ChangeProposed(address indexed token, uint256 currentLimit, uint256 proposedLimit, uint256 unlockTimestamp);
     event PendingGovernanceCancelled(string action, address indexed cancelledBy);
     event LegacyRoutesToggled(bool enabled);
+    event LegacyRoutesPermanentlyRetired();
 
     // --- Errors ---
 
@@ -240,6 +244,7 @@ contract MosooLocker {
     error NoPendingGovernanceAction();
     error DirectGovernanceDeprecated();
     error LegacyRoutesDisabled();
+    error LegacyRoutesPermanentlyRetired();
 
     // --- Modifiers ---
 
@@ -1552,6 +1557,7 @@ contract MosooLocker {
 
     /// @notice Governance control to enable or disable legacy V1 withdrawal routes (Finding 5)
     function setLegacyRoutesEnabled(bool enabled) external onlyOwner {
+        if (enabled && legacyRoutesPermanentlyDisabled) revert LegacyRoutesPermanentlyRetired();
         legacyRoutesEnabled = enabled;
         emit LegacyRoutesToggled(enabled);
     }
@@ -1559,6 +1565,15 @@ contract MosooLocker {
     /// @notice Emergency/migration shutdown to permanently cut off legacy V1 routes lacking source-instance binding (Finding 5)
     function disableLegacyRoutes() external onlyOwner {
         legacyRoutesEnabled = false;
+        emit LegacyRoutesToggled(false);
+    }
+
+    /// @notice Irreversible killswitch permanently retiring legacy V1 withdrawal routes (Finding 4 / P2).
+    /// Once invoked, legacy routes are permanently disabled and can never be re-enabled under any circumstances.
+    function permanentlyRetireLegacyRoutes() external onlyOwner {
+        legacyRoutesPermanentlyDisabled = true;
+        legacyRoutesEnabled = false;
+        emit LegacyRoutesPermanentlyRetired();
         emit LegacyRoutesToggled(false);
     }
 

@@ -763,5 +763,16 @@ contract MosooLockerTest is Test {
         try locker.unlockERC20(burnId, address(0x1234), 1 ether, user, bytes32(uint256(0x2222)), 1, 100, "") {
             revert("unlockERC20 MUST revert when legacy routes disabled");
         } catch {}
+
+        // 7. Permanently retire legacy routes (Finding 4 / P2)
+        assertFalse(locker.legacyRoutesPermanentlyDisabled(), "should not be permanently disabled initially");
+        locker.permanentlyRetireLegacyRoutes();
+        assertTrue(locker.legacyRoutesPermanentlyDisabled(), "should be permanently disabled");
+        assertFalse(locker.legacyRoutesEnabled(), "legacy routes must be disabled");
+
+        // 8. Attempting to re-enable legacy routes MUST revert with LegacyRoutesPermanentlyRetired
+        try locker.setLegacyRoutesEnabled(true) {
+            revert("setLegacyRoutesEnabled(true) MUST revert once permanently retired");
+        } catch {}
     }
 }

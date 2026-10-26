@@ -45,8 +45,8 @@ pub const MOSOO_PROGRAM_ID: [u8; 32] = [
 /// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Sepolia.
 /// Cryptographically derived via `derive_instance_pda(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_INSTANCE_ID)`.
 pub const CANONICAL_SEPOLIA_MOSOO_INSTANCE: [u8; 32] = [
-    0x67, 0x65, 0xcd, 0xee, 0x95, 0x2f, 0x05, 0x8d, 0x64, 0x1c, 0x36, 0x08, 0x20, 0x13, 0xa2, 0x4c,
-    0x8b, 0x27, 0x4b, 0x39, 0x0c, 0x71, 0x17, 0xb9, 0xb2, 0x72, 0xac, 0xe6, 0xf1, 0xf4, 0x2c, 0x64,
+    0x98, 0x4a, 0x6b, 0x2e, 0x81, 0xc3, 0x18, 0x49, 0x2c, 0x2c, 0x0a, 0xbd, 0x21, 0x1d, 0xfb, 0xbb,
+    0x64, 0x1a, 0x3e, 0x71, 0xa5, 0xb2, 0x7f, 0xcf, 0x80, 0x67, 0x32, 0xad, 0x55, 0x86, 0x19, 0x12,
 ];
 
 /// Canonical instance identifier for Sepolia: sha256(b"mosoo_sepolia_instance_v1")
@@ -180,12 +180,12 @@ impl Default for TrustedBridgeConfig {
 
 impl TrustedBridgeConfig {
     /// Initialize with canonical production and testnet locker contracts, approved instances, and verified token allowlists.
+    /// Sepolia testnet is currently the verified live network with independently verified weak-subjectivity checkpoint.
+    /// Mainnet and Holesky networks require explicit authorized checkpoint registration prior to activation.
     pub fn canonical() -> Self {
         let mut trusted_lockers = HashMap::new();
         // Register authentic deployed lockers
         trusted_lockers.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_LOCKER);
-        trusted_lockers.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_LOCKER);
-        trusted_lockers.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_MOSOO_LOCKER);
 
         let mut allowed_tokens = HashMap::new();
         let mut sepolia_tokens = HashSet::new();
@@ -204,13 +204,9 @@ impl TrustedBridgeConfig {
 
         let mut trusted_instances = HashMap::new();
         trusted_instances.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
-        trusted_instances.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_INSTANCE);
-        trusted_instances.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_MOSOO_INSTANCE);
 
         let mut trusted_checkpoints = HashMap::new();
         trusted_checkpoints.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
-        trusted_checkpoints.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_CHECKPOINT_ROOT);
-        trusted_checkpoints.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_CHECKPOINT_ROOT);
 
         Self {
             admin_authority: None,
@@ -646,12 +642,9 @@ impl InstanceAccount {
     }
 
     /// Computes the deterministic 32-byte PDA address of this instance account on LEZ.
+    /// Strictly unified with [`derive_instance_pda`] including MOSOO_PROGRAM_ID.
     pub fn pda_address(&self) -> [u8; 32] {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(b"mosoo_instance");
-        hasher.update(self.chain_id.to_le_bytes());
-        hasher.update(self.instance_id);
-        hasher.finalize().into()
+        derive_instance_pda(self.chain_id, &self.instance_id)
     }
 
     /// Validates the internal authenticity invariants of this instance account.

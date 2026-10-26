@@ -159,6 +159,7 @@ fn test_finding1_zkvm_authenticated_guest_instruction_rejects_unauthenticated_pd
             expected: [0u8; 32],
         },
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     // 1. Adversary supplies fake expected instance PDA
@@ -830,22 +831,27 @@ fn test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatche
 #[test]
 fn test_finding12_unconfigured_custom_checkpoint_rejected() {
     use mosoo_core::types::{
-        InitializeArgs, CANONICAL_HOLESKY_CHECKPOINT_ROOT, CANONICAL_HOLESKY_INSTANCE_ID,
-        CANONICAL_HOLESKY_MOSOO_INSTANCE,
+        InitializeArgs, CANONICAL_SEPOLIA_CHECKPOINT_ROOT, CANONICAL_SEPOLIA_INSTANCE_ID,
+        CANONICAL_SEPOLIA_MOSOO_INSTANCE,
     };
 
-    // 1. Holesky canonical registration verification
+    // 1. In compliance with Finding 3 / Session 8, Mainnet and Holesky are NOT registered with placeholder constants.
+    // Sepolia is the sole live network with independently verified weak-subjectivity checkpoint.
     let canonical = TrustedBridgeConfig::canonical();
+    assert_eq!(canonical.get_trusted_instance(17000), None);
+    assert_eq!(canonical.get_trusted_checkpoint(17000), None);
+    assert_eq!(canonical.get_trusted_instance(1), None);
+    assert_eq!(canonical.get_trusted_checkpoint(1), None);
     assert_eq!(
-        canonical.get_trusted_instance(17000),
-        Some(CANONICAL_HOLESKY_MOSOO_INSTANCE)
+        canonical.get_trusted_instance(11155111),
+        Some(CANONICAL_SEPOLIA_MOSOO_INSTANCE)
     );
     assert_eq!(
-        canonical.get_trusted_checkpoint(17000),
-        Some(CANONICAL_HOLESKY_CHECKPOINT_ROOT)
+        canonical.get_trusted_checkpoint(11155111),
+        Some(CANONICAL_SEPOLIA_CHECKPOINT_ROOT)
     );
 
-    // 2. Initializing Holesky with untrusted checkpoint root fails closed
+    // 2. Initializing Sepolia with untrusted checkpoint root fails closed
     let dummy_beacon_header = mosoo_core::types::BeaconBlockHeader {
         slot: 100,
         proposer_index: 0,
@@ -854,10 +860,10 @@ fn test_finding12_unconfigured_custom_checkpoint_rejected() {
         body_root: [0x22; 32],
     };
 
-    let untrusted_holesky_args = InitializeArgs {
-        instance_id: CANONICAL_HOLESKY_INSTANCE_ID,
+    let untrusted_sepolia_args = InitializeArgs {
+        instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
         network_config: None,
-        chain_id: 17000,
+        chain_id: 11155111,
         bootstrap_header: dummy_beacon_header.clone(),
         trusted_checkpoint_root: [0xee; 32], // Tampered checkpoint root!
         current_sync_committee: make_valid_committee(),
@@ -866,13 +872,33 @@ fn test_finding12_unconfigured_custom_checkpoint_rejected() {
         initial_next_committee_branch: None,
         trusted_head_slot: 10_000_000,
     };
-    let res = dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_holesky_args));
+    let res = dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_sepolia_args));
     assert!(matches!(
         res,
-        Err(MosooError::UntrustedCheckpoint { chain_id: 17000 })
+        Err(MosooError::UntrustedCheckpoint { chain_id: 11155111 })
     ));
 
-    // 3. Unconfigured custom network without NetworkConfig fails closed
+    // 3. Initializing unregistered Holesky without explicit NetworkConfig fails closed
+    let untrusted_holesky_args = InitializeArgs {
+        instance_id: [0x55; 32],
+        network_config: None,
+        chain_id: 17000,
+        bootstrap_header: dummy_beacon_header.clone(),
+        trusted_checkpoint_root: [0xee; 32],
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_000_000,
+    };
+    let res_holesky =
+        dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_holesky_args));
+    assert!(matches!(
+        res_holesky,
+        Err(MosooError::UnconfiguredTrustedCheckpoint { chain_id: 17000 })
+    ));
+
+    // 4. Unconfigured custom network without NetworkConfig fails closed
     let custom_chain_args = InitializeArgs {
         instance_id: [0x55; 32],
         network_config: None, // Missing explicit network config!
@@ -1031,6 +1057,7 @@ fn test_finding14_attest_state_salted_shielding_journal() {
         proof: proof.clone(),
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some(salt1),
+        trusted_head_slot: None,
     };
 
     let args2 = AttestStateArgs {
@@ -1041,6 +1068,7 @@ fn test_finding14_attest_state_salted_shielding_journal() {
         proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some(salt2),
+        trusted_head_slot: None,
     };
 
     // Both evaluations yield StatementIssued with Shielded binding
@@ -1071,7 +1099,7 @@ fn test_finding14_attest_state_salted_shielding_journal() {
 
 #[test]
 fn test_finding15_shared_checkpoint_verification_across_both_dispatchers() {
-    use mosoo_core::types::{InitializeArgs, CANONICAL_HOLESKY_INSTANCE_ID};
+    use mosoo_core::types::{InitializeArgs, CANONICAL_SEPOLIA_INSTANCE_ID};
     use mosoo_core::verifier::{dispatch_guest_instruction, dispatch_store_instruction};
 
     let mut store = MockStore::default();
@@ -1083,11 +1111,11 @@ fn test_finding15_shared_checkpoint_verification_across_both_dispatchers() {
         body_root: [0x22; 32],
     };
 
-    // 1. Untrusted Holesky checkpoint root rejected by BOTH dispatchers
-    let untrusted_holesky_args = InitializeArgs {
-        instance_id: CANONICAL_HOLESKY_INSTANCE_ID,
+    // 1. Untrusted Sepolia checkpoint root rejected by BOTH dispatchers
+    let untrusted_sepolia_args = InitializeArgs {
+        instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
         network_config: None,
-        chain_id: 17000,
+        chain_id: 11155111,
         bootstrap_header: dummy_beacon_header.clone(),
         trusted_checkpoint_root: [0xee; 32], // Tampered checkpoint root!
         current_sync_committee: make_valid_committee(),
@@ -1098,19 +1126,19 @@ fn test_finding15_shared_checkpoint_verification_across_both_dispatchers() {
     };
 
     let res_guest =
-        dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_holesky_args.clone()));
+        dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_sepolia_args.clone()));
     assert!(matches!(
         res_guest,
-        Err(MosooError::UntrustedCheckpoint { chain_id: 17000 })
+        Err(MosooError::UntrustedCheckpoint { chain_id: 11155111 })
     ));
 
     let res_store = dispatch_store_instruction(
         &mut store,
-        GuestInstruction::Initialize(untrusted_holesky_args),
+        GuestInstruction::Initialize(untrusted_sepolia_args),
     );
     assert!(matches!(
         res_store,
-        Err(MosooError::UntrustedCheckpoint { chain_id: 17000 })
+        Err(MosooError::UntrustedCheckpoint { chain_id: 11155111 })
     ));
 
     // 2. Unconfigured custom network rejected by BOTH dispatchers
@@ -1574,6 +1602,7 @@ fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() 
             expected: [0u8; 32],
         },
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     // Store-backed dispatch must load and authenticate the genuine instance from store,
@@ -1616,6 +1645,7 @@ fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() 
                     expected: [0u8; 32],
                 },
                 privacy_salt: None,
+                trusted_head_slot: None,
             },
         }),
     };
@@ -1648,6 +1678,7 @@ fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() 
                     expected: [0u8; 32],
                 },
                 privacy_salt: None,
+                trusted_head_slot: None,
             },
         }),
     };
@@ -2330,6 +2361,7 @@ fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
                 expected: [0u8; 32],
             },
             privacy_salt: None,
+            trusted_head_slot: None,
         },
     };
 
@@ -2389,6 +2421,7 @@ fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
                     expected: [0u8; 32],
                 },
                 privacy_salt: None,
+                trusted_head_slot: None,
             },
         }),
     };
@@ -2475,11 +2508,11 @@ fn test_finding30_weak_subjectivity_window_expiry_rejected() {
     );
 
     // 3. State attestation against an expired instance MUST fail closed
-    let mut stale_header = make_test_header(&instance);
-    stale_header.slot = current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 10;
+    let mut current_header = make_test_header(&instance);
+    current_header.slot = current_slot;
     let attest_args = AttestStateArgs {
         instance: instance.clone(),
-        header: stale_header,
+        header: current_header,
         header_history_branch: None,
         historical_execution_proof: None,
         proof: empty_state_proof(ProofTarget::AccountBalance {
@@ -2489,6 +2522,7 @@ fn test_finding30_weak_subjectivity_window_expiry_rejected() {
             expected: [0u8; 32],
         },
         privacy_salt: None,
+        trusted_head_slot: Some(current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 10),
     };
     let res_attest_stale = mosoo_core::verifier::handle_attest_state(attest_args);
     assert!(
@@ -2614,4 +2648,231 @@ fn test_finding31_statement_id_cross_instance_consistency() {
         mint_res_b.is_err(),
         "Statement from untrusted instance B must be rejected"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Audit Session 8 Hardening Tests (October 27, 2026)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_session8_finding3_pda_derivation_invariants_across_all_networks() {
+    use mosoo_core::types::{
+        derive_instance_pda, CANONICAL_HOLESKY_INSTANCE_ID, CANONICAL_HOLESKY_MOSOO_INSTANCE,
+        CANONICAL_MAINNET_INSTANCE_ID, CANONICAL_MAINNET_MOSOO_INSTANCE,
+        CANONICAL_SEPOLIA_INSTANCE_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE, ETH_HOLESKY_CHAIN_ID,
+        ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID,
+    };
+
+    // 1. Direct derivation helper invariant tests
+    assert_eq!(
+        derive_instance_pda(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_INSTANCE_ID),
+        CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        "Sepolia canonical PDA derivation mismatch"
+    );
+    assert_eq!(
+        derive_instance_pda(ETH_MAINNET_CHAIN_ID, &CANONICAL_MAINNET_INSTANCE_ID),
+        CANONICAL_MAINNET_MOSOO_INSTANCE,
+        "Mainnet canonical PDA derivation mismatch"
+    );
+    assert_eq!(
+        derive_instance_pda(ETH_HOLESKY_CHAIN_ID, &CANONICAL_HOLESKY_INSTANCE_ID),
+        CANONICAL_HOLESKY_MOSOO_INSTANCE,
+        "Holesky canonical PDA derivation mismatch"
+    );
+
+    // 2. InstanceAccount::pda_address() method invariant tests
+    let sepolia_inst = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    assert_eq!(
+        sepolia_inst.pda_address(),
+        CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        "Sepolia instance account method mismatch"
+    );
+    assert_eq!(
+        sepolia_inst.pda_address(),
+        derive_instance_pda(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_INSTANCE_ID)
+    );
+
+    let mainnet_inst = make_test_instance(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_INSTANCE_ID);
+    assert_eq!(
+        mainnet_inst.pda_address(),
+        CANONICAL_MAINNET_MOSOO_INSTANCE,
+        "Mainnet instance account method mismatch"
+    );
+    assert_eq!(
+        mainnet_inst.pda_address(),
+        derive_instance_pda(ETH_MAINNET_CHAIN_ID, &CANONICAL_MAINNET_INSTANCE_ID)
+    );
+
+    let holesky_inst = make_test_instance(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_INSTANCE_ID);
+    assert_eq!(
+        holesky_inst.pda_address(),
+        CANONICAL_HOLESKY_MOSOO_INSTANCE,
+        "Holesky instance account method mismatch"
+    );
+    assert_eq!(
+        holesky_inst.pda_address(),
+        derive_instance_pda(ETH_HOLESKY_CHAIN_ID, &CANONICAL_HOLESKY_INSTANCE_ID)
+    );
+}
+
+#[test]
+fn test_session8_finding1_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed(
+) {
+    use mosoo_core::verifier::{dispatch_store_instruction, AttestStateArgs, GuestInstruction};
+
+    let mut store = MockStore::default();
+
+    // 1. Genuine canonical Sepolia instance stored in persistent storage
+    let mut genuine_instance =
+        make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    genuine_instance.current_slot = 11_435_000;
+    genuine_instance.bootstrap_slot = 11_434_912;
+    genuine_instance.current_header_hash = [0x11; 32];
+    genuine_instance.current_execution_block_hash = [0x22; 32];
+    genuine_instance.current_execution_state_root = [0x33; 32]; // Authentic state root
+    genuine_instance.current_receipts_root = [0x44; 32];
+
+    let canonical_pda = genuine_instance.pda_address();
+    assert_eq!(canonical_pda, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+
+    let inst_bytes = serde_json::to_vec(&genuine_instance).unwrap();
+    store
+        .try_set_account_with_owner(&canonical_pda, inst_bytes, MOSOO_PROGRAM_ID)
+        .unwrap();
+
+    // 2. Adversary fabricates an instance in memory matching the canonical PDA and instance ID,
+    // but with completely fabricated sync committee and fabricated execution state roots.
+    let mut fake_instance = genuine_instance.clone();
+    fake_instance.current_execution_state_root = [0x99; 32]; // Forged root!
+    fake_instance.current_sync_committee = SyncCommittee {
+        pubkeys: vec![vec![0xfe; 48]; 512],
+        aggregate_pubkey: vec![0xfe; 48],
+    };
+
+    // Adversary also fabricates a HeaderRecord matching their forged execution state root
+    let fake_header = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot: 11_435_000,
+        beacon_block_root: [0x11; 32],
+        execution_block_hash: [0x22; 32],
+        execution_state_root: [0x99; 32], // Forged root!
+        receipts_root: [0x44; 32],
+    };
+
+    let args = AttestStateArgs {
+        instance: fake_instance,
+        header: fake_header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x77),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+        trusted_head_slot: None,
+    };
+
+    let instruction = GuestInstruction::AttestStateAuthenticated {
+        expected_instance_pda: canonical_pda,
+        expected_header_pda: None,
+        args,
+    };
+
+    // 3. Dispatch through persistent store dispatcher:
+    // dispatch_store_instruction strictly loads the authentic instance from store
+    // (which has execution_state_root == [0x33; 32]), overwriting the caller's fake instance.
+    // The attestation against fake_header ([0x99; 32]) fails closed!
+    let res = dispatch_store_instruction(&mut store, instruction);
+    assert!(
+        res.is_err(),
+        "Attestation with fabricated execution roots under canonical PDA must fail closed"
+    );
+    assert!(matches!(
+        res.unwrap_err(),
+        MosooError::UnauthenticatedHeaderRecord
+    ));
+}
+
+#[test]
+fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_head_slot() {
+    use mosoo_core::verifier::{handle_attest_state, AttestStateArgs};
+
+    let instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    let mut stale_historical_header = make_test_header(&instance);
+    // Set historical header older than canonical weak subjectivity window (54,000 slots)
+    // instance.current_slot = 10_000, header.slot = 10_000 - 60_000 -> underflow/stale!
+    let current_slot = 100_000u64;
+    let mut fresh_instance = instance.clone();
+    fresh_instance.current_slot = current_slot;
+    stale_historical_header.slot = current_slot - 55_000; // 55,000 slots old > 54,000!
+
+    let args_stale_history = AttestStateArgs {
+        instance: fresh_instance.clone(),
+        header: stale_historical_header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x01),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+        trusted_head_slot: None,
+    };
+
+    let res_stale_hist = handle_attest_state(args_stale_history);
+    assert!(
+        matches!(
+            res_stale_hist.unwrap_err(),
+            MosooError::WeakSubjectivityExpired { .. }
+        ),
+        "Historical header exceeding weak subjectivity window must fail closed"
+    );
+
+    // 2. trusted_head_slot preceding instance.current_slot is rejected
+    let mut valid_header = make_test_header(&fresh_instance);
+    valid_header.slot = current_slot;
+    let args_head_preceding = AttestStateArgs {
+        instance: fresh_instance.clone(),
+        header: valid_header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x01),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+        trusted_head_slot: Some(current_slot - 100), // Precedes instance!
+    };
+    let res_preceding = handle_attest_state(args_head_preceding);
+    assert!(matches!(
+        res_preceding.unwrap_err(),
+        MosooError::InvalidBootstrap(_)
+    ));
+
+    // 3. trusted_head_slot exceeding weak subjectivity window relative to instance fails closed
+    let args_head_stale = AttestStateArgs {
+        instance: fresh_instance,
+        header: valid_header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x01),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+        trusted_head_slot: Some(current_slot + 60_000), // 60,000 slots ahead of instance!
+    };
+    let res_head_stale = handle_attest_state(args_head_stale);
+    assert!(matches!(
+        res_head_stale.unwrap_err(),
+        MosooError::WeakSubjectivityExpired { .. }
+    ));
 }

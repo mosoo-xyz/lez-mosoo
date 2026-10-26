@@ -1568,6 +1568,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         proof,
         predicate,
         privacy_salt: None,
+        trusted_head_slot: None,
     };
 
     println!(

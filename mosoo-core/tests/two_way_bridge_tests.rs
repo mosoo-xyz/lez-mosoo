@@ -883,6 +883,9 @@ fn test_full_two_way_bridge_lifecycle_eth_to_lez_and_back() {
     let mut eth_locker = MockEthereumLocker::new(locker_addr);
     let mut lez_ledger = MethLedger::new();
     lez_ledger.register_trusted_locker(ETH_MAINNET_CHAIN_ID, locker_addr);
+    lez_ledger
+        .config
+        .register_trusted_instance(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_INSTANCE);
     let mut lez_nullifiers = EtherNullifierSet::new();
 
     // 2. User locks 10 ETH on Ethereum
@@ -1050,6 +1053,9 @@ fn test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back() {
 
     let mut eth_locker = MockEthereumLocker::new(locker_addr);
     let mut lez_ledger = Erc20Ledger::new();
+    lez_ledger
+        .config
+        .register_trusted_instance(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_INSTANCE);
     let mut lez_nullifiers = Erc20NullifierSet::new();
 
     // 1. User deposits 1,000 USDC into Ethereum MosooLocker

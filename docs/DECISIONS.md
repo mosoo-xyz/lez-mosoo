@@ -385,3 +385,46 @@ External review (Audit Session 7 - Oct 26, 2026) evaluated the architecture and 
    - Light-client instance binding is preserved in `VerifiedStatement.source_instance_pda` and strictly enforced at consumer boundaries per RFP-021 Functionality #15.
 4. **Bridge Governance & Deployment Criteria Documentation**:
    - Explicitly documented the witness-attested quorum model, emergency timelocks, daily limits, and production exit criteria in project security specifications.
+
+---
+
+## ADR-015: Production Persistent Store Dispatch, Unified PDA Derivation, Weak-Subjectivity Direction Correction, and Irreversible Legacy Route Retirement
+**Date**: October 27, 2026  
+**Status**: Accepted & Implemented  
+
+### Context & Problem Statement
+Audit Session 8 static code review raised five critical and high-priority concerns:
+1. **Critical #1 (P0): Persistent Account Authentication in Production Dispatch**:
+   `GuestInstruction::StoreBacked` was gated behind `cfg(test)`, returning `UnauthenticatedInstance` in production. Authenticated instruction variants (`AttestStateAuthenticated`, etc.) compared PDA address without validating that the internal consensus roots, committee, or execution state roots belonged to an authentic persistent account.
+2. **High #2 (P1): Weak-Subjectivity Freshness Guard Bypass & Inverted Calculation Bug**:
+   - In `BeginUpdateArgs`, `trusted_head_slot` was optional defaulting to `None`, bypassing freshness checks if omitted.
+   - In `handle_attest_state()`, `args.instance.is_stale_canonical(args.header.slot)` suffered an inverted subtraction bug: because `header.slot <= instance.current_slot` is enforced, `args.header.slot.saturating_sub(instance.current_slot)` evaluated to 0, rendering staleness checks a no-op.
+3. **High #3 (P1): Canonical Network Constants & PDA Derivation Inconsistency**:
+   - `derive_instance_pda()` included `MOSOO_PROGRAM_ID` in the hash, while `InstanceAccount::pda_address()` omitted it.
+   - `CANONICAL_SEPOLIA_MOSOO_INSTANCE` was derived without program ID, while Mainnet and Holesky were derived with program ID.
+   - `CANONICAL_MAINNET_CHECKPOINT_ROOT` (`0xaabbccd...`) and Holesky (`0x578b9...112233...`) were dummy placeholder patterns advertised in `TrustedBridgeConfig::canonical()`.
+4. **Medium #4 (P2): Legacy Withdrawal Routes Irreversible Disable**:
+   In `MosooLocker.sol`, `legacyRoutesEnabled` could be re-enabled at any time by the owner via `setLegacyRoutesEnabled(true)`. A permanent retirement mechanism was missing.
+5. **Medium #5 (P2): Initial Attester Quorum Policy**:
+   Documented multi-signer quorum enforcement on Mainnet deployment day-one to mitigate the 1-of-1 initial default constructor configuration.
+
+### Decision & Implementation
+1. **Production Persistent Account Dispatch (P0)**:
+   - Enabled `GuestInstruction::StoreBacked` unconditionally across test and production builds.
+   - In production, caller-provided un-backed state accounts without an authentic persistent `AccountStore` are rejected fail-closed with `MosooError::UnauthenticatedInstance`. Production execution strictly uses `dispatch_store_instruction`, loading accounts with `owner == MOSOO_PROGRAM_ID` and replacing caller-supplied instance and header state with verified on-chain state.
+   - Added explicit negative regression test (`test_session8_finding1_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed`) verifying that fabricated committee and execution roots under a canonical instance ID are strictly rejected.
+2. **Weak-Subjectivity Freshness Direction & Mandatory Head Validation (P1)**:
+   - In `handle_begin_update()`, if `trusted_head_slot` is omitted, fallback to checking `update.signature_slot` freshness. The effective head slot is asserted to not precede `instance.current_slot`, and staleness past 54,000 slots fails closed.
+   - In `handle_attest_state()`, historical freshness is corrected to: `instance.current_slot.saturating_sub(header.slot) > CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS` fails closed. If `trusted_head_slot` is supplied, `trusted_head_slot < instance.current_slot` and `is_stale_canonical(trusted_head_slot)` are strictly enforced.
+3. **Unified PDA Derivation & Canonical Constants Alignment (P1)**:
+   - Unified `InstanceAccount::pda_address(&self)` to delegate directly to `derive_instance_pda(self.chain_id, &self.instance_id)`.
+   - Updated `CANONICAL_SEPOLIA_MOSOO_INSTANCE` to the canonical program-ID-inclusive derivation: `[0x98, 0x4a, 0x6b, 0x2e, 0x81, 0xc3, 0x18, 0x49, 0x2c, 0x2c, 0x0a, 0xbd, 0x21, 0x1d, 0xfb, 0xbb, 0x64, 0x1a, 0x3e, 0x71, 0xa5, 0xb2, 0x7f, 0xcf, 0x80, 0x67, 0x32, 0xad, 0x55, 0x86, 0x19, 0x12]`.
+   - Cleaned `TrustedBridgeConfig::canonical()` to pre-register only Sepolia (the live network with verified checkpoint). Mainnet and Holesky require explicit authorized checkpoint registration prior to activation.
+   - Added automated invariant test (`test_session8_finding3_pda_derivation_invariants_across_all_networks`) asserting `derive_instance_pda(chain_id, &instance_id) == expected_instance_pda == instance.pda_address()` across all networks.
+4. **Irreversible Permanent Retirement of Legacy Withdrawal Routes (P2)**:
+   - Added `bool public legacyRoutesPermanentlyDisabled;`, `error LegacyRoutesPermanentlyRetired();`, and `event LegacyRoutesPermanentlyRetired();` in `MosooLocker.sol`.
+   - Added `permanentlyRetireLegacyRoutes()` external function (owner only).
+   - `setLegacyRoutesEnabled(true)` strictly reverts with `LegacyRoutesPermanentlyRetired()` if permanently retired.
+   - Added Foundry unit test verifying permanent retirement.
+5. **Outbound Multi-Signer Quorum Operational Policy (P2)**:
+   - Documented mandatory multi-signer committee setup prior to mainnet deposit acceptance, ensuring quorum thresholds (`requiredQuorum >= 2/3`) and independent guardian controls are active from genesis.
