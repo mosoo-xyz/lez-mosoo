@@ -715,11 +715,11 @@ fn test_monotonic_slot_progression_boundary_conditions() {
     }
 
     // Boundary A: exact same slot (must reject as stale)
-    let res_same = handle_begin_update(BeginUpdateArgs {
-        instance: instance.clone(),
-        update: make_update(current_slot),
-        nonce: 1,
-    });
+    let res_same = handle_begin_update(BeginUpdateArgs::new(
+        instance.clone(),
+        make_update(current_slot),
+        1,
+    ));
     assert!(
         matches!(
             res_same,
@@ -732,22 +732,22 @@ fn test_monotonic_slot_progression_boundary_conditions() {
     );
 
     // Boundary B: one slot behind (must reject)
-    let res_behind = handle_begin_update(BeginUpdateArgs {
-        instance: instance.clone(),
-        update: make_update(current_slot - 1),
-        nonce: 2,
-    });
+    let res_behind = handle_begin_update(BeginUpdateArgs::new(
+        instance.clone(),
+        make_update(current_slot - 1),
+        2,
+    ));
     assert!(
         matches!(res_behind, Err(MosooError::StaleUpdate { .. })),
         "Slot behind current MUST be rejected as StaleUpdate"
     );
 
     // Boundary C: weak-subjectivity window exceeded (current + 1,728,001)
-    let res_expired = handle_begin_update(BeginUpdateArgs {
+    let res_expired = handle_begin_update(BeginUpdateArgs::new(
         instance,
-        update: make_update(current_slot + 1_728_001),
-        nonce: 3,
-    });
+        make_update(current_slot + 1_728_001),
+        3,
+    ));
     assert!(
         matches!(res_expired, Err(MosooError::WeakSubjectivityExpired { .. })),
         "Slot beyond weak-subjectivity window MUST be rejected"

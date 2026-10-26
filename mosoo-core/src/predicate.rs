@@ -101,7 +101,6 @@ pub fn evaluate_with_binding_v2(
         derive_statement_id_v2(
             chain_id,
             &genesis_validators_root,
-            &source_instance_pda,
             &subject_key,
             proof_type_tag,
             &value.as_bytes32(),
@@ -194,13 +193,16 @@ pub fn derive_statement_id_from_raw(
     h.finalize().into()
 }
 
-/// Derives the V2 canonical statement identifier cryptographically bound to the source light-client instance PDA
-/// and network genesis validators root (Finding 3 / Finding 6 / RFP-021 Functionality #15):
-/// `sha256("mosoo_statement_v2" || chain_id_le8 || genesis_validators_root_32 || source_instance_pda_32 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+/// Derives the canonical statement identifier strictly from underlying Ethereum state facts
+/// (chain ID, genesis validators root, subject key, proof type tag, and verified value) per RFP-021 Functionality #6:
+/// `sha256("mosoo_statement_v2" || chain_id_le8 || genesis_validators_root_32 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+///
+/// In accordance with RFP-021 Functionality #6, identical verified Ethereum state generates identical deterministic statement IDs.
+/// In accordance with RFP-021 Functionality #15, light client instance isolation is enforced at the consumer boundary
+/// via `VerifiedStatement.source_instance_pda`.
 pub fn derive_statement_id_v2(
     chain_id: u64,
     genesis_validators_root: &[u8; 32],
-    source_instance_pda: &[u8; 32],
     subject_key: &[u8; 32],
     proof_type_tag: u8,
     verified_value: &[u8; 32],
@@ -209,7 +211,6 @@ pub fn derive_statement_id_v2(
     h.update(b"mosoo_statement_v2");
     h.update(chain_id.to_le_bytes());
     h.update(genesis_validators_root);
-    h.update(source_instance_pda);
     h.update(subject_key);
     h.update([proof_type_tag]);
     h.update(verified_value);

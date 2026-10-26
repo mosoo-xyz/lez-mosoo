@@ -35,8 +35,13 @@ pub type Instruction = GuestInstruction;
 
 fn main() {
     // The host encodes a tagged instruction envelope.
-    // In production LEZ transactions, instructions are wrapped in GuestInstruction::StoreBacked
-    // to strictly load and authenticate program-owned accounts from persistent storage.
+    // In production LEZ blockchain transactions, SPEL smart contract instructions execute
+    // natively in the LEZ host runtime via `dispatch_store_instruction(&mut host_store, instruction)`
+    // with authentic persistent RocksDB/state trie storage, loading accounts owned by MOSOO_PROGRAM_ID.
+    // When executing inside RISC0 zkVM, instructions deserialize from `env::read()` and are
+    // processed via `dispatch_guest_instruction(instruction)`. Authenticated instruction variants
+    // (AttestStateAuthenticated, BeginUpdateAuthenticated, etc.) strictly enforce canonical instance
+    // PDA binding, pinned checkpoint anchors, and verified RuntimeAccount witnesses.
     let instruction: Instruction = env::read();
 
     let result: Result<InstructionOutput, MosooError> = dispatch_guest_instruction(instruction);

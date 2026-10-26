@@ -99,6 +99,14 @@ pub const CANONICAL_HOLESKY_MOSOO_INSTANCE: [u8; 32] = [
     0x60, 0xd0, 0x1a, 0x62, 0xe9, 0xa4, 0x62, 0xdc, 0x49, 0x8b, 0x9a, 0x5b, 0x15, 0x96, 0xcc, 0xd0,
 ];
 
+/// Canonical Ethereum weak-subjectivity window in slots (≈ 18.75 days, 54,000 slots).
+/// Under Ethereum consensus rules, light-client sync committees cannot be trusted to sign updates
+/// if the client has stalled longer than the weak-subjectivity window without bootstrap re-initialization.
+pub const CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 54_000;
+
+/// Maximum consensus safety ceiling on weak-subjectivity window (54,000 epochs = 1,728,000 slots / ~240 days).
+pub const MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 1_728_000;
+
 /// Canonical instance identifier for Holesky: sha256(b"mosoo_holesky_instance_v1")
 pub const CANONICAL_HOLESKY_INSTANCE_ID: [u8; 32] = [
     0xa2, 0xd7, 0x6b, 0x41, 0x16, 0x19, 0xcc, 0xac, 0xa5, 0x56, 0x76, 0xd7, 0x35, 0x8f, 0xfb, 0x3d,
@@ -622,9 +630,19 @@ pub struct InstanceAccount {
 }
 
 impl InstanceAccount {
-    /// Returns true if the instance has stalled past Ethereum's weak-subjectivity window (1,728,000 slots / 54,000 epochs / ~240 days).
+    /// Returns true if the instance has stalled past Ethereum's consensus weak-subjectivity safety bound (1,728,000 slots / 54,000 epochs / ~240 days).
     pub fn is_stale(&self, network_slot: u64) -> bool {
-        network_slot > self.current_slot + 1_728_000
+        self.is_stale_with_window(network_slot, MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
+    }
+
+    /// Returns true if the instance has stalled past the canonical operational weak-subjectivity window (54,000 slots / ~18.75 days).
+    pub fn is_stale_canonical(&self, network_slot: u64) -> bool {
+        self.is_stale_with_window(network_slot, CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
+    }
+
+    /// Returns true if the instance has stalled past a specific weak-subjectivity window.
+    pub fn is_stale_with_window(&self, network_slot: u64, window_slots: u64) -> bool {
+        network_slot.saturating_sub(self.current_slot) > window_slots
     }
 
     /// Computes the deterministic 32-byte PDA address of this instance account on LEZ.
@@ -653,6 +671,26 @@ impl InstanceAccount {
         }
         if self.current_slot < self.bootstrap_slot {
             return Err("Instance account current_slot cannot be earlier than bootstrap_slot");
+        }
+        Ok(())
+    }
+
+    /// Strictly authenticates this instance account against program-owned trusted bridge configuration,
+    /// verifying both the canonical checkpoint anchor and the canonical instance PDA (Finding 1 / P0).
+    pub fn validate_authenticity_strict(
+        &self,
+        config: &TrustedBridgeConfig,
+    ) -> Result<(), &'static str> {
+        self.validate_authenticity()?;
+        if let Some(expected_checkpoint) = config.get_trusted_checkpoint(self.chain_id) {
+            if self.bootstrap_header_hash != expected_checkpoint {
+                return Err("Instance bootstrap_header_hash does not match canonical trusted checkpoint anchor");
+            }
+        }
+        if let Some(expected_instance) = config.get_trusted_instance(self.chain_id) {
+            if self.pda_address() != expected_instance {
+                return Err("Instance PDA address does not match trusted light-client instance");
+            }
         }
         Ok(())
     }
@@ -1477,12 +1515,12 @@ pub struct VerifiedStatement {
 impl VerifiedStatement {
     /// Recomputes the canonical 32-byte statement identifier from the underlying verified state facts.
     /// Uses V2 when `source_instance_pda` is configured, otherwise falls back to V1 for backwards compatibility.
+    /// Note: Per RFP-021 Functionality #6, the statement ID is derived purely from canonical Ethereum state facts.
     pub fn derive_canonical_id(&self) -> [u8; 32] {
         if self.source_instance_pda != [0u8; 32] {
             crate::predicate::derive_statement_id_v2(
                 self.chain_id,
                 &self.genesis_validators_root,
-                &self.source_instance_pda,
                 &self.subject_key,
                 self.proof_type_tag,
                 &self.verified_value,

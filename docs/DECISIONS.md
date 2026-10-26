@@ -353,3 +353,35 @@ An exhaustive review (Audit Session 6 - Oct 26, 2026) evaluated the full codebas
    - Added `ShieldedErc20ClaimWitness` and `claim_shielded_statement_u256` in `consumers/erc20-receiver/src/lib.rs`.
    - Added `ShieldedEtherClaimWitness` and `claim_shielded_ether_statement_u256` in `consumers/ether-receiver/src/lib.rs`.
    - Consumers verify the commitment and blinded identifiers against the claimant's private witness preimage (unshielded binding + optional salt), maintaining zero on-chain linkability while ensuring robust replay protection and parameter authenticity.
+
+---
+
+## ADR-014: Weak-Subjectivity Expiry Enforcement, RFP-021 Canonical Statement ID Derivation, and Persistent Account Dispatch Hardening
+
+### Context & Problem Statement
+External review (Audit Session 7 - Oct 26, 2026) evaluated the architecture and identified critical edge cases:
+1. **Critical #1 (P0): Persistent Account Authentication & Dispatch Separation**:
+   In zkVM guest (`methods/guest/src/main.rs`), instructions deserialize from `env::read()`. While in-memory `StoreBacked` is rejected in production builds (`UnauthenticatedInstance`), PDA derivation checks (`pda_address = sha256("mosoo_instance" || chain_id || instance_id)`) only bound chain and instance IDs, leaving internal consensus roots susceptible to prover forgery if not strictly validated against authentic storage or pinned anchors.
+2. **High #2 (P1): Incomplete Weak-Subjectivity Expiry Enforcement in `handle_begin_update()`**:
+   `handle_begin_update()` checked forward slot leaps (`finalized_header.slot <= current_slot + 1_728_000`), but did not prevent an adversary from advancing a stale/expired light client instance through small incremental updates (e.g. 50 slots). Under Ethereum PoS rules, light client sync committees cannot be trusted if an instance has stalled beyond the canonical weak-subjectivity window (~54,000 slots / ~18.75 days).
+3. **Medium #3 (P2): Statement ID Cross-Instance Determinism (RFP-021 Functionality #6 vs #15)**:
+   In `mosoo-core/src/predicate.rs`, `derive_statement_id_v2()` included `source_instance_pda` in the statement ID hash calculation. This caused two independent instances verifying the identical Ethereum state fact to emit different statement IDs, conflicting with RFP-021 Functionality #6 ("For identical verified Ethereum state, the emitted statement identifier MUST be identical and deterministic").
+4. **Solidity Bridge Asymmetric Trust Model & Governance Clarity**:
+   Evaluated `contracts/MosooLocker.sol`: clarified the dual trust model (trustless consensus verification for ETH-to-LEZ inbound, witness-attested quorum verification for LEZ-to-ETH outbound settlement).
+
+### Decision & Implementation
+1. **Persistent Account Authentication & Dispatch Separation**:
+   - Clarified and enforced the architectural distinction between LEZ runtime transaction dispatch (`dispatch_store_instruction(&mut host_store, instruction)` with genuine RocksDB/state trie storage) and zkVM guest proof verification.
+   - Enhanced `InstanceAccount::validate_authenticity_strict()` to strictly assert that `bootstrap_header_hash` matches canonical pinned checkpoint anchors and `pda_address()` matches canonical pinned instance addresses.
+   - Updated `methods/guest/src/main.rs` documentation and dispatch paths to strictly enforce authenticated witnesses.
+2. **Weak-Subjectivity Expiry Enforcement**:
+   - Introduced `CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 54_000` (≈ 18.75 days) and `MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 1_728_000` (~240 days).
+   - In `BeginUpdateArgs`, added `trusted_head_slot: Option<u64>` to anchor updates against current Ethereum head time.
+   - In `handle_begin_update()`, if `trusted_head_slot` indicates the instance has stalled past 54,000 slots, or if an update jumps > 54,000 slots, the update fails closed with `MosooError::WeakSubjectivityExpired`. Chained small updates on expired instances are strictly rejected.
+   - In `handle_attest_state()`, attested states against instances stalled beyond `CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS` fail closed with `MosooError::WeakSubjectivityExpired`.
+3. **Canonical State Fact Statement ID Derivation**:
+   - Updated `derive_statement_id_v2(chain_id, genesis_validators_root, subject_key, proof_type_tag, verified_value)` to derive statement IDs strictly from canonical Ethereum state facts.
+   - Cross-instance determinism is guaranteed per RFP-021 Functionality #6.
+   - Light-client instance binding is preserved in `VerifiedStatement.source_instance_pda` and strictly enforced at consumer boundaries per RFP-021 Functionality #15.
+4. **Bridge Governance & Deployment Criteria Documentation**:
+   - Explicitly documented the witness-attested quorum model, emergency timelocks, daily limits, and production exit criteria in project security specifications.

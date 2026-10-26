@@ -11,6 +11,24 @@ pub struct BeginUpdateArgs {
     pub instance: InstanceAccount,
     pub update: LightClientUpdate,
     pub nonce: u64,
+    #[serde(default)]
+    pub trusted_head_slot: Option<u64>,
+}
+
+impl BeginUpdateArgs {
+    pub fn new(instance: InstanceAccount, update: LightClientUpdate, nonce: u64) -> Self {
+        Self {
+            instance,
+            update,
+            nonce,
+            trusted_head_slot: None,
+        }
+    }
+
+    pub fn with_trusted_head_slot(mut self, slot: u64) -> Self {
+        self.trusted_head_slot = Some(slot);
+        self
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -508,13 +526,29 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
         });
     }
 
-    // Guard: weak-subjectivity window check (max 54,000 epochs = 1,728,000 slots).
-    // Trust assumptions:
-    // 1. Initial bootstrap checkpoint is verified out-of-band to be fresh within the weak
-    //    subjectivity operational window (14–30 days) up to the consensus safety bound (1,728,000 slots / ~240 days).
-    // 2. Incremental updates cannot jump beyond 1,728,000 slots to prevent long-range consensus forks.
-    const WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 1_728_000;
-    if update.finalized_header.slot > instance.current_slot + WEAK_SUBJECTIVITY_WINDOW_SLOTS {
+    // Guard: weak-subjectivity freshness checks (Finding 2 / High #2).
+    // 1. If trusted_head_slot is provided, verify the active instance has not expired past
+    //    the operational weak-subjectivity window (CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS = 54,000 slots).
+    //    This strictly prevents an adversary from advancing a stale/expired instance using chained small incremental updates!
+    if let Some(head_slot) = args.trusted_head_slot {
+        if instance.is_stale_canonical(head_slot) {
+            return Err(MosooError::WeakSubjectivityExpired {
+                update_slot: head_slot,
+                current_slot: instance.current_slot,
+            });
+        }
+    }
+
+    // 2. Incremental updates cannot jump beyond the operational weak-subjectivity window (54,000 slots / ~18.75 days)
+    //    or the consensus safety bound (1,728,000 slots).
+    if update
+        .finalized_header
+        .slot
+        .saturating_sub(instance.current_slot)
+        > CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS
+        || update.signature_slot.saturating_sub(instance.current_slot)
+            > CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS
+    {
         return Err(MosooError::WeakSubjectivityExpired {
             update_slot: update.finalized_header.slot,
             current_slot: instance.current_slot,
@@ -853,6 +887,16 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         return Err(MosooError::StaleUpdate {
             update_slot: args.instance.current_slot,
             current_slot: args.instance.bootstrap_slot,
+        });
+    }
+
+    // 0b. Strict weak-subjectivity freshness guard for state attestation:
+    // If the instance has stalled past the canonical weak-subjectivity window relative to the header slot,
+    // attestation MUST fail closed and require bootstrap reinitialization.
+    if args.instance.is_stale_canonical(args.header.slot) {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: args.header.slot,
+            current_slot: args.instance.current_slot,
         });
     }
 

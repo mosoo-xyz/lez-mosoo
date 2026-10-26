@@ -19,8 +19,10 @@ use mosoo_core::{
     predicate::{derive_statement_id_v2, evaluate_with_binding_v2},
     types::{
         AccountStore, HeaderRecord, InstanceAccount, Predicate, StatementAccount, StatementBinding,
-        SyncCommittee, TrustedBridgeConfig, VerifiedStatement, ETH_MAINNET_CHAIN_ID,
-        ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ETH_DEPOSIT,
+        SyncCommittee, TrustedBridgeConfig, VerifiedStatement, CANONICAL_SEPOLIA_INSTANCE_ID,
+        CANONICAL_SEPOLIA_MOSOO_INSTANCE, CANONICAL_SEPOLIA_MOSOO_LOCKER,
+        CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS, ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID,
+        MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ETH_DEPOSIT,
     },
     verifier::{dispatch_guest_instruction, AttestStateArgs, FinishUpdateArgs, GuestInstruction},
 };
@@ -323,27 +325,16 @@ fn test_finding3_statement_instance_isolation_and_cross_instance_rejection() {
     let proof_type = PROOF_TYPE_ETH_DEPOSIT;
 
     // 1. Derive statement IDs for instance A and instance B with identical state facts
-    let stmt_id_a = derive_statement_id_v2(
-        chain_id,
-        &gvr,
-        &instance_pda_a,
-        &subject_key,
-        proof_type,
-        &verified_value,
-    );
-    let stmt_id_b = derive_statement_id_v2(
-        chain_id,
-        &gvr,
-        &instance_pda_b,
-        &subject_key,
-        proof_type,
-        &verified_value,
-    );
+    let stmt_id_a =
+        derive_statement_id_v2(chain_id, &gvr, &subject_key, proof_type, &verified_value);
+    let stmt_id_b =
+        derive_statement_id_v2(chain_id, &gvr, &subject_key, proof_type, &verified_value);
 
-    // Assert multi-instance separation: Identical state facts produce distinct statement IDs!
-    assert_ne!(
+    // Assert RFP-021 Functionality #6: For identical verified Ethereum state,
+    // the emitted statement identifier MUST be identical and deterministic!
+    assert_eq!(
         stmt_id_a, stmt_id_b,
-        "different instances MUST produce distinct statement IDs"
+        "identical verified Ethereum state facts MUST produce identical deterministic statement IDs (RFP-021 Functionality #6)"
     );
 
     // 2. Evaluate statement with instance A binding
@@ -554,6 +545,7 @@ fn test_finding7_job_account_collision_prevents_overwrite() {
         instance: inst.clone(),
         update: update_a.clone(),
         nonce: 42,
+        trusted_head_slot: None,
     };
 
     // First submission succeeds and creates the job
@@ -573,6 +565,7 @@ fn test_finding7_job_account_collision_prevents_overwrite() {
         instance: inst,
         update: update_a,
         nonce: 42, // Same nonce!
+        trusted_head_slot: None,
     };
 
     let res_conflict = handle_begin_update_authenticated(&mut store, &inst_pda, args_conflicting);
@@ -789,6 +782,7 @@ fn test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatche
     let begin_args = mosoo_core::verifier::BeginUpdateArgs {
         instance: rogue_instance,
         nonce: 0,
+        trusted_head_slot: None,
         update: mosoo_core::types::LightClientUpdate {
             attested_header: mosoo_core::types::BeaconBlockHeader {
                 slot: 1001,
@@ -2408,4 +2402,216 @@ fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
         res.unwrap_err(),
         MosooError::UntrustedSourceInstance
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Audit Session 7 Findings: Weak-Subjectivity Expiry, Canonical Statement ID,
+// and zkVM Guest Authenticated Dispatch Hardening
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding30_weak_subjectivity_window_expiry_rejected() {
+    let instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    let current_slot = instance.current_slot;
+
+    // 1. Direct update jump exceeding canonical weak-subjectivity window (54,000 slots)
+    let mut update_jump_expired = mosoo_core::types::LightClientUpdate {
+        attested_header: mosoo_core::types::BeaconBlockHeader {
+            slot: current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 1,
+            proposer_index: 0,
+            parent_root: [0u8; 32],
+            state_root: [0u8; 32],
+            body_root: [0u8; 32],
+        },
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: mosoo_core::types::BeaconBlockHeader {
+            slot: current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 1,
+            proposer_index: 0,
+            parent_root: [0u8; 32],
+            state_root: [0u8; 32],
+            body_root: [0u8; 32],
+        },
+        finality_branch: vec![[0u8; 32]; 6],
+        sync_aggregate: mosoo_core::types::SyncAggregate {
+            sync_committee_bits: vec![0xFF; 64],
+            sync_committee_signature: vec![0u8; 96],
+        },
+        signature_slot: current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 2,
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+    };
+
+    let res_jump =
+        mosoo_core::verifier::handle_begin_update(mosoo_core::verifier::BeginUpdateArgs::new(
+            instance.clone(),
+            update_jump_expired.clone(),
+            1,
+        ));
+    assert!(
+        matches!(res_jump, Err(MosooError::WeakSubjectivityExpired { .. })),
+        "update jumping beyond CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS MUST fail closed with WeakSubjectivityExpired"
+    );
+
+    // 2. Adversary attempts to advance a stale instance (stalled beyond 54,000 slots from current Ethereum time)
+    //    using small incremental updates (e.g. 50 slots).
+    //    When trusted_head_slot is provided, the stale instance MUST fail closed!
+    update_jump_expired.finalized_header.slot = current_slot + 50;
+    update_jump_expired.attested_header.slot = current_slot + 50;
+    update_jump_expired.signature_slot = current_slot + 51;
+
+    let small_update_args =
+        mosoo_core::verifier::BeginUpdateArgs::new(instance.clone(), update_jump_expired, 2)
+            .with_trusted_head_slot(current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 500);
+
+    let res_stale_chained = mosoo_core::verifier::handle_begin_update(small_update_args);
+    assert!(
+        matches!(
+            res_stale_chained,
+            Err(MosooError::WeakSubjectivityExpired { .. })
+        ),
+        "adversary cannot advance an expired/stale instance using small chained updates"
+    );
+
+    // 3. State attestation against an expired instance MUST fail closed
+    let mut stale_header = make_test_header(&instance);
+    stale_header.slot = current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 10;
+    let attest_args = AttestStateArgs {
+        instance: instance.clone(),
+        header: stale_header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x01),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+    };
+    let res_attest_stale = mosoo_core::verifier::handle_attest_state(attest_args);
+    assert!(
+        matches!(
+            res_attest_stale,
+            Err(MosooError::WeakSubjectivityExpired { .. })
+        ),
+        "state attestation on stale instance MUST fail closed with WeakSubjectivityExpired"
+    );
+}
+
+#[test]
+fn test_finding31_statement_id_cross_instance_consistency() {
+    let chain_id = ETH_SEPOLIA_CHAIN_ID;
+    let gvr = crypto::genesis_validators_root(chain_id);
+    let mut verified_value = [0u8; 32];
+    verified_value[31] = 100; // 100 wei
+    let proof_type = PROOF_TYPE_ETH_DEPOSIT;
+
+    let deposit_contract = CANONICAL_SEPOLIA_MOSOO_LOCKER;
+    let sender = [0x11; 20];
+    let recipient = [0x22; 32];
+    let execution_block_hash = [0x33; 32];
+    let slot = 100;
+    let tx_index = 0;
+    let log_index = 0;
+
+    let subject_key = ether_receiver::derive_eth_deposit_subject_key(
+        &execution_block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+
+    // Two independent light client instances verifying the exact same state fact
+    let inst_a_id = CANONICAL_SEPOLIA_INSTANCE_ID;
+    let inst_b_id = [0x02; 32];
+    let pda_a = CANONICAL_SEPOLIA_MOSOO_INSTANCE;
+    let pda_b = mosoo_core::types::derive_instance_pda(chain_id, &inst_b_id);
+
+    // 1. Both produce IDENTICAL statement IDs (RFP-021 Functionality #6)
+    let stmt_id_a =
+        derive_statement_id_v2(chain_id, &gvr, &subject_key, proof_type, &verified_value);
+    let stmt_id_b =
+        derive_statement_id_v2(chain_id, &gvr, &subject_key, proof_type, &verified_value);
+    assert_eq!(
+        stmt_id_a, stmt_id_b,
+        "Identical verified state facts MUST produce identical deterministic statement IDs across instances"
+    );
+
+    // 2. Emitted statements retain source_instance_pda for consumer binding (RFP-021 Functionality #15)
+    let stmt_a = evaluate_with_binding_v2(
+        &Predicate::Equal {
+            expected: verified_value,
+        },
+        &VerifiedValue::StorageValue(verified_value),
+        chain_id,
+        gvr,
+        inst_a_id,
+        pda_a,
+        subject_key,
+        proof_type,
+        StatementBinding::NativeEthDeposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            sender,
+            recipient,
+        },
+    )
+    .unwrap();
+
+    let stmt_b = evaluate_with_binding_v2(
+        &Predicate::Equal {
+            expected: verified_value,
+        },
+        &VerifiedValue::StorageValue(verified_value),
+        chain_id,
+        gvr,
+        inst_b_id,
+        pda_b,
+        subject_key,
+        proof_type,
+        StatementBinding::NativeEthDeposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            sender,
+            recipient,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(stmt_a.statement_id, stmt_b.statement_id);
+    assert_ne!(stmt_a.source_instance_pda, stmt_b.source_instance_pda);
+
+    // 3. Consumer pinned to canonical instance A accepts stmt_a but rejects stmt_b
+    let mut ledger_a = MethLedger::new();
+    let mut nullifiers = EtherNullifierSet::new();
+
+    let stmt_acc_a = StatementAccount::new_authentic(stmt_a);
+    let stmt_acc_b = StatementAccount::new_authentic(stmt_b);
+
+    let mint_res_a = ledger_a.mint_deposit_authenticated_pda_u256(
+        &stmt_acc_a,
+        CANONICAL_SEPOLIA_MOSOO_LOCKER,
+        &mut nullifiers,
+    );
+    assert!(mint_res_a.is_ok(), "Expected ok, got {:?}", mint_res_a);
+    let mint_res_b = ledger_a.mint_deposit_authenticated_pda_u256(
+        &stmt_acc_b,
+        CANONICAL_SEPOLIA_MOSOO_LOCKER,
+        &mut nullifiers,
+    );
+    assert!(
+        mint_res_b.is_err(),
+        "Statement from untrusted instance B must be rejected"
+    );
 }

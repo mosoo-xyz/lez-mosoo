@@ -176,6 +176,7 @@ fn test_mutation_attack_3_stale_update_rejected() {
         instance: instance.clone(),
         update: stale_update.clone(),
         nonce: 1,
+        trusted_head_slot: None,
     });
 
     assert!(
@@ -196,6 +197,7 @@ fn test_mutation_attack_3_stale_update_rejected() {
         instance,
         update: expired_update,
         nonce: 2,
+        trusted_head_slot: None,
     });
 
     assert!(
@@ -942,6 +944,7 @@ fn test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejecte
         instance: instance.clone(),
         update: update.clone(),
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect("BeginUpdate succeeds");
 
@@ -1899,6 +1902,7 @@ fn test_security_audit_attack_19_instance_immutability_and_rewrite_rejected() {
         instance,
         update: stale_update,
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect_err("Update exceeding weak-subjectivity window MUST be rejected");
     assert!(matches!(err, MosooError::WeakSubjectivityExpired { .. }));
@@ -2026,6 +2030,7 @@ fn test_security_audit_attack_21_out_of_order_update_slots_rejected() {
         instance,
         update: ooo_update,
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect_err("Out-of-order slots must be rejected");
     assert!(
@@ -2254,6 +2259,7 @@ fn test_security_audit_attack_25_committee_handoff_period_skip_rejected() {
         instance,
         update: period_skip_update,
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect_err("Two-period jump MUST be rejected with SyncCommitteePeriodSkip");
 
@@ -2322,6 +2328,7 @@ fn test_security_audit_attack_26_next_period_missing_authenticated_committee_rej
         instance,
         update: next_period_update,
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect_err("Next-period signature without authenticated committee MUST be rejected");
 
@@ -2399,6 +2406,7 @@ fn test_security_audit_attack_27_previous_committee_future_period_signature_reje
         instance: instance.clone(),
         update,
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect("BeginUpdate aggregates with authenticated next_sync_committee");
 
@@ -3113,6 +3121,7 @@ fn test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_
         instance: instance_a.clone(),
         update: update.clone(),
         nonce: 1,
+        trusted_head_slot: None,
     })
     .expect("Begin update for instance A succeeds");
 
@@ -4486,6 +4495,7 @@ fn test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accoun
         instance: instance.clone(),
         update: dummy_update.clone(),
         nonce: 1,
+        trusted_head_slot: None,
     };
     let err_unregistered =
         handle_begin_update_authenticated(&mut store, &instance_pda, begin_args.clone());
