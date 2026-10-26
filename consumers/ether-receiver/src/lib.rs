@@ -9,6 +9,7 @@ pub use mosoo_core::types::{
     PROOF_TYPE_ACCOUNT_BALANCE, PROOF_TYPE_ETH_DEPOSIT,
 };
 use serde::{Deserialize, Serialize};
+use sha2::Digest;
 use std::collections::HashMap;
 use thiserror::Error;
 
@@ -510,6 +511,153 @@ pub(crate) fn claim_ether_u256_internal(
     Ok(verified_wei)
 }
 
+/// Detailed opening/witness parameters required to redeem a privacy-shielded Native ETH statement (Finding 6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShieldedEtherClaimWitness {
+    /// The unshielded binding containing the underlying Ethereum transfer or deposit parameters.
+    pub unshielded_binding: StatementBinding,
+    /// The private 256-bit blinding salt used during statement issuance (if salted).
+    pub privacy_salt: Option<[u8; 32]>,
+}
+
+/// Verifies and claims a privacy-shielded native ETH statement (where `statement.binding` is `StatementBinding::Shielded`),
+/// verifying the commitment and blinded identifiers against the claimant's private witness preimage.
+pub fn claim_shielded_ether_statement_u256(
+    statement: &VerifiedStatement,
+    witness: &ShieldedEtherClaimWitness,
+    nullifiers: &mut EtherNullifierSet,
+    min_wei: U256,
+) -> Result<U256, EtherReceiverError> {
+    if !is_supported_chain_id(statement.chain_id) {
+        return Err(EtherReceiverError::WrongChain(statement.chain_id));
+    }
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(EtherReceiverError::UnauthenticatedAttester);
+    }
+    if !statement.predicate_holds {
+        return Err(EtherReceiverError::PredicateFailed);
+    }
+    if statement.proof_type_tag != PROOF_TYPE_ETH_DEPOSIT {
+        return Err(EtherReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let StatementBinding::Shielded { commitment } = &statement.binding else {
+        return Err(EtherReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    };
+
+    // 1. Verify commitment against unshielded binding witness
+    let expected_commitment = match witness.privacy_salt {
+        Some(ref salt) => witness.unshielded_binding.compute_salted_commitment(salt),
+        None => witness.unshielded_binding.compute_commitment(),
+    };
+    if *commitment != expected_commitment {
+        return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    // 2. Derive unshielded subject key from the witness binding
+    let (block_hash, slot, tx_index, log_index, deposit_contract, sender, recipient) =
+        match &witness.unshielded_binding {
+            StatementBinding::NativeEthDeposit {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                deposit_contract,
+                sender,
+                recipient,
+            } => (
+                *execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                *deposit_contract,
+                *sender,
+                *recipient,
+            ),
+            _ => {
+                return Err(EtherReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ))
+            }
+        };
+
+    let unblinded_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+
+    // 3. Verify blinded subject key
+    let expected_blinded_subject_key: [u8; 32] = match witness.privacy_salt {
+        Some(ref salt) => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_salted_subject_key_v1:");
+            hasher.update(salt);
+            hasher.update(unblinded_subject_key);
+            hasher.finalize().into()
+        }
+        None => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_shielded_subject_key_v1:");
+            hasher.update(unblinded_subject_key);
+            hasher.finalize().into()
+        }
+    };
+    if statement.subject_key != expected_blinded_subject_key {
+        return Err(EtherReceiverError::SubjectKeyMismatch);
+    }
+
+    // 4. Derive unblinded canonical statement ID
+    let mut unblinded_stmt = statement.clone();
+    unblinded_stmt.binding = witness.unshielded_binding.clone();
+    unblinded_stmt.subject_key = unblinded_subject_key;
+    let unblinded_id = unblinded_stmt.derive_canonical_id();
+
+    // 5. Verify blinded statement ID
+    let expected_blinded_id: [u8; 32] = match witness.privacy_salt {
+        Some(ref salt) => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_salted_statement_id_v1:");
+            hasher.update(salt);
+            hasher.update(unblinded_id);
+            hasher.finalize().into()
+        }
+        None => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_shielded_statement_id_v1:");
+            hasher.update(unblinded_id);
+            hasher.finalize().into()
+        }
+    };
+    if statement.statement_id != expected_blinded_id {
+        return Err(EtherReceiverError::StatementIdMismatch);
+    }
+
+    let verified_wei = statement.value_as_u256();
+    if verified_wei < min_wei {
+        return Err(EtherReceiverError::BalanceTooLowU256 {
+            actual: verified_wei,
+            required: min_wei,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id) || nullifiers.is_used(&statement.subject_key) {
+        return Err(EtherReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    nullifiers.mark_used(statement.subject_key);
+
+    Ok(verified_wei)
+}
+
 /// Verify an Ether statement with full 256-bit (U256) precision and credit LEZ-side ether.
 ///
 /// Prevents truncation or rejection for high-value transfers > u64::MAX (e.g. >18.45 ETH in wei).
@@ -699,6 +847,7 @@ pub fn claim_ether_with_store<S: AccountStore>(
 }
 
 /// Atomically verifies an Ether statement with full 256-bit (U256) precision against persistent PDA nullifiers in AccountStore.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_with_store_u256<S: AccountStore>(
     statement: &VerifiedStatement,
@@ -845,6 +994,7 @@ pub fn claim_ether_with_store_u256<S: AccountStore>(
 }
 
 /// Atomically verifies an Ether statement with u128 precision against persistent PDA nullifiers in AccountStore.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_with_store_u128<S: AccountStore>(
     statement: &VerifiedStatement,

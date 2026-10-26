@@ -315,9 +315,11 @@ pub fn verify_state_proof(
             }
 
             let from_topic = verified_log.topics[1];
-            if &from_topic.0[12..32] != sender.as_slice() {
+            // Enforce canonical ABI indexed address encoding with 12 leading zero bytes (Finding 5 / Medium #1)
+            if from_topic.0[0..12] != [0u8; 12] || &from_topic.0[12..32] != sender.as_slice() {
                 return Err(MosooError::Internal(
-                    "sender address mismatch in Deposit log".into(),
+                    "sender address mismatch or non-canonical 12-zero topic padding in Deposit log"
+                        .into(),
                 ));
             }
 
@@ -380,15 +382,19 @@ pub fn verify_state_proof(
                 )));
             }
             let token_topic = verified_log.topics[1];
-            if &token_topic.0[12..32] != token_contract.as_slice() {
+            // Enforce canonical ABI indexed address encoding with 12 leading zero bytes
+            if token_topic.0[0..12] != [0u8; 12]
+                || &token_topic.0[12..32] != token_contract.as_slice()
+            {
                 return Err(MosooError::Internal(
-                    "token contract mismatch in DepositERC20 log".into(),
+                    "token contract mismatch or non-canonical 12-zero topic padding in DepositERC20 log".into(),
                 ));
             }
             let sender_topic = verified_log.topics[2];
-            if &sender_topic.0[12..32] != sender.as_slice() {
+            // Enforce canonical ABI indexed address encoding with 12 leading zero bytes
+            if sender_topic.0[0..12] != [0u8; 12] || &sender_topic.0[12..32] != sender.as_slice() {
                 return Err(MosooError::Internal(
-                    "sender address mismatch in DepositERC20 log".into(),
+                    "sender address mismatch or non-canonical 12-zero topic padding in DepositERC20 log".into(),
                 ));
             }
             let recipient_topic = verified_log.topics[3];
@@ -599,6 +605,12 @@ pub fn decode_deposit_eth_log(
         });
     };
 
+    // Enforce canonical ABI indexed address encoding with 12 leading zero bytes (Finding 5)
+    if log.topics[1].0[0..12] != [0u8; 12] {
+        return Err(MosooError::Internal(
+            "sender address topic in Deposit log must have canonical 12 leading zero bytes".into(),
+        ));
+    }
     let sender = Address::from_slice(&log.topics[1].0[12..32]);
     let recipient = log.topics[2].0;
 
@@ -640,7 +652,20 @@ pub fn decode_deposit_erc20_log(
         });
     }
 
+    // Enforce canonical ABI indexed address encoding with 12 leading zero bytes
+    if log.topics[1].0[0..12] != [0u8; 12] {
+        return Err(MosooError::Internal(
+            "token contract topic in DepositERC20 log must have canonical 12 leading zero bytes"
+                .into(),
+        ));
+    }
     let token = Address::from_slice(&log.topics[1].0[12..32]);
+    if log.topics[2].0[0..12] != [0u8; 12] {
+        return Err(MosooError::Internal(
+            "sender address topic in DepositERC20 log must have canonical 12 leading zero bytes"
+                .into(),
+        ));
+    }
     let sender = Address::from_slice(&log.topics[2].0[12..32]);
     let recipient = log.topics[3].0;
 

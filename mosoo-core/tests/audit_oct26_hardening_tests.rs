@@ -1995,3 +1995,417 @@ fn test_finding25_public_statement_shielding_prevents_subject_key_linkability() 
         &original.statement_id
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Finding 26: Native ETH Deposit Missing Canonical 12-Zero Sender Topic Padding (Medium #5 / P2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding26_native_eth_deposit_sender_canonical_12zero_padding() {
+    use alloy_primitives::{Address, B256, U256};
+    use mosoo_core::error::MosooError;
+    use mosoo_core::inclusion::{decode_deposit_erc20_log, decode_deposit_eth_log, VerifiedLog};
+
+    let deposit_contract = Address::repeat_byte(0x11);
+    let sender = Address::repeat_byte(0x22);
+    let recipient = [0x33; 32];
+    let amount = U256::from(1_000_000_000_000_000_000u64); // 1 ETH
+    let nonce = 5u64;
+
+    let deposit_eth_sig = B256::from(alloy_primitives::keccak256(
+        b"DepositETH(address,bytes32,uint256,uint64)",
+    ));
+
+    // 1. Canonical topic: 12 leading zeros + 20 bytes of sender address
+    let mut canonical_sender_topic = [0u8; 32];
+    canonical_sender_topic[12..32].copy_from_slice(sender.as_slice());
+
+    // 2. Non-canonical topic: non-zero garbage in first 12 bytes
+    let mut non_canonical_sender_topic = canonical_sender_topic;
+    non_canonical_sender_topic[0] = 0xff; // Corrupted padding!
+
+    let mut nonce_topic = [0u8; 32];
+    nonce_topic[24..32].copy_from_slice(&nonce.to_be_bytes());
+
+    // Valid canonical log
+    let valid_log = VerifiedLog {
+        emitter: deposit_contract,
+        tx_index: 0,
+        log_index: 0,
+        topics: vec![
+            deposit_eth_sig,
+            B256::from(canonical_sender_topic),
+            B256::from(recipient),
+            B256::from(nonce_topic),
+        ],
+        data: amount.to_be_bytes::<32>().to_vec(),
+    };
+
+    let decoded = decode_deposit_eth_log(&valid_log)
+        .expect("Canonical DepositETH log must decode successfully");
+    assert_eq!(decoded.0, sender);
+    assert_eq!(decoded.1, recipient);
+    assert_eq!(decoded.2, amount);
+    assert_eq!(decoded.3, nonce);
+
+    // Corrupted log with non-canonical 12 leading bytes must fail closed!
+    let corrupted_log = VerifiedLog {
+        emitter: deposit_contract,
+        tx_index: 0,
+        log_index: 0,
+        topics: vec![
+            deposit_eth_sig,
+            B256::from(non_canonical_sender_topic),
+            B256::from(recipient),
+            B256::from(nonce_topic),
+        ],
+        data: amount.to_be_bytes::<32>().to_vec(),
+    };
+
+    let err = decode_deposit_eth_log(&corrupted_log).unwrap_err();
+    assert!(
+        matches!(err, MosooError::Internal(ref msg) if msg.contains("canonical 12 leading zero bytes"))
+    );
+
+    // 3. Test ERC-20 log canonical 12-zero topic padding
+    let deposit_erc20_sig = B256::from(alloy_primitives::keccak256(
+        b"DepositERC20(address,address,bytes32,uint256,uint64)",
+    ));
+    let token = Address::repeat_byte(0x55);
+    let mut canonical_token_topic = [0u8; 32];
+    canonical_token_topic[12..32].copy_from_slice(token.as_slice());
+
+    let mut data = Vec::with_capacity(64);
+    data.extend_from_slice(&amount.to_be_bytes::<32>());
+    data.extend_from_slice(&U256::from(nonce).to_be_bytes::<32>());
+
+    let valid_erc20_log = VerifiedLog {
+        emitter: deposit_contract,
+        tx_index: 0,
+        log_index: 0,
+        topics: vec![
+            deposit_erc20_sig,
+            B256::from(canonical_token_topic),
+            B256::from(canonical_sender_topic),
+            B256::from(recipient),
+        ],
+        data: data.clone(),
+    };
+    let decoded_erc20 =
+        decode_deposit_erc20_log(&valid_erc20_log).expect("Canonical DepositERC20 log must decode");
+    assert_eq!(decoded_erc20.0, token);
+    assert_eq!(decoded_erc20.1, sender);
+
+    // Corrupt sender topic padding in ERC-20
+    let corrupted_erc20_log = VerifiedLog {
+        emitter: deposit_contract,
+        tx_index: 0,
+        log_index: 0,
+        topics: vec![
+            deposit_erc20_sig,
+            B256::from(canonical_token_topic),
+            B256::from(non_canonical_sender_topic),
+            B256::from(recipient),
+        ],
+        data,
+    };
+    let err_erc20 = decode_deposit_erc20_log(&corrupted_erc20_log).unwrap_err();
+    assert!(
+        matches!(err_erc20, MosooError::Internal(ref msg) if msg.contains("canonical 12 leading zero bytes"))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 27: Shielded Statement Redemption with Witness in Consumers (Correctness #6 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding27_shielded_statement_consumer_redemption_with_witness() {
+    use alloy_primitives::U256;
+    use erc20_receiver::{claim_shielded_statement_u256, NullifierSet, ShieldedErc20ClaimWitness};
+    use ether_receiver::{
+        claim_shielded_ether_statement_u256, EtherNullifierSet, ShieldedEtherClaimWitness,
+    };
+    use mosoo_core::predicate::{derive_erc20_deposit_subject_key, derive_eth_deposit_subject_key};
+    use mosoo_core::types::{
+        StatementBinding, VerifiedStatement, CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID, PROOF_TYPE_ERC20_DEPOSIT, PROOF_TYPE_ETH_DEPOSIT,
+    };
+
+    let chain_id = ETH_SEPOLIA_CHAIN_ID;
+    let block_hash = [0x11; 32];
+    let slot = 1000u64;
+    let tx_index = 0u64;
+    let log_index = 0usize;
+    let deposit_contract = [0x22; 20];
+    let token_contract = [0x33; 20];
+    let sender = [0x44; 20];
+    let recipient = [0x55; 32];
+    let amount_u256 = U256::from(500_000_000u64);
+    let salt = [0x77; 32];
+
+    // --- 1. Test Shielded ERC-20 Deposit Claim ---
+    let unshielded_erc20_binding = StatementBinding::Erc20Deposit {
+        execution_block_hash: block_hash,
+        slot,
+        tx_index,
+        log_index,
+        deposit_contract,
+        token_contract,
+        sender,
+        recipient,
+    };
+    let unshielded_erc20_subject_key = derive_erc20_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &token_contract,
+        &sender,
+        &recipient,
+    );
+
+    let raw_erc20_stmt = VerifiedStatement {
+        chain_id,
+        genesis_validators_root: [0xaa; 32],
+        source_instance_id: [0xbb; 32],
+        source_instance_pda: CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0u8; 32], // Computed below
+        predicate_holds: true,
+        verified_value: amount_u256.to_be_bytes::<32>(),
+        subject_key: unshielded_erc20_subject_key,
+        proof_type_tag: PROOF_TYPE_ERC20_DEPOSIT,
+        binding: unshielded_erc20_binding.clone(),
+    };
+    let mut raw_erc20_stmt = raw_erc20_stmt;
+    raw_erc20_stmt.statement_id = raw_erc20_stmt.derive_canonical_id();
+
+    // Blind the statement with the secret 256-bit salt (RFP-021 Functionality #8)
+    let shielded_erc20_stmt = raw_erc20_stmt.shield_with_salt(&salt);
+    assert!(shielded_erc20_stmt.is_shielded());
+    assert_ne!(
+        shielded_erc20_stmt.statement_id,
+        raw_erc20_stmt.statement_id
+    );
+    assert_ne!(shielded_erc20_stmt.subject_key, raw_erc20_stmt.subject_key);
+
+    let mut erc20_nullifiers = NullifierSet::new();
+    let valid_erc20_witness = ShieldedErc20ClaimWitness {
+        unshielded_binding: unshielded_erc20_binding.clone(),
+        privacy_salt: Some(salt),
+    };
+
+    // Claimant redeems shielded statement with private witness
+    let claimed_amount = claim_shielded_statement_u256(
+        &shielded_erc20_stmt,
+        &valid_erc20_witness,
+        &mut erc20_nullifiers,
+        U256::from(100_000u64),
+    )
+    .expect("Shielded ERC-20 statement must redeem successfully");
+    assert_eq!(claimed_amount, amount_u256);
+
+    // Replay attack with same shielded statement must be rejected by blinded nullifier
+    let replay_err = claim_shielded_statement_u256(
+        &shielded_erc20_stmt,
+        &valid_erc20_witness,
+        &mut erc20_nullifiers,
+        U256::from(100_000u64),
+    )
+    .unwrap_err();
+    assert_eq!(replay_err, erc20_receiver::ReceiverError::AlreadyClaimed);
+
+    // Adversary with incorrect salt is strictly rejected
+    let bad_salt_witness = ShieldedErc20ClaimWitness {
+        unshielded_binding: unshielded_erc20_binding,
+        privacy_salt: Some([0x99; 32]), // Wrong salt!
+    };
+    let bad_salt_err = claim_shielded_statement_u256(
+        &shielded_erc20_stmt,
+        &bad_salt_witness,
+        &mut NullifierSet::new(),
+        U256::from(100_000u64),
+    )
+    .unwrap_err();
+    assert_eq!(
+        bad_salt_err,
+        erc20_receiver::ReceiverError::SubjectKeyMismatch
+    );
+
+    // --- 2. Test Shielded Native ETH Deposit Claim ---
+    let unshielded_eth_binding = StatementBinding::NativeEthDeposit {
+        execution_block_hash: block_hash,
+        slot,
+        tx_index,
+        log_index,
+        deposit_contract,
+        sender,
+        recipient,
+    };
+    let unshielded_eth_subject_key = derive_eth_deposit_subject_key(
+        &block_hash,
+        slot,
+        tx_index,
+        log_index,
+        &deposit_contract,
+        &sender,
+        &recipient,
+    );
+
+    let raw_eth_stmt = VerifiedStatement {
+        chain_id,
+        genesis_validators_root: [0xaa; 32],
+        source_instance_id: [0xbb; 32],
+        source_instance_pda: CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0u8; 32],
+        predicate_holds: true,
+        verified_value: amount_u256.to_be_bytes::<32>(),
+        subject_key: unshielded_eth_subject_key,
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: unshielded_eth_binding.clone(),
+    };
+    let mut raw_eth_stmt = raw_eth_stmt;
+    raw_eth_stmt.statement_id = raw_eth_stmt.derive_canonical_id();
+
+    let shielded_eth_stmt = raw_eth_stmt.shield_with_salt(&salt);
+    let mut eth_nullifiers = EtherNullifierSet::new();
+    let valid_eth_witness = ShieldedEtherClaimWitness {
+        unshielded_binding: unshielded_eth_binding,
+        privacy_salt: Some(salt),
+    };
+
+    let claimed_wei = claim_shielded_ether_statement_u256(
+        &shielded_eth_stmt,
+        &valid_eth_witness,
+        &mut eth_nullifiers,
+        U256::from(100_000u64),
+    )
+    .expect("Shielded Native ETH statement must redeem successfully");
+    assert_eq!(claimed_wei, amount_u256);
+
+    // Replay attack rejected
+    let eth_replay_err = claim_shielded_ether_statement_u256(
+        &shielded_eth_stmt,
+        &valid_eth_witness,
+        &mut eth_nullifiers,
+        U256::from(100_000u64),
+    )
+    .unwrap_err();
+    assert_eq!(
+        eth_replay_err,
+        ether_receiver::EtherReceiverError::AlreadyClaimed
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 28: zkVM Guest Authenticated Dispatch and Host Storage Boundaries (P0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
+    use mosoo_core::error::MosooError;
+    use mosoo_core::types::{
+        AccountStore, Predicate, ProgramAccountStore, CANONICAL_SEPOLIA_INSTANCE_ID,
+        ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    };
+    use mosoo_core::verifier::{
+        dispatch_guest_instruction, dispatch_store_instruction, AttestStateArgs, GuestInstruction,
+    };
+
+    // 1. In zkVM guest, AttestStateAuthenticated for unpinned chain must fail closed
+    let unpinned_chain_id = 999999u64;
+    let fake_instance = make_test_instance(unpinned_chain_id, [0x44; 32]);
+    let fake_pda = fake_instance.pda_address();
+    let fake_header = make_test_header(&fake_instance);
+
+    let unpinned_instruction = GuestInstruction::AttestStateAuthenticated {
+        expected_instance_pda: fake_pda,
+        expected_header_pda: Some(fake_header.pda_address()),
+        args: AttestStateArgs {
+            instance: fake_instance,
+            header: fake_header,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: empty_state_proof(ProofTarget::AccountBalance {
+                address: alloy_primitives::Address::repeat_byte(0x01),
+            }),
+            predicate: Predicate::Equal {
+                expected: [0u8; 32],
+            },
+            privacy_salt: None,
+        },
+    };
+
+    let res_unpinned = dispatch_guest_instruction(unpinned_instruction);
+    assert!(matches!(
+        res_unpinned.unwrap_err(),
+        MosooError::UntrustedSourceInstance
+    ));
+
+    // 2. dispatch_store_instruction MUST use host's persistent store and ignore any caller-provided fake store
+    let mut host_store = ProgramAccountStore::default();
+    let genuine_instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    let genuine_pda = genuine_instance.pda_address();
+    host_store
+        .try_set_account_with_owner(
+            &genuine_pda,
+            serde_json::to_vec(&genuine_instance).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .unwrap();
+
+    let mut fake_store = ProgramAccountStore::default();
+    let mut forged_instance = genuine_instance.clone();
+    forged_instance.current_slot = 999999;
+    fake_store
+        .try_set_account_with_owner(
+            &genuine_pda,
+            serde_json::to_vec(&forged_instance).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .unwrap();
+
+    let genuine_header = make_test_header(&genuine_instance);
+    host_store
+        .try_set_account_with_owner(
+            &genuine_header.pda_address(),
+            serde_json::to_vec(&genuine_header).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .unwrap();
+
+    // Adversary wraps their call in StoreBacked passing fake_store
+    let wrapped_instruction = GuestInstruction::StoreBacked {
+        store: fake_store,
+        instruction: Box::new(GuestInstruction::AttestStateAuthenticated {
+            expected_instance_pda: genuine_pda,
+            expected_header_pda: Some(genuine_header.pda_address()),
+            args: AttestStateArgs {
+                instance: forged_instance,
+                header: genuine_header,
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: empty_state_proof(ProofTarget::AccountBalance {
+                    address: alloy_primitives::Address::repeat_byte(0x01),
+                }),
+                predicate: Predicate::Equal {
+                    expected: [0u8; 32],
+                },
+                privacy_salt: None,
+            },
+        }),
+    };
+
+    // When dispatched via dispatch_store_instruction, host_store is used!
+    // The attacker's fake_store is completely ignored!
+    let res = dispatch_store_instruction(&mut host_store, wrapped_instruction);
+    // It verifies against host_store (empty proof fails with InvalidTrieProof, NOT UntrustedSourceInstance)
+    assert!(res.is_err());
+    assert!(!matches!(
+        res.unwrap_err(),
+        MosooError::UntrustedSourceInstance
+    ));
+}

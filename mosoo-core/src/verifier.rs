@@ -155,6 +155,8 @@ pub fn dispatch_guest_instruction(
                 if expected_instance_pda != pinned {
                     return Err(MosooError::UntrustedSourceInstance);
                 }
+            } else {
+                return Err(MosooError::UntrustedSourceInstance);
             }
             args.instance.validate_authenticity().map_err(|msg| {
                 MosooError::Internal(format!("invalid instance authenticity: {msg}"))
@@ -183,6 +185,8 @@ pub fn dispatch_guest_instruction(
                 if expected_instance_pda != pinned {
                     return Err(MosooError::UntrustedSourceInstance);
                 }
+            } else {
+                return Err(MosooError::UntrustedSourceInstance);
             }
             if args.job.pda_address() != expected_job_pda {
                 return Err(MosooError::UnauthenticatedJobAccount);
@@ -221,6 +225,8 @@ pub fn dispatch_guest_instruction(
                 if expected_instance_pda != pinned {
                     return Err(MosooError::UntrustedSourceInstance);
                 }
+            } else {
+                return Err(MosooError::UntrustedSourceInstance);
             }
             args.instance.validate_authenticity().map_err(|msg| {
                 MosooError::Internal(format!("invalid instance authenticity: {msg}"))
@@ -244,6 +250,8 @@ pub fn dispatch_guest_instruction(
                 if expected_instance_pda != pinned {
                     return Err(MosooError::UntrustedSourceInstance);
                 }
+            } else {
+                return Err(MosooError::UntrustedSourceInstance);
             }
             if args.job.pda_address() != expected_job_pda {
                 return Err(MosooError::UnauthenticatedJobAccount);
@@ -263,10 +271,13 @@ pub fn dispatch_guest_instruction(
             }
             handle_miller_update(args)
         }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::StoreBacked {
             mut store,
             instruction,
         } => dispatch_store_instruction(&mut store, *instruction),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
     }
 }
 
@@ -1199,6 +1210,9 @@ pub fn verify_instance_account_authenticity<S: AccountStore>(
     if derived_pda != *expected_pda {
         return Err(MosooError::DomainSeparationFailed);
     }
+    instance
+        .validate_authenticity()
+        .map_err(|msg| MosooError::Internal(format!("invalid instance authenticity: {msg}")))?;
     Ok(instance)
 }
 
@@ -1476,10 +1490,9 @@ pub fn dispatch_store_instruction<S: AccountStore>(
             args,
         ),
 
-        GuestInstruction::StoreBacked {
-            mut store,
-            instruction,
-        } => dispatch_store_instruction(&mut store, *instruction),
+        GuestInstruction::StoreBacked { instruction, .. } => {
+            dispatch_store_instruction(store, *instruction)
+        }
     }
 }
 

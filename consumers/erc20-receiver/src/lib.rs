@@ -555,6 +555,177 @@ pub(crate) fn claim_u256_internal(
     Ok(verified_amount)
 }
 
+/// Detailed opening/witness parameters required to redeem a privacy-shielded ERC-20 statement (Finding 6).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShieldedErc20ClaimWitness {
+    /// The unshielded binding containing the underlying Ethereum transfer or deposit parameters.
+    pub unshielded_binding: StatementBinding,
+    /// The private 256-bit blinding salt used during statement issuance (if salted).
+    pub privacy_salt: Option<[u8; 32]>,
+}
+
+/// Verifies and claims a privacy-shielded statement (where `statement.binding` is `StatementBinding::Shielded`),
+/// verifying the commitment and blinded identifiers against the claimant's private witness preimage.
+pub fn claim_shielded_statement_u256(
+    statement: &VerifiedStatement,
+    witness: &ShieldedErc20ClaimWitness,
+    nullifiers: &mut NullifierSet,
+    min_amount: U256,
+) -> Result<U256, ReceiverError> {
+    if !is_supported_chain_id(statement.chain_id) {
+        return Err(ReceiverError::WrongChain(statement.chain_id));
+    }
+    if statement.attester_program_id != MOSOO_PROGRAM_ID {
+        return Err(ReceiverError::UnauthenticatedAttester);
+    }
+    if !statement.predicate_holds {
+        return Err(ReceiverError::PredicateFailed);
+    }
+    if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER
+        && statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT
+    {
+        return Err(ReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    }
+
+    let StatementBinding::Shielded { commitment } = &statement.binding else {
+        return Err(ReceiverError::InvalidStatementType(
+            statement.proof_type_tag,
+        ));
+    };
+
+    // 1. Verify commitment against unshielded binding witness
+    let expected_commitment = match witness.privacy_salt {
+        Some(ref salt) => witness.unshielded_binding.compute_salted_commitment(salt),
+        None => witness.unshielded_binding.compute_commitment(),
+    };
+    if *commitment != expected_commitment {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    // 2. Derive unshielded subject key from the witness binding
+    let unblinded_subject_key = match &witness.unshielded_binding {
+        StatementBinding::Erc20Transfer {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_TRANSFER {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_transfer_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        StatementBinding::Erc20Deposit {
+            execution_block_hash,
+            slot,
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            sender,
+            recipient,
+        } => {
+            if statement.proof_type_tag != PROOF_TYPE_ERC20_DEPOSIT {
+                return Err(ReceiverError::InvalidStatementType(
+                    statement.proof_type_tag,
+                ));
+            }
+            derive_erc20_deposit_subject_key(
+                execution_block_hash,
+                *slot,
+                *tx_index,
+                *log_index,
+                deposit_contract,
+                token_contract,
+                sender,
+                recipient,
+            )
+        }
+        _ => {
+            return Err(ReceiverError::InvalidStatementType(
+                statement.proof_type_tag,
+            ))
+        }
+    };
+
+    // 3. Verify blinded subject key
+    let expected_blinded_subject_key: [u8; 32] = match witness.privacy_salt {
+        Some(ref salt) => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_salted_subject_key_v1:");
+            hasher.update(salt);
+            hasher.update(unblinded_subject_key);
+            hasher.finalize().into()
+        }
+        None => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_shielded_subject_key_v1:");
+            hasher.update(unblinded_subject_key);
+            hasher.finalize().into()
+        }
+    };
+    if statement.subject_key != expected_blinded_subject_key {
+        return Err(ReceiverError::SubjectKeyMismatch);
+    }
+
+    // 4. Derive unblinded canonical statement ID
+    let mut unblinded_stmt = statement.clone();
+    unblinded_stmt.binding = witness.unshielded_binding.clone();
+    unblinded_stmt.subject_key = unblinded_subject_key;
+    let unblinded_id = unblinded_stmt.derive_canonical_id();
+
+    // 5. Verify blinded statement ID
+    let expected_blinded_id: [u8; 32] = match witness.privacy_salt {
+        Some(ref salt) => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_salted_statement_id_v1:");
+            hasher.update(salt);
+            hasher.update(unblinded_id);
+            hasher.finalize().into()
+        }
+        None => {
+            let mut hasher = sha2::Sha256::new();
+            hasher.update(b"mosoo_shielded_statement_id_v1:");
+            hasher.update(unblinded_id);
+            hasher.finalize().into()
+        }
+    };
+    if statement.statement_id != expected_blinded_id {
+        return Err(ReceiverError::StatementIdMismatch);
+    }
+
+    let verified_amount = statement.value_as_u256();
+    if verified_amount < min_amount {
+        return Err(ReceiverError::AmountTooLowU256 {
+            min_amount,
+            actual: verified_amount,
+        });
+    }
+
+    if nullifiers.is_used(&statement.statement_id) || nullifiers.is_used(&statement.subject_key) {
+        return Err(ReceiverError::AlreadyClaimed);
+    }
+    nullifiers.mark_used(statement.statement_id);
+    nullifiers.mark_used(statement.subject_key);
+
+    Ok(verified_amount)
+}
+
 /// Verify a VerifiedStatement with full 256-bit (U256) precision and mint LEZ-side tokens.
 ///
 /// Prevents truncation for amounts > u64::MAX (e.g. standard 18-decimal token transfers).
@@ -730,6 +901,7 @@ pub fn claim_with_store<S: AccountStore>(
 }
 
 /// Atomically verifies statement with full 256-bit (U256) precision against persistent PDA nullifiers in AccountStore.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_with_store_u256<S: AccountStore>(
     statement: &VerifiedStatement,
@@ -868,6 +1040,7 @@ pub fn claim_with_store_u256<S: AccountStore>(
 }
 
 /// Atomically verifies statement with u128 precision against persistent PDA nullifiers in AccountStore.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_with_store_u128<S: AccountStore>(
     statement: &VerifiedStatement,

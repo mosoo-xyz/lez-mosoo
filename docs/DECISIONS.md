@@ -321,3 +321,35 @@ A follow-up independent audit (Session 5 - Oct 26, 2026) identified 5 specific f
 5. **Safe Restoration of Unowned Accounts during Batch Rollback**:
    - Updated `AccountSnapshot.owner` handling: If `snap.owner` is `Some(owner)`, rollback calls `try_set_account_with_owner`. If `snap.owner` is `None`, rollback delegates to `try_restore_account_unowned`, which restores `owner: None` in `ProgramAccountStore` without assigning `MOSOO_PROGRAM_ID`.
    - Added `StoreError::RollbackRestorationFailed` to report restoration errors without corrupting account ownership.
+
+
+---
+
+## ADR-013: Host-Enforced Storage Isolation, Production Gating of Deprecated Claim APIs, Native ETH Canonical 12-Zero Sender Padding, and Shielded Statement Consumer Witness Verification
+
+### Context & Problem Statement
+An exhaustive review (Audit Session 6 - Oct 26, 2026) evaluated the full codebase against Logos RFP-021, identifying key architectural and edge-case requirements:
+1. **Critical #1 & #2 (P0) In-Memory Store Injection and Caller-Controlled zkVM Storage**:
+   In zkVM guest (`methods/guest/src/main.rs`), `GuestInstruction::StoreBacked` allowed callers to supply `ProgramAccountStore` over `env::read()`. An adversary could supply a fabricated in-memory store with forged accounts marked `owner = MOSOO_PROGRAM_ID`. Furthermore, `dispatch_store_instruction` recursively passed `&mut store` (from the enum), discarding the host runtime's persistent store. In direct `Authenticated` guest instruction branches, unpinned chains were permitted to execute if `args.instance.pda_address() == expected_instance_pda`.
+2. **High #3 (P1) Deprecated Public Claim Helpers Lack Production Gating**:
+   In `consumers/erc20-receiver/src/lib.rs` and `consumers/ether-receiver/src/lib.rs`, `claim_with_store_u256`, `claim_with_store_u128`, `claim_ether_with_store_u256`, and `claim_ether_with_store_u128` were left `pub` without `#[cfg(any(test, feature = "test-harness"))]`, allowing callers to supply raw `VerifiedStatement` structs with fabricated `attester_program_id`.
+3. **Medium #5 (P2) Native ETH Deposit Missing Canonical 12-Zero Sender Topic Padding**:
+   In `mosoo-core/src/inclusion.rs` (`ProofTarget::NativeEthDeposit`) and `decode_deposit_eth_log`, `from_topic` only compared the last 20 bytes against sender, without checking `from_topic.0[0..12] == [0u8; 12]`. Non-canonical ABI-encoded topics could be accepted.
+4. **Correctness #6 (P1) Public Shielded Statement vs Consumer API Schema Compatibility**:
+   When `stmt.shield()` or `stmt.shield_with_salt()` blinded `binding` into `StatementBinding::Shielded`, consumer claim functions pattern-matched only on raw unshielded bindings (`NativeEthDeposit`, `Erc20Deposit`, `Erc20Transfer`), causing shielded zkVM emissions to be rejected.
+
+### Decision & Implementation
+1. **Host-Enforced Storage Isolation and zkVM Production Gating**:
+   - Gated `GuestInstruction::StoreBacked` in `dispatch_guest_instruction` behind `#[cfg(any(test, feature = "test-harness"))]`, failing closed in production builds with `MosooError::UnauthenticatedInstance`.
+   - In `dispatch_store_instruction` (host runtime execution), updated `GuestInstruction::StoreBacked` to dispatch against the host runtime's persistent `store`, completely ignoring any caller-supplied store.
+   - Enforced that all `*Authenticated` guest instruction variants require `TrustedBridgeConfig::canonical().get_trusted_instance(chain_id)` to be registered and match `expected_instance_pda`, failing closed with `MosooError::UntrustedSourceInstance` for unpinned or mismatched instances.
+   - Enforced `instance.validate_authenticity()?` inside `verify_instance_account_authenticity()`.
+2. **Production Gating of Deprecated Claim Helpers**:
+   - Gated `claim_with_store_u256`, `claim_with_store_u128`, `claim_ether_with_store_u256`, and `claim_ether_with_store_u128` strictly behind `#[cfg(any(test, feature = "test-harness"))]`.
+   - Production consumers must only use `claim_authenticated_pda_u256`, `claim_authenticated_runtime_account_u256`, `claim_authenticated_store_u256`, or `claim_shielded_statement_u256`.
+3. **Canonical 12-Zero Sender & Token Topic Padding**:
+   - In `mosoo-core/src/inclusion.rs`, enforced `topic.0[0..12] == [0u8; 12]` across `ProofTarget::NativeEthDeposit`, `decode_deposit_eth_log`, `ProofTarget::Erc20Deposit`, and `decode_deposit_erc20_log`.
+4. **Privacy-Shielded Statement Consumer Witness Redemption**:
+   - Added `ShieldedErc20ClaimWitness` and `claim_shielded_statement_u256` in `consumers/erc20-receiver/src/lib.rs`.
+   - Added `ShieldedEtherClaimWitness` and `claim_shielded_ether_statement_u256` in `consumers/ether-receiver/src/lib.rs`.
+   - Consumers verify the commitment and blinded identifiers against the claimant's private witness preimage (unshielded binding + optional salt), maintaining zero on-chain linkability while ensuring robust replay protection and parameter authenticity.
