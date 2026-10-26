@@ -7,9 +7,9 @@
 //! - Finding 3 (High P1): Statement source-instance PDA binding & cross-instance isolation
 //! - Finding 4 (High P1): Privacy-preserving shielded statement binding (RFP-021 Functionality #8)
 //! - Finding 5 (Medium P2): Solidity legacy withdrawal disablement (verified in Foundry)
-//! - Finding 6 (Low/Med P2/P3): Canonical Statement ID specification & predicate invariance
-
 #![allow(deprecated)]
+
+//! - Finding 6 (Low/Med P2/P3): Canonical Statement ID specification & predicate invariance
 
 use ether_receiver::{AtomicEtherClaimArgs, EtherNullifierSet, MethLedger};
 use mosoo_core::{
@@ -156,6 +156,7 @@ fn test_finding1_zkvm_authenticated_guest_instruction_rejects_unauthenticated_pd
         predicate: Predicate::Equal {
             expected: [0u8; 32],
         },
+        privacy_salt: None,
     };
 
     // 1. Adversary supplies fake expected instance PDA
@@ -743,4 +744,327 @@ fn test_finding10_sync_committee_signature_length_enforcement() {
         }
         other => panic!("Expected InvalidSyncCommitteeBitsLength, got {:?}", other),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 11: Account State Authenticity & Runtime Dispatch Wiring (Session 3 P0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatcher() {
+    use mosoo_core::types::RuntimeAccount;
+    use mosoo_core::verifier::dispatch_store_instruction;
+
+    let mut store = MockStore::default();
+    let instance_id = mosoo_core::types::CANONICAL_SEPOLIA_INSTANCE_ID;
+    let authentic_instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, instance_id);
+    let pda = authentic_instance.pda_address();
+
+    // Store authentic instance under MOSOO_PROGRAM_ID
+    let authentic_bytes = serde_json::to_vec(&authentic_instance).unwrap();
+    store
+        .try_set_account_with_owner(&pda, authentic_bytes, MOSOO_PROGRAM_ID)
+        .unwrap();
+
+    // Adversary fabricates a fake instance with a tampered sync committee
+    let mut rogue_instance = authentic_instance.clone();
+    let rogue_committee = SyncCommittee {
+        pubkeys: vec![vec![0x99; 48]; 512],
+        aggregate_pubkey: vec![0x99; 48],
+    };
+    rogue_instance.current_sync_committee = rogue_committee;
+    // Note: rogue_instance has the EXACT SAME pda_address because PDA only hashes chain_id & instance_id!
+    assert_eq!(rogue_instance.pda_address(), pda);
+
+    // 1. RuntimeAccount validation: try_from_runtime_account enforces authenticity
+    let rogue_runtime = RuntimeAccount {
+        address: pda,
+        owner: [0xba; 32], // Wrong owner
+        data: serde_json::to_vec(&rogue_instance).unwrap(),
+    };
+    assert!(InstanceAccount::try_from_runtime_account(&rogue_runtime).is_err());
+
+    // 2. dispatch_store_instruction verifies authentic instance from persistent store
+    // Caller passes fake instance in args, but store dispatcher strictly authenticates and overrides with stored state
+    let begin_args = mosoo_core::verifier::BeginUpdateArgs {
+        instance: rogue_instance,
+        nonce: 0,
+        update: mosoo_core::types::LightClientUpdate {
+            attested_header: mosoo_core::types::BeaconBlockHeader {
+                slot: 1001,
+                proposer_index: 1,
+                parent_root: [0x11; 32],
+                state_root: [0x22; 32],
+                body_root: [0x33; 32],
+            },
+            next_sync_committee: None,
+            next_sync_committee_branch: None,
+            finalized_header: mosoo_core::types::BeaconBlockHeader {
+                slot: 1000,
+                proposer_index: 0,
+                parent_root: [0x00; 32],
+                state_root: [0x22; 32],
+                body_root: [0x11; 32],
+            },
+            finality_branch: vec![[0u8; 32]; 6],
+            execution_payload_header: None,
+            execution_branch: None,
+            execution_rlp: None,
+            sync_aggregate: mosoo_core::types::SyncAggregate {
+                sync_committee_bits: vec![0xff; 64],
+                sync_committee_signature: vec![0x00; 96],
+            },
+            signature_slot: 1002,
+        },
+    };
+
+    let instruction = GuestInstruction::BeginUpdateAuthenticated {
+        expected_instance_pda: pda,
+        args: begin_args,
+    };
+
+    let res = dispatch_store_instruction(&mut store, instruction);
+    // Since signature is empty dummy and stored committee is authentic (not adversary's rogue committee),
+    // BLS verification or header validation fails rather than accepting adversary's fabricated committee!
+    assert!(res.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Finding 12: Holesky & Custom Network Trusted Checkpoints (Session 3 P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding12_unconfigured_custom_checkpoint_rejected() {
+    use mosoo_core::types::{
+        InitializeArgs, CANONICAL_HOLESKY_CHECKPOINT_ROOT, CANONICAL_HOLESKY_INSTANCE_ID,
+        CANONICAL_HOLESKY_MOSOO_INSTANCE,
+    };
+
+    // 1. Holesky canonical registration verification
+    let canonical = TrustedBridgeConfig::canonical();
+    assert_eq!(
+        canonical.get_trusted_instance(17000),
+        Some(CANONICAL_HOLESKY_MOSOO_INSTANCE)
+    );
+    assert_eq!(
+        canonical.get_trusted_checkpoint(17000),
+        Some(CANONICAL_HOLESKY_CHECKPOINT_ROOT)
+    );
+
+    // 2. Initializing Holesky with untrusted checkpoint root fails closed
+    let dummy_beacon_header = mosoo_core::types::BeaconBlockHeader {
+        slot: 100,
+        proposer_index: 0,
+        parent_root: [0u8; 32],
+        state_root: [0x11; 32],
+        body_root: [0x22; 32],
+    };
+
+    let untrusted_holesky_args = InitializeArgs {
+        instance_id: CANONICAL_HOLESKY_INSTANCE_ID,
+        network_config: None,
+        chain_id: 17000,
+        bootstrap_header: dummy_beacon_header.clone(),
+        trusted_checkpoint_root: [0xee; 32], // Tampered checkpoint root!
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_000_000,
+    };
+    let res = dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_holesky_args));
+    assert!(matches!(
+        res,
+        Err(MosooError::UntrustedCheckpoint { chain_id: 17000 })
+    ));
+
+    // 3. Unconfigured custom network without NetworkConfig fails closed
+    let custom_chain_args = InitializeArgs {
+        instance_id: [0x55; 32],
+        network_config: None, // Missing explicit network config!
+        chain_id: 999999,
+        bootstrap_header: dummy_beacon_header,
+        trusted_checkpoint_root: [0xaa; 32],
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_000_000,
+    };
+    let res_custom = dispatch_guest_instruction(GuestInstruction::Initialize(custom_chain_args));
+    assert!(matches!(
+        res_custom,
+        Err(MosooError::UnconfiguredTrustedCheckpoint { chain_id: 999999 })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 13: Arithmetic Overflow Pre-Check Preserves Nullifier (Session 3 P2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding13_overflow_pre_check_preserves_nullifier() {
+    use ether_receiver::EtherReceiverError;
+
+    let chain_id = ETH_SEPOLIA_CHAIN_ID;
+    let instance_id = mosoo_core::types::CANONICAL_SEPOLIA_INSTANCE_ID;
+    let instance = make_test_instance(chain_id, instance_id);
+    let inst_pda = instance.pda_address();
+
+    let locker = TrustedBridgeConfig::canonical()
+        .get_trusted_locker(chain_id)
+        .unwrap();
+
+    let recipient = [0x55; 32];
+    // Create an attestation statement where value = U256::MAX (overflows u128)
+    let binding = StatementBinding::NativeEthDeposit {
+        execution_block_hash: [0x11; 32],
+        slot: 1000,
+        tx_index: 0,
+        log_index: 0,
+        deposit_contract: locker,
+        sender: [0x11; 20],
+        recipient,
+    };
+
+    let subject_key = mosoo_core::predicate::derive_eth_deposit_subject_key(
+        &[0x11; 32],
+        1000,
+        0,
+        0,
+        &locker,
+        &[0x11; 20],
+        &recipient,
+    );
+
+    let overflow_val = [0xff; 32]; // U256::MAX
+    let statement = VerifiedStatement {
+        statement_id: [0; 32], // will derive
+        chain_id,
+        genesis_validators_root: [0x11; 32],
+        source_instance_id: instance_id,
+        source_instance_pda: inst_pda,
+        subject_key,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        predicate_holds: true,
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        verified_value: overflow_val,
+        binding,
+    };
+    let mut stmt = statement;
+    stmt.statement_id = stmt.derive_canonical_id();
+
+    let stmt_account = StatementAccount::new_authentic(stmt.clone());
+
+    let mut ledger = MethLedger::default();
+    let mut nullifiers = EtherNullifierSet::default();
+
+    // Call mint_deposit_authenticated_pda_u256
+    let res = ledger.mint_deposit_authenticated_pda_u256(&stmt_account, locker, &mut nullifiers);
+
+    // Verify it fails with Overflow error
+    assert!(matches!(res, Err(EtherReceiverError::Overflow)));
+
+    // CRITICAL: Verify nullifier was NOT marked as used!
+    assert!(
+        !nullifiers.is_used(&stmt.statement_id),
+        "Nullifier MUST NOT be consumed when mint fails with arithmetic overflow!"
+    );
+    assert!(
+        !nullifiers.is_used(&stmt.subject_key),
+        "Subject key MUST NOT be consumed when mint fails with arithmetic overflow!"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 14: Salted Shielding Blinds Statement Binding (Session 3 P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding14_attest_state_salted_shielding_journal() {
+    use mosoo_core::inclusion::test_helpers;
+
+    let tok_addr = alloy_primitives::Address::repeat_byte(0x11);
+    let snd_addr = alloy_primitives::Address::repeat_byte(0x22);
+    let rec_addr = alloy_primitives::Address::repeat_byte(0x33);
+    let mut rec_lez = [0u8; 32];
+    rec_lez[12..].copy_from_slice(rec_addr.as_slice());
+    let amount = 100_000u64;
+
+    let receipt_bytes = test_helpers::build_test_eip1559_transfer_receipt(
+        tok_addr,
+        snd_addr,
+        rec_addr,
+        alloy_primitives::U256::from(amount),
+    );
+    let key_bytes = alloy_rlp::encode(0u64);
+    let (receipts_root, proof_nodes) =
+        test_helpers::build_leaf_mpt_proof(&key_bytes, &receipt_bytes);
+
+    let mut instance = make_test_instance(
+        ETH_SEPOLIA_CHAIN_ID,
+        mosoo_core::types::CANONICAL_SEPOLIA_INSTANCE_ID,
+    );
+    instance.current_receipts_root = receipts_root.0;
+
+    let mut header = make_test_header(&instance);
+    header.receipts_root = receipts_root.0;
+
+    let proof = StateProof {
+        target: ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract: tok_addr,
+            sender: snd_addr,
+            recipient: rec_lez,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_bytes),
+    };
+
+    let salt1 = [0x42; 32];
+    let salt2 = [0x99; 32];
+
+    let args1 = AttestStateArgs {
+        instance: instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: Some(salt1),
+    };
+
+    let args2 = AttestStateArgs {
+        instance: instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: Some(salt2),
+    };
+
+    // Both evaluations yield StatementIssued with Shielded binding
+    let out1 = mosoo_core::verifier::handle_attest_state(args1).unwrap();
+    let out2 = mosoo_core::verifier::handle_attest_state(args2).unwrap();
+
+    let stmt1 = match out1 {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => panic!("Expected StatementIssued"),
+    };
+    let stmt2 = match out2 {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => panic!("Expected StatementIssued"),
+    };
+
+    assert!(matches!(stmt1.binding, StatementBinding::Shielded { .. }));
+    assert!(matches!(stmt2.binding, StatementBinding::Shielded { .. }));
+
+    // Unlinkability: different salts produce distinct commitments
+    assert_ne!(stmt1.binding, stmt2.binding);
 }

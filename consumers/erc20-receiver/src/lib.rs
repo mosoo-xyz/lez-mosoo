@@ -254,6 +254,7 @@ impl NullifierSet {
 /// let minted = claim(&statement, &mut nullifiers, 100).expect("first claim succeeds");
 /// assert_eq!(minted, 100);
 /// ```
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "Use `claim_atomic_u256` for in-guest atomic execution or `claim_authenticated_pda_u256` for on-chain PDA account provenance with full U256 precision"
 )]
@@ -419,8 +420,7 @@ pub fn claim_authenticated_pda_u256(
     if statement_account.statement.source_instance_pda != pinned_pda {
         return Err(ReceiverError::UntrustedSourceInstance);
     }
-    #[allow(deprecated)]
-    claim_u256(&statement_account.statement, nullifiers, min_amount)
+    claim_u256_internal(&statement_account.statement, nullifiers, min_amount)
 }
 
 /// Authenticate host runtime account metadata and claim ERC-20 statement with full U256 precision.
@@ -435,13 +435,7 @@ pub fn claim_authenticated_runtime_account_u256(
     claim_authenticated_pda_u256(&statement_account, nullifiers, min_amount)
 }
 
-/// Verify a VerifiedStatement with full 256-bit (U256) precision and mint LEZ-side tokens.
-///
-/// Prevents truncation for amounts > u64::MAX (e.g. standard 18-decimal token transfers).
-#[deprecated(
-    note = "Use `claim_atomic_u256` for in-guest atomic execution or `claim_authenticated_pda_u256` for on-chain PDA account provenance"
-)]
-pub fn claim_u256(
+pub(crate) fn claim_u256_internal(
     statement: &VerifiedStatement,
     nullifiers: &mut NullifierSet,
     min_amount: U256,
@@ -561,7 +555,23 @@ pub fn claim_u256(
     Ok(verified_amount)
 }
 
+/// Verify a VerifiedStatement with full 256-bit (U256) precision and mint LEZ-side tokens.
+///
+/// Prevents truncation for amounts > u64::MAX (e.g. standard 18-decimal token transfers).
+#[cfg(any(test, feature = "test-harness"))]
+#[deprecated(
+    note = "Use `claim_atomic_u256` for in-guest atomic execution or `claim_authenticated_pda_u256` for on-chain PDA account provenance"
+)]
+pub fn claim_u256(
+    statement: &VerifiedStatement,
+    nullifiers: &mut NullifierSet,
+    min_amount: U256,
+) -> Result<U256, ReceiverError> {
+    claim_u256_internal(statement, nullifiers, min_amount)
+}
+
 /// Verify a VerifiedStatement with u128 precision (safe for amounts up to 3.4e38 units).
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_u128(
     statement: &VerifiedStatement,
@@ -577,6 +587,7 @@ pub fn claim_u128(
 
 /// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
 /// writes the spent nullifier PDA record into `store`, and returns the credited amount.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_atomic_u256` or `claim_authenticated_pda_u256`")]
 pub fn claim_with_store<S: AccountStore>(
     statement: &VerifiedStatement,
@@ -892,6 +903,7 @@ pub struct Erc20TransferClaim {
 
 /// Process a verified ERC-20 token transfer event, proving token contract,
 /// sender, recipient, and amount in accordance with RFP-021 reference consumer semantics.
+#[cfg(any(test, feature = "test-harness"))]
 pub fn claim_erc20_transfer(
     claim: &Erc20TransferClaim,
     nullifiers: &mut NullifierSet,
@@ -1017,6 +1029,7 @@ pub struct Erc20DepositClaim {
 /// Process a verified ERC-20 deposit event log from MosooLocker.sol:
 /// DepositERC20(address indexed token, address indexed sender, bytes32 indexed lezRecipient, uint256 amount, uint64 nonce)
 /// Strictly enforces that the deposit was locked in the canonical deployed vault ([`get_canonical_trusted_locker`]).
+#[cfg(any(test, feature = "test-harness"))]
 pub fn claim_erc20_deposit(
     claim: &Erc20DepositClaim,
     nullifiers: &mut NullifierSet,
@@ -1025,6 +1038,7 @@ pub fn claim_erc20_deposit(
 }
 
 /// Process a verified ERC-20 deposit event log from MosooLocker.sol using a specified bridge configuration.
+#[cfg(any(test, feature = "test-harness"))]
 pub fn claim_erc20_deposit_with_config(
     claim: &Erc20DepositClaim,
     nullifiers: &mut NullifierSet,
@@ -1235,6 +1249,7 @@ pub fn claim_atomic_u256(
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
+        privacy_salt: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1400,16 +1415,16 @@ pub fn claim_atomic(
     Ok(val_u64)
 }
 
-/// Execute atomic same-transaction ERC-20 token claim backed by an authenticated InstanceAccount
-/// loaded directly from the persistent LEZ AccountStore and verified against pinned TrustedBridgeConfig.
-pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
-    store: &mut S,
+/// Strictly verifies an atomic ERC-20 claim against an authenticated InstanceAccount in persistent storage.
+/// Returns the verified statement and current slot WITHOUT consuming nullifiers.
+pub fn verify_authenticated_store_erc20_claim_details<S: mosoo_core::types::AccountStore>(
+    store: &S,
     instance_pda: &[u8; 32],
     header_pda: Option<&[u8; 32]>,
     args: AtomicErc20ClaimArgsU256,
-    nullifiers: &mut NullifierSet,
+    nullifiers: &NullifierSet,
     config: &TrustedBridgeConfig,
-) -> Result<U256, ReceiverError> {
+) -> Result<(VerifiedStatement, u64), ReceiverError> {
     // 1. Strictly load authentic InstanceAccount from persistent store first (Finding P0)
     let authentic_instance =
         mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
@@ -1456,6 +1471,7 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
+        privacy_salt: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state_authenticated(
@@ -1604,7 +1620,26 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
         return Err(ReceiverError::AlreadyClaimed);
     }
 
-    // Atomically persist nullifier PDA to LEZ AccountStore with transactional rollback guarantee (Finding P1 / Priority 2)
+    Ok((statement, current_slot))
+}
+
+/// Atomically persists nullifier records to persistent storage and marks them in memory.
+pub fn commit_erc20_nullifiers<S: mosoo_core::types::AccountStore>(
+    store: &mut S,
+    nullifiers: &mut NullifierSet,
+    statement: &VerifiedStatement,
+    current_slot: u64,
+) -> Result<(), ReceiverError> {
+    let nullifier_pda = derive_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_pda = if statement.subject_key != [0u8; 32] {
+        Some(derive_nullifier_pda(
+            &MOSOO_PROGRAM_ID,
+            &statement.subject_key,
+        ))
+    } else {
+        None
+    };
+
     let nullifier_rec = NullifierAccount {
         statement_id: statement.statement_id,
         subject_key: statement.subject_key,
@@ -1631,6 +1666,29 @@ pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
         nullifiers.mark_used(statement.subject_key);
     }
 
+    Ok(())
+}
+
+/// Execute atomic same-transaction ERC-20 token claim backed by an authenticated InstanceAccount
+/// loaded directly from the persistent LEZ AccountStore and verified against pinned TrustedBridgeConfig.
+pub fn claim_authenticated_store_u256<S: mosoo_core::types::AccountStore>(
+    store: &mut S,
+    instance_pda: &[u8; 32],
+    header_pda: Option<&[u8; 32]>,
+    args: AtomicErc20ClaimArgsU256,
+    nullifiers: &mut NullifierSet,
+    config: &TrustedBridgeConfig,
+) -> Result<U256, ReceiverError> {
+    let (statement, current_slot) = verify_authenticated_store_erc20_claim_details(
+        store,
+        instance_pda,
+        header_pda,
+        args,
+        nullifiers,
+        config,
+    )?;
+    let verified_val = statement.value_as_u256();
+    commit_erc20_nullifiers(store, nullifiers, &statement, current_slot)?;
     Ok(verified_val)
 }
 
@@ -1789,6 +1847,7 @@ impl Erc20Ledger {
     /// can be fabricated by callers if exposed as an unauthenticated entrypoint.
     /// For production LEZ bridging, always invoke [`Erc20Ledger::mint_deposit_atomic_u256`] (atomic in-guest verification)
     /// or [`Erc20Ledger::mint_deposit_authenticated_pda_u256`] (on-chain StatementAccount PDA verification).
+    #[cfg(any(test, feature = "test-harness"))]
     #[deprecated(
         note = "Legacy test helper: In-memory VerifiedStatement can be forged. Use `mint_deposit_atomic_u256` or `mint_deposit_authenticated_pda_u256` in production"
     )]
@@ -1833,7 +1892,7 @@ impl Erc20Ledger {
         args: AtomicErc20ClaimArgsU256,
         nullifiers: &mut NullifierSet,
     ) -> Result<U256, ReceiverError> {
-        let verified_amount = claim_authenticated_store_u256(
+        let (statement, current_slot) = verify_authenticated_store_erc20_claim_details(
             store,
             instance_pda,
             header_pda,
@@ -1842,6 +1901,9 @@ impl Erc20Ledger {
             &self.config,
         )?;
 
+        let verified_amount = statement.value_as_u256();
+
+        // Arithmetic Pre-Check: conversion, balance addition, and supply addition must succeed BEFORE consuming nullifiers!
         let amount_u128: u128 = verified_amount
             .try_into()
             .map_err(|_| ReceiverError::Overflow)?;
@@ -1857,6 +1919,9 @@ impl Erc20Ledger {
         let new_supply = current_supply
             .checked_add(amount_u128)
             .ok_or(ReceiverError::Overflow)?;
+
+        // All arithmetic checks passed without overflow: now consume nullifiers atomically.
+        commit_erc20_nullifiers(store, nullifiers, &statement, current_slot)?;
 
         let key = (token, recipient);
         let entry = self.accounts.entry(key).or_insert_with(|| Erc20Account {
@@ -1914,6 +1979,7 @@ impl Erc20Ledger {
             historical_execution_proof: args.historical_execution_proof,
             proof: args.proof,
             predicate: args.predicate,
+            privacy_salt: None,
         };
 
         let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -2157,6 +2223,7 @@ impl Erc20Ledger {
     }
 
     /// Mint synthetic tokens upon verification of a canonical DepositERC20 log from MosooLocker.sol.
+    #[cfg(any(test, feature = "test-harness"))]
     #[deprecated(
         note = "In-memory VerifiedStatement can be forged. Use `mint_deposit_atomic_u256` for in-guest atomic execution or `mint_deposit_authenticated_pda_u256` for on-chain StatementAccount PDA verification"
     )]

@@ -34,6 +34,34 @@ pub struct AttestStateArgs {
     pub historical_execution_proof: Option<HistoricalHeaderProof>,
     pub proof: inclusion::StateProof,
     pub predicate: Predicate,
+    #[serde(default)]
+    pub privacy_salt: Option<[u8; 32]>,
+}
+
+impl AttestStateArgs {
+    pub fn new(
+        instance: InstanceAccount,
+        header: HeaderRecord,
+        header_history_branch: Option<Vec<[u8; 32]>>,
+        historical_execution_proof: Option<HistoricalHeaderProof>,
+        proof: inclusion::StateProof,
+        predicate: Predicate,
+    ) -> Self {
+        Self {
+            instance,
+            header,
+            header_history_branch,
+            historical_execution_proof,
+            proof,
+            predicate,
+            privacy_salt: None,
+        }
+    }
+
+    pub fn with_privacy_salt(mut self, salt: [u8; 32]) -> Self {
+        self.privacy_salt = Some(salt);
+        self
+    }
 }
 
 /// Top-level zkVM instruction envelope dispatched by the Logos Execution Zone guest program.
@@ -78,20 +106,24 @@ pub fn dispatch_guest_instruction(
     instruction: GuestInstruction,
 ) -> Result<InstructionOutput, MosooError> {
     match instruction {
-        #[cfg(any(test, feature = "test-harness"))]
-        GuestInstruction::Initialize(args) => handle_initialize(args),
-        #[cfg(not(any(test, feature = "test-harness")))]
         GuestInstruction::Initialize(args) => {
-            // In production, verify bootstrap checkpoint root matches TrustedBridgeConfig
-            if let Some(expected_checkpoint) = crate::types::TrustedBridgeConfig::canonical()
-                .trusted_checkpoints
-                .get(&args.chain_id)
+            // Verify bootstrap checkpoint root matches TrustedBridgeConfig
+            let canonical_cfg = crate::types::TrustedBridgeConfig::canonical();
+            if let Some(expected_checkpoint) = canonical_cfg.trusted_checkpoints.get(&args.chain_id)
             {
                 if args.trusted_checkpoint_root != *expected_checkpoint {
-                    return Err(MosooError::InvalidBootstrap(
-                        "bootstrap trusted checkpoint root does not match canonical config".into(),
-                    ));
+                    return Err(MosooError::UntrustedCheckpoint {
+                        chain_id: args.chain_id,
+                    });
                 }
+            } else if let Some(ref net_cfg) = args.network_config {
+                if net_cfg.genesis_validators_root == [0u8; 32] {
+                    return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
+                }
+            } else {
+                return Err(MosooError::UnconfiguredTrustedCheckpoint {
+                    chain_id: args.chain_id,
+                });
             }
             handle_initialize(args)
         }
@@ -134,6 +166,9 @@ pub fn dispatch_guest_instruction(
                     return Err(MosooError::UntrustedSourceInstance);
                 }
             }
+            args.instance.validate_authenticity().map_err(|msg| {
+                MosooError::Internal(format!("invalid instance authenticity: {msg}"))
+            })?;
             if let Some(expected_h_pda) = expected_header_pda {
                 if args.header.pda_address() != expected_h_pda {
                     return Err(MosooError::UnauthenticatedHeaderRecord);
@@ -165,6 +200,19 @@ pub fn dispatch_guest_instruction(
             if args.job.instance_pda() != expected_instance_pda {
                 return Err(MosooError::DomainSeparationFailed);
             }
+            args.instance.validate_authenticity().map_err(|msg| {
+                MosooError::Internal(format!("invalid instance authenticity: {msg}"))
+            })?;
+            let computed_digest = crypto::compute_update_digest(&args.job.update);
+            if computed_digest != args.job.update_digest {
+                return Err(MosooError::JobDigestMismatch {
+                    computed: computed_digest,
+                    recorded: args.job.update_digest,
+                });
+            }
+            if args.job.miller_output.is_none() {
+                return Err(MosooError::MissingMillerOutput);
+            }
             handle_finish_update(args)
         }
         GuestInstruction::BeginUpdateAuthenticated {
@@ -184,6 +232,9 @@ pub fn dispatch_guest_instruction(
                     return Err(MosooError::UntrustedSourceInstance);
                 }
             }
+            args.instance.validate_authenticity().map_err(|msg| {
+                MosooError::Internal(format!("invalid instance authenticity: {msg}"))
+            })?;
             handle_begin_update(args)
         }
         GuestInstruction::MillerUpdateAuthenticated {
@@ -210,6 +261,16 @@ pub fn dispatch_guest_instruction(
             if args.job.instance_pda() != expected_instance_pda {
                 return Err(MosooError::DomainSeparationFailed);
             }
+            args.instance.validate_authenticity().map_err(|msg| {
+                MosooError::Internal(format!("invalid instance authenticity: {msg}"))
+            })?;
+            let computed_digest = crypto::compute_update_digest(&args.job.update);
+            if computed_digest != args.job.update_digest {
+                return Err(MosooError::JobDigestMismatch {
+                    computed: computed_digest,
+                    recorded: args.job.update_digest,
+                });
+            }
             handle_miller_update(args)
         }
     }
@@ -233,6 +294,18 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
     // Guard: chain_id must be a supported Ethereum network or configured with explicit NetworkConfig
     if !crypto::is_supported_chain_or_configured(args.chain_id, args.network_config.as_ref()) {
         return Err(MosooError::UnsupportedChain(args.chain_id));
+    }
+
+    // Guard: custom chains without trusted checkpoint anchor must fail closed unless explicit NetworkConfig is provided
+    if !crate::types::is_supported_chain_id(args.chain_id) {
+        let Some(ref net_cfg) = args.network_config else {
+            return Err(MosooError::UnconfiguredTrustedCheckpoint {
+                chain_id: args.chain_id,
+            });
+        };
+        if net_cfg.genesis_validators_root == [0u8; 32] {
+            return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
+        }
     }
 
     // Mandatory Root-of-Trust Checkpoint Anchor:
@@ -1015,6 +1088,14 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         return Err(MosooError::PredicateFailed);
     }
 
+    // Privacy-preserving statement shielding:
+    // If privacy_salt is provided, blind the statement binding to prevent public linkability.
+    let statement = if let Some(salt) = args.privacy_salt {
+        statement.shield_with_salt(&salt)
+    } else {
+        statement
+    };
+
     Ok(InstructionOutput::StatementIssued(statement))
 }
 
@@ -1237,6 +1318,93 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     }
 
     handle_attest_state(args)
+}
+
+/// Initializing light-client instance and writing the program-owned InstanceAccount directly into LEZ persistent storage.
+pub fn handle_initialize_store<S: AccountStore>(
+    store: &mut S,
+    args: InitializeArgs,
+) -> Result<InstructionOutput, MosooError> {
+    let out = handle_initialize(args)?;
+    if let InstructionOutput::Initialized(ref instance) = out {
+        let pda = instance.pda_address();
+        let bytes = serde_json::to_vec(instance).map_err(|e| {
+            MosooError::Internal(format!("Failed to serialize InstanceAccount: {e}"))
+        })?;
+        store
+            .try_set_account_with_owner(&pda, bytes, MOSOO_PROGRAM_ID)
+            .map_err(|e| MosooError::StorageWriteFailed(e.to_string()))?;
+    }
+    Ok(out)
+}
+
+/// Dispatches an instruction inside the LEZ transaction runtime using persistent AccountStore.
+/// Strictly loads and authenticates accounts from store, guaranteeing that no caller can fabricate
+/// committee, headers, or state roots.
+pub fn dispatch_store_instruction<S: AccountStore>(
+    store: &mut S,
+    instruction: GuestInstruction,
+) -> Result<InstructionOutput, MosooError> {
+    match instruction {
+        GuestInstruction::Initialize(args) => handle_initialize_store(store, args),
+        #[cfg(any(test, feature = "test-harness"))]
+        GuestInstruction::BeginUpdate(args) => handle_begin_update(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::BeginUpdate(_) => Err(MosooError::UnauthenticatedInstance),
+
+        GuestInstruction::BeginUpdateAuthenticated {
+            expected_instance_pda,
+            args,
+        } => handle_begin_update_authenticated(store, &expected_instance_pda, args),
+
+        #[cfg(any(test, feature = "test-harness"))]
+        GuestInstruction::MillerUpdate(args) => handle_miller_update(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::MillerUpdate(_) => Err(MosooError::UnauthenticatedInstance),
+
+        GuestInstruction::MillerUpdateAuthenticated {
+            expected_instance_pda,
+            expected_job_pda,
+            args,
+        } => handle_miller_update_authenticated(
+            store,
+            &expected_instance_pda,
+            &expected_job_pda,
+            args,
+        ),
+
+        #[cfg(any(test, feature = "test-harness"))]
+        GuestInstruction::FinishUpdate(args) => handle_finish_update(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::FinishUpdate(_) => Err(MosooError::UnauthenticatedInstance),
+
+        GuestInstruction::FinishUpdateAuthenticated {
+            expected_instance_pda,
+            expected_job_pda,
+            args,
+        } => handle_finish_update_authenticated(
+            store,
+            &expected_instance_pda,
+            &expected_job_pda,
+            args,
+        ),
+
+        #[cfg(any(test, feature = "test-harness"))]
+        GuestInstruction::AttestState(args) => handle_attest_state(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::AttestState(_) => Err(MosooError::UnauthenticatedInstance),
+
+        GuestInstruction::AttestStateAuthenticated {
+            expected_instance_pda,
+            expected_header_pda,
+            args,
+        } => handle_attest_state_authenticated(
+            store,
+            &expected_instance_pda,
+            expected_header_pda.as_ref(),
+            args,
+        ),
+    }
 }
 
 /// Verify that `finalized_header` appears in the `attested_header` state trie

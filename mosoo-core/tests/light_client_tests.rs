@@ -1174,6 +1174,7 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
         historical_execution_proof: None,
         proof,
         predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: None,
     })
     .expect("handle_attest_state must succeed");
 

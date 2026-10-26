@@ -208,6 +208,7 @@ impl EtherNullifierSet {
 ///     .expect("valid ether claim succeeds");
 /// assert_eq!(wei, 1_000_000_000_000_000_000);
 /// ```
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "Use `claim_ether_atomic_u256` for in-guest atomic execution or `claim_ether_authenticated_pda_u256` for on-chain PDA account provenance"
 )]
@@ -374,8 +375,7 @@ pub fn claim_ether_authenticated_pda_u256(
     if statement_account.statement.source_instance_pda != pinned_pda {
         return Err(EtherReceiverError::UntrustedSourceInstance);
     }
-    #[allow(deprecated)]
-    claim_ether_u256(&statement_account.statement, nullifiers, min_wei)
+    claim_ether_u256_internal(&statement_account.statement, nullifiers, min_wei)
 }
 
 /// Authenticate host runtime account metadata and claim Ether statement with full U256 precision.
@@ -390,13 +390,7 @@ pub fn claim_ether_runtime_account_u256(
     claim_ether_authenticated_pda_u256(&statement_account, nullifiers, min_wei)
 }
 
-/// Verify an Ether statement with full 256-bit (U256) precision and credit LEZ-side ether.
-///
-/// Prevents truncation or rejection for high-value transfers > u64::MAX (e.g. >18.45 ETH in wei).
-#[deprecated(
-    note = "Use `claim_ether_atomic_u256` for in-guest atomic execution or `claim_ether_authenticated_pda_u256` for on-chain PDA account provenance"
-)]
-pub fn claim_ether_u256(
+pub(crate) fn claim_ether_u256_internal(
     statement: &VerifiedStatement,
     nullifiers: &mut EtherNullifierSet,
     min_wei: U256,
@@ -516,7 +510,23 @@ pub fn claim_ether_u256(
     Ok(verified_wei)
 }
 
+/// Verify an Ether statement with full 256-bit (U256) precision and credit LEZ-side ether.
+///
+/// Prevents truncation or rejection for high-value transfers > u64::MAX (e.g. >18.45 ETH in wei).
+#[cfg(any(test, feature = "test-harness"))]
+#[deprecated(
+    note = "Use `claim_ether_atomic_u256` for in-guest atomic execution or `claim_ether_authenticated_pda_u256` for on-chain PDA account provenance"
+)]
+pub fn claim_ether_u256(
+    statement: &VerifiedStatement,
+    nullifiers: &mut EtherNullifierSet,
+    min_wei: U256,
+) -> Result<U256, EtherReceiverError> {
+    claim_ether_u256_internal(statement, nullifiers, min_wei)
+}
+
 /// Verify an Ether statement with u128 precision.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_u128(
     statement: &VerifiedStatement,
@@ -532,6 +542,7 @@ pub fn claim_ether_u128(
 
 /// Atomically verifies statement, loads/asserts persistent PDA nullifier account state,
 /// writes the spent nullifier PDA record into `store`, and returns the credited amount.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(note = "Use `claim_ether_atomic_u256` or `claim_ether_authenticated_pda_u256`")]
 pub fn claim_ether_with_store<S: AccountStore>(
     statement: &VerifiedStatement,
@@ -869,6 +880,7 @@ pub struct NativeEthDepositClaim {
 
 /// Process a verified native ETH deposit or transfer event to a specific contract,
 /// proving sender, recipient, and amount in accordance with RFP-021 reference consumer semantics.
+#[cfg(any(test, feature = "test-harness"))]
 pub fn claim_native_eth_deposit(
     claim: &NativeEthDepositClaim,
     nullifiers: &mut EtherNullifierSet,
@@ -1056,6 +1068,7 @@ pub fn claim_ether_atomic_u256(
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
+        privacy_salt: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1208,6 +1221,7 @@ pub fn claim_account_balance_atomic(
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
+        privacy_salt: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1275,6 +1289,7 @@ pub fn claim_account_balance_atomic(
 /// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit.
 /// Strictly enforces that the deposit was locked in the canonical trusted vault contract
 /// ([`get_canonical_trusted_locker`]) for the benefit of `args.recipient`.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_native_eth_deposit_authenticated_store_with_config with pinned TrustedBridgeConfig."
 )]
@@ -1290,6 +1305,7 @@ pub fn claim_native_eth_deposit_atomic(
 ///
 /// Returns a strongly-typed `EthDepositReceipt` proving that the deposit was locked in
 /// the configured trusted vault contract for the benefit of `args.recipient`.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_native_eth_deposit_authenticated_store_with_config with pinned TrustedBridgeConfig."
 )]
@@ -1328,6 +1344,7 @@ pub fn claim_native_eth_deposit_atomic_with_config(
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
+        privacy_salt: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1417,18 +1434,16 @@ pub fn claim_native_eth_deposit_atomic_with_config(
     })
 }
 
-/// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit backed by an
-/// authenticated InstanceAccount loaded directly from the persistent LEZ AccountStore.
-pub fn claim_native_eth_deposit_authenticated_store_with_config<
-    S: mosoo_core::types::AccountStore,
->(
-    store: &mut S,
+/// Strictly verifies an atomic Native ETH deposit claim against persistent storage.
+/// Returns the strongly-typed `EthDepositReceipt` and statement details WITHOUT consuming nullifiers.
+pub fn verify_native_eth_deposit_authenticated_store_details<S: mosoo_core::types::AccountStore>(
+    store: &S,
     instance_pda: &[u8; 32],
     header_pda: Option<&[u8; 32]>,
     args: AtomicEtherClaimArgs,
-    nullifiers: &mut EtherNullifierSet,
+    nullifiers: &EtherNullifierSet,
     config: &TrustedBridgeConfig,
-) -> Result<EthDepositReceipt, EtherReceiverError> {
+) -> Result<(EthDepositReceipt, VerifiedStatement), EtherReceiverError> {
     // 1. Strictly load authentic InstanceAccount from persistent store first (Finding P0)
     let authentic_instance =
         mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
@@ -1496,6 +1511,7 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
         historical_execution_proof: args.historical_execution_proof,
         proof: args.proof,
         predicate: args.predicate,
+        privacy_salt: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state_authenticated(
@@ -1587,7 +1603,38 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
         return Err(EtherReceiverError::AlreadyClaimed);
     }
 
-    // Atomically persist nullifier PDA to LEZ AccountStore with transactional rollback guarantee (Finding P1 / Priority 2)
+    let receipt = EthDepositReceipt {
+        statement_id: statement.statement_id,
+        deposit_contract,
+        sender,
+        recipient,
+        amount_wei: verified_wei,
+        execution_block_hash,
+        slot,
+        tx_index,
+        log_index,
+    };
+
+    Ok((receipt, statement))
+}
+
+/// Atomically persists nullifier records to persistent storage and marks them in memory.
+pub fn commit_ether_nullifiers<S: mosoo_core::types::AccountStore>(
+    store: &mut S,
+    nullifiers: &mut EtherNullifierSet,
+    statement: &VerifiedStatement,
+    slot: u64,
+) -> Result<(), EtherReceiverError> {
+    let nullifier_pda = derive_ether_nullifier_pda(&MOSOO_PROGRAM_ID, &statement.statement_id);
+    let subject_pda = if statement.subject_key != [0u8; 32] {
+        Some(derive_ether_nullifier_pda(
+            &MOSOO_PROGRAM_ID,
+            &statement.subject_key,
+        ))
+    } else {
+        None
+    };
+
     let nullifier_rec = EtherNullifierAccount {
         statement_id: statement.statement_id,
         subject_key: statement.subject_key,
@@ -1614,17 +1661,31 @@ pub fn claim_native_eth_deposit_authenticated_store_with_config<
         nullifiers.mark_used(statement.subject_key);
     }
 
-    Ok(EthDepositReceipt {
-        statement_id: statement.statement_id,
-        deposit_contract,
-        sender,
-        recipient,
-        amount_wei: verified_wei,
-        execution_block_hash,
-        slot,
-        tx_index,
-        log_index,
-    })
+    Ok(())
+}
+
+/// Execute atomic same-transaction verification of an escrow-backed Native ETH deposit backed by an
+/// authenticated InstanceAccount loaded directly from the persistent LEZ AccountStore.
+pub fn claim_native_eth_deposit_authenticated_store_with_config<
+    S: mosoo_core::types::AccountStore,
+>(
+    store: &mut S,
+    instance_pda: &[u8; 32],
+    header_pda: Option<&[u8; 32]>,
+    args: AtomicEtherClaimArgs,
+    nullifiers: &mut EtherNullifierSet,
+    config: &TrustedBridgeConfig,
+) -> Result<EthDepositReceipt, EtherReceiverError> {
+    let (receipt, statement) = verify_native_eth_deposit_authenticated_store_details(
+        store,
+        instance_pda,
+        header_pda,
+        args,
+        nullifiers,
+        config,
+    )?;
+    commit_ether_nullifiers(store, nullifiers, &statement, receipt.slot)?;
+    Ok(receipt)
 }
 
 /// Derives the canonical 32-byte burn identifier matching `MosooLocker.sol`:
@@ -1763,6 +1824,7 @@ impl MethLedger {
     /// can be fabricated by callers if exposed as an unauthenticated entrypoint.
     /// For production LEZ bridging, always invoke [`MethLedger::mint_meth_atomic`] (atomic in-guest verification)
     /// or [`MethLedger::mint_deposit_authenticated_pda_u256`] (on-chain StatementAccount PDA verification).
+    #[cfg(any(test, feature = "test-harness"))]
     #[deprecated(
         note = "Legacy test helper: In-memory VerifiedStatement can be forged. Use `mint_meth_atomic` or `mint_deposit_authenticated_pda_u256` in production"
     )]
@@ -1810,7 +1872,7 @@ impl MethLedger {
         args: AtomicEtherClaimArgs,
         nullifiers: &mut EtherNullifierSet,
     ) -> Result<u128, EtherReceiverError> {
-        let receipt = claim_native_eth_deposit_authenticated_store_with_config(
+        let (receipt, statement) = verify_native_eth_deposit_authenticated_store_details(
             store,
             instance_pda,
             header_pda,
@@ -1819,6 +1881,7 @@ impl MethLedger {
             &self.config,
         )?;
 
+        // Arithmetic Pre-Check: conversion, balance addition, and supply addition must succeed BEFORE consuming nullifiers!
         let amount_u128: u128 = receipt
             .amount_wei
             .try_into()
@@ -1833,6 +1896,9 @@ impl MethLedger {
             .total_supply_wei
             .checked_add(amount_u128)
             .ok_or(EtherReceiverError::Overflow)?;
+
+        // All arithmetic checks passed without overflow: now consume nullifiers atomically.
+        commit_ether_nullifiers(store, nullifiers, &statement, receipt.slot)?;
 
         let entry = self
             .accounts
@@ -1917,6 +1983,7 @@ impl MethLedger {
             historical_execution_proof: args.historical_execution_proof,
             proof: args.proof,
             predicate: args.predicate,
+            privacy_salt: None,
         };
 
         let output = mosoo_core::verifier::handle_attest_state(attest_args)

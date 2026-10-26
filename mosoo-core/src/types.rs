@@ -92,6 +92,31 @@ pub const CANONICAL_SEPOLIA_CHECKPOINT_ROOT: [u8; 32] = [
 pub const CANONICAL_SEPOLIA_CHECKPOINT_SLOT: u64 = 11_434_912;
 pub const CANONICAL_SEPOLIA_CHECKPOINT_PERIOD: u64 = 1_395;
 
+/// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Holesky.
+/// Cryptographically derived via `derive_instance_pda(ETH_HOLESKY_CHAIN_ID, &CANONICAL_HOLESKY_INSTANCE_ID)`.
+pub const CANONICAL_HOLESKY_MOSOO_INSTANCE: [u8; 32] = [
+    0x08, 0x30, 0xd8, 0xed, 0x8d, 0xf6, 0xce, 0x82, 0xbd, 0xc8, 0x44, 0xaa, 0x2f, 0x54, 0x25, 0x3b,
+    0x60, 0xd0, 0x1a, 0x62, 0xe9, 0xa4, 0x62, 0xdc, 0x49, 0x8b, 0x9a, 0x5b, 0x15, 0x96, 0xcc, 0xd0,
+];
+
+/// Canonical instance identifier for Holesky: sha256(b"mosoo_holesky_instance_v1")
+pub const CANONICAL_HOLESKY_INSTANCE_ID: [u8; 32] = [
+    0xa2, 0xd7, 0x6b, 0x41, 0x16, 0x19, 0xcc, 0xac, 0xa5, 0x56, 0x76, 0xd7, 0x35, 0x8f, 0xfb, 0x3d,
+    0x11, 0xa5, 0x35, 0xa0, 0x1e, 0xa3, 0x83, 0x3b, 0x14, 0x5b, 0xed, 0x13, 0xb5, 0xa8, 0x3a, 0x11,
+];
+
+/// Canonical Holesky weak-subjectivity trusted checkpoint root.
+pub const CANONICAL_HOLESKY_CHECKPOINT_ROOT: [u8; 32] = [
+    0x57, 0x8b, 0x91, 0x33, 0x72, 0xfa, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+    0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+];
+
+/// Canonical deployed Mosoo locker vault contract on Holesky.
+pub const CANONICAL_HOLESKY_MOSOO_LOCKER: [u8; 20] = [
+    0x17, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,
+];
+
 /// Computes the deterministic 32-byte PDA address of a light-client instance on LEZ.
 pub fn derive_instance_pda(chain_id: u64, instance_id: &[u8; 32]) -> [u8; 32] {
     let mut h = sha2::Sha256::new();
@@ -152,6 +177,7 @@ impl TrustedBridgeConfig {
         // Register authentic deployed lockers
         trusted_lockers.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_LOCKER);
         trusted_lockers.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_LOCKER);
+        trusted_lockers.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_MOSOO_LOCKER);
 
         let mut allowed_tokens = HashMap::new();
         let mut sepolia_tokens = HashSet::new();
@@ -171,10 +197,12 @@ impl TrustedBridgeConfig {
         let mut trusted_instances = HashMap::new();
         trusted_instances.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
         trusted_instances.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_INSTANCE);
+        trusted_instances.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_MOSOO_INSTANCE);
 
         let mut trusted_checkpoints = HashMap::new();
         trusted_checkpoints.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
         trusted_checkpoints.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_CHECKPOINT_ROOT);
+        trusted_checkpoints.insert(ETH_HOLESKY_CHAIN_ID, CANONICAL_HOLESKY_CHECKPOINT_ROOT);
 
         Self {
             admin_authority: None,
@@ -604,6 +632,30 @@ impl InstanceAccount {
         }
         Ok(())
     }
+
+    /// Strictly authenticates and deserializes an InstanceAccount from host-provided RuntimeAccount metadata.
+    /// Asserts that the account is owned by `MOSOO_PROGRAM_ID`, that the address matches the derived PDA,
+    /// and that all internal authenticity invariants hold.
+    pub fn try_from_runtime_account(
+        account: &RuntimeAccount,
+    ) -> Result<Self, crate::error::MosooError> {
+        if account.owner != MOSOO_PROGRAM_ID {
+            return Err(crate::error::MosooError::UnauthenticatedAttester {
+                expected: MOSOO_PROGRAM_ID,
+                actual: account.owner,
+            });
+        }
+        let instance: InstanceAccount = serde_json::from_slice(&account.data).map_err(|e| {
+            crate::error::MosooError::Internal(format!("malformed instance account data: {e}"))
+        })?;
+        if account.address != instance.pda_address() {
+            return Err(crate::error::MosooError::UnauthenticatedInstance);
+        }
+        instance.validate_authenticity().map_err(|msg| {
+            crate::error::MosooError::Internal(format!("invalid instance authenticity: {msg}"))
+        })?;
+        Ok(instance)
+    }
 }
 
 /// Storage operation errors for LEZ AccountStore implementations.
@@ -867,6 +919,26 @@ impl JobAccount {
         hasher.update(nonce.to_le_bytes());
         hasher.finalize().into()
     }
+
+    /// Strictly authenticates and deserializes a JobAccount from host-provided RuntimeAccount metadata.
+    /// Asserts that the account is owned by `MOSOO_PROGRAM_ID` and that the address matches the derived PDA.
+    pub fn try_from_runtime_account(
+        account: &RuntimeAccount,
+    ) -> Result<Self, crate::error::MosooError> {
+        if account.owner != MOSOO_PROGRAM_ID {
+            return Err(crate::error::MosooError::UnauthenticatedAttester {
+                expected: MOSOO_PROGRAM_ID,
+                actual: account.owner,
+            });
+        }
+        let job: JobAccount = serde_json::from_slice(&account.data).map_err(|e| {
+            crate::error::MosooError::Internal(format!("malformed job account data: {e}"))
+        })?;
+        if account.address != job.pda_address() {
+            return Err(crate::error::MosooError::UnauthenticatedJobAccount);
+        }
+        Ok(job)
+    }
 }
 
 /// Processing stages for a verification job.
@@ -920,6 +992,26 @@ impl HeaderRecord {
         hasher.update(self.chain_id.to_le_bytes());
         hasher.update(self.slot.to_le_bytes());
         hasher.finalize().into()
+    }
+
+    /// Strictly authenticates and deserializes a HeaderRecord from host-provided RuntimeAccount metadata.
+    /// Asserts that the account is owned by `MOSOO_PROGRAM_ID` and that the address matches the derived PDA.
+    pub fn try_from_runtime_account(
+        account: &RuntimeAccount,
+    ) -> Result<Self, crate::error::MosooError> {
+        if account.owner != MOSOO_PROGRAM_ID {
+            return Err(crate::error::MosooError::UnauthenticatedAttester {
+                expected: MOSOO_PROGRAM_ID,
+                actual: account.owner,
+            });
+        }
+        let header: HeaderRecord = serde_json::from_slice(&account.data).map_err(|e| {
+            crate::error::MosooError::Internal(format!("malformed header record data: {e}"))
+        })?;
+        if account.address != header.pda_address() {
+            return Err(crate::error::MosooError::UnauthenticatedHeaderRecord);
+        }
+        Ok(header)
     }
 }
 

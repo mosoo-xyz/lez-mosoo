@@ -207,6 +207,14 @@ pub enum MosooError {
     #[error("unconfigured genesis validators root: custom network must provide non-zero genesis_validators_root")]
     UnconfiguredGenesisValidatorsRoot,
 
+    #[error("unconfigured trusted checkpoint: custom network {chain_id} must provide explicit trusted checkpoint root")]
+    UnconfiguredTrustedCheckpoint { chain_id: u64 },
+
+    #[error(
+        "untrusted checkpoint: checkpoint root does not match canonical root for chain {chain_id}"
+    )]
+    UntrustedCheckpoint { chain_id: u64 },
+
     #[error("unauthenticated source instance: zero instance PDA is not permitted")]
     UnauthenticatedSourceInstance,
 

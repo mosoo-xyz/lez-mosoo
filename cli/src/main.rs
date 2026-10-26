@@ -1567,6 +1567,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         historical_execution_proof: None,
         proof,
         predicate,
+        privacy_salt: None,
     };
 
     println!(
