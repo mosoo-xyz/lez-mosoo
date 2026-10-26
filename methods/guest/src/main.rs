@@ -39,6 +39,16 @@ fn main() {
 
     let result: Result<InstructionOutput, MosooError> = dispatch_guest_instruction(instruction);
 
+    // Privacy-preserving public journal emission (RFP-021 Functionality #8):
+    // Statements emitted to public zkVM journal are automatically shielded so that
+    // Ethereum addresses, event logs, and LEZ recipients are never exposed publicly.
+    let safe_result = result.map(|output| match output {
+        InstructionOutput::StatementIssued(stmt) => {
+            InstructionOutput::StatementIssued(stmt.shield())
+        }
+        other => other,
+    });
+
     // Commit the result to the journal (public outputs of the zkVM program).
-    env::commit(&result.map_err(|e| e.to_string()));
+    env::commit(&safe_result.map_err(|e| e.to_string()));
 }

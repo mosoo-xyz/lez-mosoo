@@ -79,6 +79,16 @@ impl AccountStore for MockStore {
     }
 }
 
+fn make_valid_committee() -> SyncCommittee {
+    let ikm = [0x42; 32];
+    let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[]).unwrap();
+    let pk = sk.sk_to_pk().to_bytes().to_vec();
+    SyncCommittee {
+        pubkeys: vec![pk.clone(); 512],
+        aggregate_pubkey: pk,
+    }
+}
+
 /// Helper to build an authentic dummy InstanceAccount
 fn make_test_instance(chain_id: u64, instance_id: [u8; 32]) -> InstanceAccount {
     InstanceAccount {
@@ -87,10 +97,7 @@ fn make_test_instance(chain_id: u64, instance_id: [u8; 32]) -> InstanceAccount {
         current_header_hash: [0x11; 32],
         current_state_root: [0x22; 32],
         current_slot: 1000,
-        current_sync_committee: SyncCommittee {
-            pubkeys: vec![vec![0x01; 48]; 512],
-            aggregate_pubkey: vec![0x02; 48],
-        },
+        current_sync_committee: make_valid_committee(),
         next_sync_committee: None,
         bootstrap_slot: 500,
         bootstrap_header_hash: [0xaa; 32],
@@ -132,7 +139,7 @@ fn empty_state_proof(target: ProofTarget) -> StateProof {
 
 #[test]
 fn test_finding1_zkvm_authenticated_guest_instruction_rejects_unauthenticated_pda() {
-    let instance_id = [0x42; 32];
+    let instance_id = mosoo_core::types::CANONICAL_SEPOLIA_INSTANCE_ID;
     let instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, instance_id);
     let authentic_pda = instance.pda_address();
     let header = make_test_header(&instance);
@@ -495,4 +502,245 @@ fn test_finding6_statement_id_predicate_invariance() {
         stmt_a.statement_id, stmt_b.statement_id,
         "statement_id MUST be invariant to predicate variants to prevent nullifier replay bypass"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 7: Job Account Nonce Collision & Overwrite Prevention (Medium #1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding7_job_account_collision_prevents_overwrite() {
+    use mosoo_core::types::{LightClientUpdate, SyncAggregate};
+    use mosoo_core::verifier::handle_begin_update_authenticated;
+
+    let mut store = MockStore::default();
+    let instance_id = mosoo_core::types::CANONICAL_SEPOLIA_INSTANCE_ID;
+    let inst = make_test_instance(ETH_SEPOLIA_CHAIN_ID, instance_id);
+    let inst_pda = inst.pda_address();
+
+    // Register authentic instance in store
+    store.set_account_with_owner(
+        &inst_pda,
+        serde_json::to_vec(&inst).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let dummy_header = mosoo_core::types::BeaconBlockHeader {
+        slot: 1005,
+        proposer_index: 1,
+        parent_root: [0x11; 32],
+        state_root: [0x22; 32],
+        body_root: [0x33; 32],
+    };
+
+    let mut update_a = LightClientUpdate {
+        attested_header: dummy_header.clone(),
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header: dummy_header,
+        finality_branch: vec![[0u8; 32]; 6],
+        execution_payload_header: None,
+        execution_branch: None,
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0x11; 96],
+        },
+        signature_slot: 1006,
+    };
+
+    let args_a = mosoo_core::verifier::BeginUpdateArgs {
+        instance: inst.clone(),
+        update: update_a.clone(),
+        nonce: 42,
+    };
+
+    // First submission succeeds and creates the job
+    let res_a = handle_begin_update_authenticated(&mut store, &inst_pda, args_a.clone());
+    assert!(res_a.is_ok(), "First update submission must succeed");
+
+    // Idempotent duplicate submission of exact same update succeeds
+    let res_dup = handle_begin_update_authenticated(&mut store, &inst_pda, args_a);
+    assert!(
+        res_dup.is_ok(),
+        "Idempotent retry with exact same digest must succeed"
+    );
+
+    // Second submission with conflicting update at same nonce MUST be rejected with JobAccountCollision!
+    update_a.signature_slot = 1007; // Change update to alter digest
+    let args_conflicting = mosoo_core::verifier::BeginUpdateArgs {
+        instance: inst,
+        update: update_a,
+        nonce: 42, // Same nonce!
+    };
+
+    let res_conflict = handle_begin_update_authenticated(&mut store, &inst_pda, args_conflicting);
+    match res_conflict {
+        Err(MosooError::JobAccountCollision) => {
+            // Expected: conflicting update on existing job PDA is strictly rejected!
+        }
+        other => panic!(
+            "Expected JobAccountCollision on conflicting update, got {:?}",
+            other
+        ),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 8: Consumer Zero-Source-Instance PDA & Mismatch Fail-Closed (High #1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding8_zero_source_instance_pda_rejected_in_consumers() {
+    use erc20_receiver::{Erc20Ledger, NullifierSet, ReceiverError};
+
+    let mut ledger = Erc20Ledger::default();
+    let mut nullifiers = NullifierSet::default();
+    let locker = [0x50; 20];
+    let token = [0x1c; 20];
+    let recipient = [0x01; 32];
+
+    // Statement with source_instance_pda == [0u8; 32]
+    let zero_pda_stmt = VerifiedStatement {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        genesis_validators_root: crypto::genesis_validators_root(ETH_SEPOLIA_CHAIN_ID),
+        source_instance_id: [0u8; 32],
+        source_instance_pda: [0u8; 32], // Zero PDA!
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x55; 32],
+        predicate_holds: true,
+        verified_value: [0x01; 32],
+        subject_key: [0x02; 32],
+        proof_type_tag: PROOF_TYPE_ERC20_DEPOSIT,
+        binding: StatementBinding::Erc20Deposit {
+            execution_block_hash: [0x11; 32],
+            slot: 100,
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: locker,
+            token_contract: token,
+            sender: [0x03; 20],
+            recipient,
+        },
+    };
+
+    let stmt_account = StatementAccount::new_authentic(zero_pda_stmt);
+
+    let res = ledger.mint_deposit_authenticated_pda_u256(&stmt_account, locker, &mut nullifiers);
+
+    match res {
+        Err(ReceiverError::UnauthenticatedSourceInstance) => {
+            // Success: zero source_instance_pda is strictly rejected!
+        }
+        other => panic!("Expected UnauthenticatedSourceInstance, got {:?}", other),
+    }
+
+    // Statement with non-zero but UNTRUSTED source_instance_pda
+    let mut untrusted_stmt = stmt_account.statement.clone();
+    untrusted_stmt.source_instance_pda = [0x99; 32]; // Not matching canonical Sepolia instance!
+    let untrusted_account = StatementAccount::new_authentic(untrusted_stmt);
+
+    let res_untrusted =
+        ledger.mint_deposit_authenticated_pda_u256(&untrusted_account, locker, &mut nullifiers);
+
+    match res_untrusted {
+        Err(ReceiverError::UntrustedSourceInstance) => {
+            // Success: untrusted instance mismatch is strictly rejected!
+        }
+        other => panic!("Expected UntrustedSourceInstance, got {:?}", other),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 9: Salted Privacy Hiding & Non-Correlation (High #2)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding9_salted_privacy_shielding_non_correlation() {
+    let binding = StatementBinding::NativeEthDeposit {
+        execution_block_hash: [0x33; 32],
+        slot: 500,
+        tx_index: 3,
+        log_index: 1,
+        deposit_contract: [0x44; 20],
+        sender: [0x55; 20],
+        recipient: [0x66; 32],
+    };
+
+    let salt1 = [0xaa; 32];
+    let salt2 = [0xbb; 32];
+
+    let commitment_unsalted = binding.compute_commitment();
+    let commitment_salted1 = binding.compute_salted_commitment(&salt1);
+    let commitment_salted2 = binding.compute_salted_commitment(&salt2);
+
+    // Commitments with different secret salts MUST be distinct
+    assert_ne!(commitment_salted1, commitment_unsalted);
+    assert_ne!(commitment_salted2, commitment_unsalted);
+    assert_ne!(commitment_salted1, commitment_salted2);
+
+    // Observer knowing the public deposit cannot correlate commitment without salt
+    let stmt = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: crypto::genesis_validators_root(ETH_MAINNET_CHAIN_ID),
+        source_instance_id: [0x01; 32],
+        source_instance_pda: [0x02; 32],
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x03; 32],
+        predicate_holds: true,
+        verified_value: [0x04; 32],
+        subject_key: [0x05; 32],
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: binding.clone(),
+    };
+
+    let shielded1 = stmt.shield_with_salt(&salt1);
+    let shielded2 = stmt.shield_with_salt(&salt2);
+
+    assert_ne!(shielded1.binding, shielded2.binding);
+}
+
+// ---------------------------------------------------------------------------
+// Finding 10: Sync Committee Aggregate Length Checking (Medium #3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding10_sync_committee_signature_length_enforcement() {
+    use mosoo_core::types::{BeaconBlockHeader, SyncAggregate, SyncCommittee};
+
+    let committee = SyncCommittee {
+        pubkeys: vec![vec![0x01; 48]; 512],
+        aggregate_pubkey: vec![0x02; 48],
+    };
+
+    let valid_header = BeaconBlockHeader {
+        slot: 100,
+        proposer_index: 0,
+        parent_root: [0u8; 32],
+        state_root: [0u8; 32],
+        body_root: [0u8; 32],
+    };
+
+    // Malformed short bitfield (63 bytes instead of 64)
+    let malformed_aggregate = SyncAggregate {
+        sync_committee_bits: vec![0xff; 63],
+        sync_committee_signature: vec![0x00; 96],
+    };
+
+    let res = crypto::verify_sync_committee_signature_with_config(
+        &committee,
+        &malformed_aggregate,
+        &valid_header,
+        ETH_SEPOLIA_CHAIN_ID,
+        100,
+        None,
+    );
+
+    match res {
+        Err(MosooError::InvalidSyncCommitteeBitsLength { actual, expected }) => {
+            assert_eq!(actual, 63);
+            assert_eq!(expected, 64);
+        }
+        other => panic!("Expected InvalidSyncCommitteeBitsLength, got {:?}", other),
+    }
 }

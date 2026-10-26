@@ -78,18 +78,61 @@ pub fn dispatch_guest_instruction(
     instruction: GuestInstruction,
 ) -> Result<InstructionOutput, MosooError> {
     match instruction {
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::Initialize(args) => handle_initialize(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::Initialize(args) => {
+            // In production, verify bootstrap checkpoint root matches TrustedBridgeConfig
+            if let Some(expected_checkpoint) = crate::types::TrustedBridgeConfig::canonical()
+                .trusted_checkpoints
+                .get(&args.chain_id)
+            {
+                if args.trusted_checkpoint_root != *expected_checkpoint {
+                    return Err(MosooError::InvalidBootstrap(
+                        "bootstrap trusted checkpoint root does not match canonical config".into(),
+                    ));
+                }
+            }
+            handle_initialize(args)
+        }
+
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::BeginUpdate(args) => handle_begin_update(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::BeginUpdate(_) => Err(MosooError::UnauthenticatedInstance),
+
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::MillerUpdate(args) => handle_miller_update(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::MillerUpdate(_) => Err(MosooError::UnauthenticatedInstance),
+
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::FinishUpdate(args) => handle_finish_update(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::FinishUpdate(_) => Err(MosooError::UnauthenticatedInstance),
+
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::AttestState(args) => handle_attest_state(args),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::AttestState(_) => Err(MosooError::UnauthenticatedInstance),
+
         GuestInstruction::AttestStateAuthenticated {
             expected_instance_pda,
             expected_header_pda,
             args,
         } => {
+            if expected_instance_pda == [0u8; 32] {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if args.instance.pda_address() != expected_instance_pda {
                 return Err(MosooError::UnauthenticatedInstance);
+            }
+            if let Some(pinned) = crate::types::TrustedBridgeConfig::canonical()
+                .get_trusted_instance(args.instance.chain_id)
+            {
+                if expected_instance_pda != pinned {
+                    return Err(MosooError::UntrustedSourceInstance);
+                }
             }
             if let Some(expected_h_pda) = expected_header_pda {
                 if args.header.pda_address() != expected_h_pda {
@@ -103,8 +146,18 @@ pub fn dispatch_guest_instruction(
             expected_job_pda,
             args,
         } => {
+            if expected_instance_pda == [0u8; 32] {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if args.instance.pda_address() != expected_instance_pda {
                 return Err(MosooError::UnauthenticatedInstance);
+            }
+            if let Some(pinned) = crate::types::TrustedBridgeConfig::canonical()
+                .get_trusted_instance(args.instance.chain_id)
+            {
+                if expected_instance_pda != pinned {
+                    return Err(MosooError::UntrustedSourceInstance);
+                }
             }
             if args.job.pda_address() != expected_job_pda {
                 return Err(MosooError::UnauthenticatedJobAccount);
@@ -118,8 +171,18 @@ pub fn dispatch_guest_instruction(
             expected_instance_pda,
             args,
         } => {
+            if expected_instance_pda == [0u8; 32] {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if args.instance.pda_address() != expected_instance_pda {
                 return Err(MosooError::UnauthenticatedInstance);
+            }
+            if let Some(pinned) = crate::types::TrustedBridgeConfig::canonical()
+                .get_trusted_instance(args.instance.chain_id)
+            {
+                if expected_instance_pda != pinned {
+                    return Err(MosooError::UntrustedSourceInstance);
+                }
             }
             handle_begin_update(args)
         }
@@ -128,8 +191,18 @@ pub fn dispatch_guest_instruction(
             expected_job_pda,
             args,
         } => {
+            if expected_instance_pda == [0u8; 32] {
+                return Err(MosooError::UnauthenticatedInstance);
+            }
             if args.instance.pda_address() != expected_instance_pda {
                 return Err(MosooError::UnauthenticatedInstance);
+            }
+            if let Some(pinned) = crate::types::TrustedBridgeConfig::canonical()
+                .get_trusted_instance(args.instance.chain_id)
+            {
+                if expected_instance_pda != pinned {
+                    return Err(MosooError::UntrustedSourceInstance);
+                }
             }
             if args.job.pda_address() != expected_job_pda {
                 return Err(MosooError::UnauthenticatedJobAccount);
@@ -917,7 +990,13 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             )
         }
     };
-    let gvr = crate::crypto::genesis_validators_root(args.header.chain_id);
+    let gvr = match args.instance.network_config.as_ref() {
+        Some(config) => config.genesis_validators_root,
+        None => crate::crypto::genesis_validators_root(args.instance.chain_id),
+    };
+    if gvr == [0u8; 32] {
+        return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
+    }
     let source_instance_pda = args.instance.pda_address();
     let statement = predicate::evaluate_with_binding_v2(
         &args.predicate,
@@ -1022,6 +1101,18 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let out = handle_begin_update(args)?;
     if let InstructionOutput::JobCreated(ref job) = out {
         let job_pda = job.pda_address();
+        // Guard: Prevent existing job overwrite on same instance and nonce (Finding 7 / Medium #1)
+        if let Some(existing_bytes) = store.get_account(&job_pda) {
+            if let Ok(existing_job) = serde_json::from_slice::<JobAccount>(&existing_bytes) {
+                if existing_job.update_digest == job.update_digest {
+                    // Idempotent duplicate submission of identical update
+                    return Ok(InstructionOutput::JobCreated(existing_job));
+                } else {
+                    // Conflicting update attempted at existing nonce PDA
+                    return Err(MosooError::JobAccountCollision);
+                }
+            }
+        }
         let job_bytes = serde_json::to_vec(job)
             .map_err(|e| MosooError::Internal(format!("Failed to serialize JobAccount: {e}")))?;
         store

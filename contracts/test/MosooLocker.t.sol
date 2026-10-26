@@ -128,7 +128,8 @@ contract MosooLockerTest is Test {
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
         bytes memory sig = abi.encodePacked(r, s, v);
 
-        // First attempt queues the withdrawal
+        // First attempt queues the withdrawal (requires enabling legacy routes for migration test)
+        locker.setLegacyRoutesEnabled(true);
         locker.unlockETH(burnId, amount, recipient, lezOwner, burnNonce, lezSlot, sig);
         assertTrue(locker.queuedWithdrawalUnlockTime(burnId) > 0, "must be queued");
 
@@ -217,7 +218,8 @@ contract MosooLockerTest is Test {
         );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
 
-        // Sub-threshold quorum (only 1 signature provided)
+        // Sub-threshold quorum (only 1 signature provided) - enable legacy routes for legacy quorum test
+        locker.setLegacyRoutesEnabled(true);
         bytes[] memory subQuorumSigs = new bytes[](1);
         (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(attesterPk, digest);
         subQuorumSigs[0] = abi.encodePacked(r1, s1, v1);
@@ -305,6 +307,7 @@ contract MosooLockerTest is Test {
     }
 
     function test_removed_attester_single_signature_rejected() public {
+        locker.setLegacyRoutesEnabled(true);
         uint256 attester2Pk = 0xB22CE;
         address attester2 = vm.addr(attester2Pk);
 
@@ -364,6 +367,7 @@ contract MosooLockerTest is Test {
     }
 
     function test_authority_rotation_updates_committee_count_and_preserves_quorum() public {
+        locker.setLegacyRoutesEnabled(true);
         uint256 attester2Pk = 0xB22CE;
         uint256 attester3Pk = 0xC33CE;
         address attester2 = vm.addr(attester2Pk);
@@ -462,6 +466,7 @@ contract MosooLockerTest is Test {
     }
 
     function test_rolling_limit_dos_cleanup_pruning() public {
+        locker.setLegacyRoutesEnabled(true);
         vm.prank(user);
         locker.depositETH{value: 50 ether}(bytes32(uint256(0xAA)));
 
@@ -529,6 +534,7 @@ contract MosooLockerTest is Test {
     }
 
     function test_permissionless_prune_bounded_batches() public {
+        locker.setLegacyRoutesEnabled(true);
         vm.prank(user);
         locker.depositETH{value: 20 ether}(bytes32(uint256(0xAA)));
 
@@ -730,32 +736,32 @@ contract MosooLockerTest is Test {
         vm.prank(user);
         locker.depositETH{value: 2 ether}(bytes32(uint256(0x1111)));
 
-        // 1. Initial state: legacy routes are enabled
-        assertTrue(locker.legacyRoutesEnabled(), "legacy routes should default to enabled");
+        // 1. Initial state: legacy routes are strictly disabled by default (Safe-by-default for new deployments)
+        assertTrue(!locker.legacyRoutesEnabled(), "legacy routes should default to disabled for safety");
 
-        // 2. Non-owner cannot toggle legacy routes
-        vm.prank(user);
-        try locker.disableLegacyRoutes() {
-            revert("Non-owner disable legacy routes MUST revert");
+        // 2. Legacy unlockETH MUST revert immediately by default
+        bytes32 burnId = keccak256("test_legacy_burn");
+        try locker.unlockETH(burnId, 1 ether, payable(user), bytes32(uint256(0x2222)), 1, 100, "") {
+            revert("unlockETH MUST revert when legacy routes disabled by default");
         } catch {}
 
-        // 3. Owner disables legacy routes
+        // 3. Non-owner cannot enable legacy routes
+        vm.prank(user);
+        try locker.setLegacyRoutesEnabled(true) {
+            revert("Non-owner enable legacy routes MUST revert");
+        } catch {}
+
+        // 4. Owner enables legacy routes for migration
+        locker.setLegacyRoutesEnabled(true);
+        assertTrue(locker.legacyRoutesEnabled(), "legacy routes should be enabled after owner call");
+
+        // 5. Owner can disable legacy routes again
         locker.disableLegacyRoutes();
         assertTrue(!locker.legacyRoutesEnabled(), "legacy routes should be disabled");
 
-        // 4. Legacy unlockETH MUST revert when legacy routes disabled
-        bytes32 burnId = keccak256("test_legacy_burn");
-        try locker.unlockETH(burnId, 1 ether, payable(user), bytes32(uint256(0x2222)), 1, 100, "") {
-            revert("unlockETH MUST revert when legacy routes disabled");
-        } catch {}
-
-        // 5. Legacy unlockERC20 MUST revert when legacy routes disabled
+        // 6. Legacy unlockERC20 MUST revert when legacy routes disabled
         try locker.unlockERC20(burnId, address(0x1234), 1 ether, user, bytes32(uint256(0x2222)), 1, 100, "") {
             revert("unlockERC20 MUST revert when legacy routes disabled");
         } catch {}
-
-        // 6. Owner can re-enable legacy routes
-        locker.setLegacyRoutesEnabled(true);
-        assertTrue(locker.legacyRoutesEnabled(), "legacy routes should be re-enabled");
     }
 }

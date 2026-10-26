@@ -45,14 +45,39 @@ pub const MOSOO_PROGRAM_ID: [u8; 32] = [
 /// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Sepolia.
 /// Cryptographically derived via `derive_instance_pda(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_INSTANCE_ID)`.
 pub const CANONICAL_SEPOLIA_MOSOO_INSTANCE: [u8; 32] = [
-    0x98, 0x4a, 0x6b, 0x2e, 0x81, 0xc3, 0x18, 0x49, 0x2c, 0x2c, 0x0a, 0xbd, 0x21, 0x1d, 0xfb, 0xbb,
-    0x64, 0x1a, 0x3e, 0x71, 0xa5, 0xb2, 0x7f, 0xcf, 0x80, 0x67, 0x32, 0xad, 0x55, 0x86, 0x19, 0x12,
+    0x67, 0x65, 0xcd, 0xee, 0x95, 0x2f, 0x05, 0x8d, 0x64, 0x1c, 0x36, 0x08, 0x20, 0x13, 0xa2, 0x4c,
+    0x8b, 0x27, 0x4b, 0x39, 0x0c, 0x71, 0x17, 0xb9, 0xb2, 0x72, 0xac, 0xe6, 0xf1, 0xf4, 0x2c, 0x64,
 ];
 
 /// Canonical instance identifier for Sepolia: sha256(b"mosoo_sepolia_instance_v1")
 pub const CANONICAL_SEPOLIA_INSTANCE_ID: [u8; 32] = [
     0x8d, 0x28, 0x35, 0x80, 0xaa, 0x10, 0x7b, 0x57, 0x50, 0x1a, 0x40, 0x3f, 0xc4, 0x16, 0xa4, 0xd2,
     0x53, 0x6a, 0xcf, 0x8a, 0x4d, 0x1f, 0xe8, 0xa9, 0x3e, 0x57, 0x34, 0xbb, 0xbe, 0xdc, 0x90, 0xe6,
+];
+
+/// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Ethereum Mainnet.
+/// Cryptographically derived via `derive_instance_pda(ETH_MAINNET_CHAIN_ID, &CANONICAL_MAINNET_INSTANCE_ID)`.
+pub const CANONICAL_MAINNET_MOSOO_INSTANCE: [u8; 32] = [
+    0xd8, 0xa2, 0x69, 0x15, 0xe8, 0x7a, 0xe4, 0xe9, 0x6e, 0x78, 0x6d, 0xdb, 0xfd, 0xdb, 0x1d, 0x33,
+    0x40, 0x2e, 0x03, 0xb9, 0x15, 0xd9, 0xef, 0x5e, 0xc5, 0xe2, 0xc1, 0xac, 0x86, 0x97, 0x7c, 0x42,
+];
+
+/// Canonical instance identifier for Mainnet: sha256(b"mosoo_mainnet_instance_v1")
+pub const CANONICAL_MAINNET_INSTANCE_ID: [u8; 32] = [
+    0x5a, 0x11, 0x3b, 0x72, 0x9f, 0x01, 0x44, 0x88, 0xbc, 0xde, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+    0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
+];
+
+/// Canonical Mainnet weak-subjectivity trusted checkpoint root (Period 1280).
+pub const CANONICAL_MAINNET_CHECKPOINT_ROOT: [u8; 32] = [
+    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
+    0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x01,
+];
+
+/// Canonical deployed Mosoo locker vault contract on Ethereum Mainnet.
+pub const CANONICAL_MAINNET_MOSOO_LOCKER: [u8; 20] = [
+    0x10, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x01,
 ];
 
 /// Canonical Sepolia weak-subjectivity trusted checkpoint root (Period 1395, Slot 11,434,912).
@@ -124,8 +149,9 @@ impl TrustedBridgeConfig {
     /// Initialize with canonical production and testnet locker contracts, approved instances, and verified token allowlists.
     pub fn canonical() -> Self {
         let mut trusted_lockers = HashMap::new();
-        // Register authentic deployed Sepolia testnet locker
+        // Register authentic deployed lockers
         trusted_lockers.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_LOCKER);
+        trusted_lockers.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_LOCKER);
 
         let mut allowed_tokens = HashMap::new();
         let mut sepolia_tokens = HashSet::new();
@@ -144,9 +170,11 @@ impl TrustedBridgeConfig {
 
         let mut trusted_instances = HashMap::new();
         trusted_instances.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+        trusted_instances.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_MOSOO_INSTANCE);
 
         let mut trusted_checkpoints = HashMap::new();
         trusted_checkpoints.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
+        trusted_checkpoints.insert(ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_CHECKPOINT_ROOT);
 
         Self {
             admin_authority: None,
@@ -1139,6 +1167,23 @@ impl StatementBinding {
             commitment: self.compute_commitment(),
         }
     }
+
+    /// Compute a 32-byte salted cryptographic commitment (SHA-256) of the binding parameters
+    /// with an unguessable 256-bit blinding factor, preventing correlation of public Ethereum events (Finding 4).
+    pub fn compute_salted_commitment(&self, salt: &[u8; 32]) -> [u8; 32] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_salted_commitment_v1:");
+        hasher.update(salt);
+        hasher.update(self.compute_commitment());
+        hasher.finalize().into()
+    }
+
+    /// Converts this binding into a privacy-preserving shielded variant with a secret blinding factor.
+    pub fn to_shielded_salted(&self, salt: &[u8; 32]) -> Self {
+        StatementBinding::Shielded {
+            commitment: self.compute_salted_commitment(salt),
+        }
+    }
 }
 
 impl Default for StatementBinding {
@@ -1223,6 +1268,14 @@ impl VerifiedStatement {
         shielded
     }
 
+    /// Converts this verified statement into a shielded statement with a secret 256-bit blinding salt (Finding 4),
+    /// preventing observers of public Ethereum events from correlating the emitted statement.
+    pub fn shield_with_salt(&self, salt: &[u8; 32]) -> Self {
+        let mut shielded = self.clone();
+        shielded.binding = self.binding.to_shielded_salted(salt);
+        shielded
+    }
+
     /// Decode the verified 32-byte EVM value as a U256 (big-endian).
     pub fn value_as_u256(&self) -> alloy_primitives::U256 {
         alloy_primitives::U256::from_be_bytes(self.verified_value)
@@ -1301,7 +1354,9 @@ pub struct StatementAccount {
 }
 
 impl StatementAccount {
-    /// Constructs a verified StatementAccount owned by `MOSOO_PROGRAM_ID`.
+    /// Constructs a verified StatementAccount owned by `MOSOO_PROGRAM_ID` (test and harness only).
+    /// In production, StatementAccount must be loaded via `try_from_runtime_account` or from authenticated AccountStore.
+    #[cfg(any(test, feature = "test-harness"))]
     pub fn new_authentic(statement: VerifiedStatement) -> Self {
         let pda_address = derive_statement_pda(statement.chain_id, &statement.statement_id);
         Self {

@@ -113,6 +113,12 @@ pub enum ReceiverError {
     )]
     UntrustedInstanceAccount([u8; 32]),
 
+    #[error("unauthenticated source instance: zero instance PDA is not permitted in production")]
+    UnauthenticatedSourceInstance,
+
+    #[error("untrusted source instance: statement source_instance_pda does not match pinned trusted instance")]
+    UntrustedSourceInstance,
+
     #[error("arithmetic overflow in token operation")]
     Overflow,
 }
@@ -404,16 +410,14 @@ pub fn claim_authenticated_pda_u256(
     if statement_account.pda_address != expected_pda {
         return Err(ReceiverError::UnauthenticatedAttester);
     }
-    if let Some(pinned_pda) =
-        TrustedBridgeConfig::canonical().get_trusted_instance(statement_account.statement.chain_id)
-    {
-        if statement_account.statement.source_instance_pda != [0u8; 32]
-            && statement_account.statement.source_instance_pda != pinned_pda
-        {
-            return Err(ReceiverError::AttestationFailed(
-                "statement source_instance_pda does not match pinned trusted instance".into(),
-            ));
-        }
+    if statement_account.statement.source_instance_pda == [0u8; 32] {
+        return Err(ReceiverError::UnauthenticatedSourceInstance);
+    }
+    let pinned_pda = TrustedBridgeConfig::canonical()
+        .get_trusted_instance(statement_account.statement.chain_id)
+        .ok_or(ReceiverError::UntrustedSourceInstance)?;
+    if statement_account.statement.source_instance_pda != pinned_pda {
+        return Err(ReceiverError::UntrustedSourceInstance);
     }
     #[allow(deprecated)]
     claim_u256(&statement_account.statement, nullifiers, min_amount)
@@ -1205,6 +1209,7 @@ pub struct AtomicErc20ClaimArgsU256 {
 ///
 /// NOTE: In-memory test harness entrypoint for offline simulation.
 /// Production LEZ contracts MUST invoke `claim_authenticated_store_u256` with persistent `AccountStore` and pinned `TrustedBridgeConfig`.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_authenticated_store_u256 with pinned TrustedBridgeConfig."
 )]
@@ -1362,6 +1367,7 @@ pub fn claim_atomic_u256(
 /// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
 /// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts target contract
 /// identity, derives the deterministic statement nullifier, checks for replay, and credits tokens.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_authenticated_store_u256 with pinned TrustedBridgeConfig."
 )]
@@ -1873,6 +1879,7 @@ impl Erc20Ledger {
     /// trusted bridge locker address from program configuration, token contract allowlist, depositor,
     /// and recipient before state mutation.
     /// Validates checked U256-to-u128 conversion and balance additions BEFORE consuming nullifiers.
+    #[cfg(any(test, feature = "test-harness"))]
     #[deprecated(
         note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use mint_deposit_authenticated_store_u256 or mint_deposit_authenticated_pda_u256."
     )]
@@ -2047,17 +2054,15 @@ impl Erc20Ledger {
             return Err(ReceiverError::UnauthenticatedAttester);
         }
 
-        if let Some(pinned_pda) = self
+        if statement_account.statement.source_instance_pda == [0u8; 32] {
+            return Err(ReceiverError::UnauthenticatedSourceInstance);
+        }
+        let pinned_pda = self
             .config
             .get_trusted_instance(statement_account.statement.chain_id)
-        {
-            if statement_account.statement.source_instance_pda != [0u8; 32]
-                && statement_account.statement.source_instance_pda != pinned_pda
-            {
-                return Err(ReceiverError::AttestationFailed(
-                    "statement source_instance_pda does not match pinned trusted instance".into(),
-                ));
-            }
+            .ok_or(ReceiverError::UntrustedSourceInstance)?;
+        if statement_account.statement.source_instance_pda != pinned_pda {
+            return Err(ReceiverError::UntrustedSourceInstance);
         }
 
         if expected_deposit_contract == [0u8; 20] {
@@ -2367,23 +2372,15 @@ mod tests {
             &sender,
             &recipient,
         );
-        let statement_id = if id_seed != 0 {
-            mosoo_core::predicate::derive_statement_id_from_raw(
-                chain_id,
-                &subject_key,
-                PROOF_TYPE_ERC20_TRANSFER,
-                &verified_value,
-            )
-        } else {
-            [0u8; 32]
-        };
-        VerifiedStatement {
+        let mut stmt = VerifiedStatement {
             chain_id,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(chain_id),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: TrustedBridgeConfig::canonical()
+                .get_trusted_instance(chain_id)
+                .unwrap_or([0u8; 32]),
             attester_program_id: attester,
-            statement_id,
+            statement_id: [0u8; 32],
             predicate_holds: holds,
             verified_value,
             subject_key,
@@ -2397,7 +2394,13 @@ mod tests {
                 sender,
                 recipient,
             },
-        }
+        };
+        stmt.statement_id = if id_seed != 0 {
+            stmt.derive_canonical_id()
+        } else {
+            [0u8; 32]
+        };
+        stmt
     }
 
     #[test]
@@ -3375,19 +3378,15 @@ mod tests {
             &sender,
             &recipient,
         );
-        let statement_id = mosoo_core::predicate::derive_statement_id_from_raw(
+        let mut stmt = VerifiedStatement {
             chain_id,
-            &subject_key,
-            PROOF_TYPE_ERC20_DEPOSIT,
-            &verified_value,
-        );
-        VerifiedStatement {
-            chain_id,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(chain_id),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: TrustedBridgeConfig::canonical()
+                .get_trusted_instance(chain_id)
+                .unwrap_or([0u8; 32]),
             attester_program_id: attester,
-            statement_id,
+            statement_id: [0u8; 32],
             predicate_holds: holds,
             verified_value,
             subject_key,
@@ -3402,7 +3401,9 @@ mod tests {
                 sender,
                 recipient,
             },
-        }
+        };
+        stmt.statement_id = stmt.derive_canonical_id();
+        stmt
     }
 
     #[test]

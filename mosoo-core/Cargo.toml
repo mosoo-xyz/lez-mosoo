@@ -21,6 +21,11 @@ nybbles          = { workspace = true }
 # inside the RISC0 zkVM guest it compiles via the portable C engine.
 blst = { workspace = true }
 
+[features]
+default = []
+test-harness = []
+
 [dev-dependencies]
-erc20-receiver = { path = "../consumers/erc20-receiver" }
-ether-receiver = { path = "../consumers/ether-receiver" }
+mosoo-core = { path = ".", features = ["test-harness"] }
+erc20-receiver = { path = "../consumers/erc20-receiver", features = ["test-harness"] }
+ether-receiver = { path = "../consumers/ether-receiver", features = ["test-harness"] }

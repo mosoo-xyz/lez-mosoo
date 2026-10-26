@@ -55,7 +55,7 @@ contract MosooLocker {
     mapping(address => bool) public isTokenAllowed;
 
     /// @notice Migration & isolation switch for legacy V1 withdrawal routes lacking sourceInstance binding (Finding 5)
-    bool public legacyRoutesEnabled = true;
+    bool public legacyRoutesEnabled = false;
 
     // --- Rate Limiting & Timelock Defense-in-Depth ---
 

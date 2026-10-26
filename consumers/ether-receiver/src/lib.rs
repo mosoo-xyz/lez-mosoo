@@ -83,6 +83,12 @@ pub enum EtherReceiverError {
         "untrusted light-client instance {0:?}: instance is not approved in TrustedBridgeConfig"
     )]
     UntrustedInstanceAccount([u8; 32]),
+
+    #[error("unauthenticated source instance: zero instance PDA is not permitted in production")]
+    UnauthenticatedSourceInstance,
+
+    #[error("untrusted source instance: statement source_instance_pda does not match pinned trusted instance")]
+    UntrustedSourceInstance,
 }
 
 /// A persistent Program-Derived Account (PDA) nullifier record for Native ETH on Logos Execution Zone.
@@ -359,16 +365,14 @@ pub fn claim_ether_authenticated_pda_u256(
     if statement_account.pda_address != expected_pda {
         return Err(EtherReceiverError::UnauthenticatedAttester);
     }
-    if let Some(pinned_pda) =
-        TrustedBridgeConfig::canonical().get_trusted_instance(statement_account.statement.chain_id)
-    {
-        if statement_account.statement.source_instance_pda != [0u8; 32]
-            && statement_account.statement.source_instance_pda != pinned_pda
-        {
-            return Err(EtherReceiverError::AttestationFailed(
-                "statement source_instance_pda does not match pinned trusted instance".into(),
-            ));
-        }
+    if statement_account.statement.source_instance_pda == [0u8; 32] {
+        return Err(EtherReceiverError::UnauthenticatedSourceInstance);
+    }
+    let pinned_pda = TrustedBridgeConfig::canonical()
+        .get_trusted_instance(statement_account.statement.chain_id)
+        .ok_or(EtherReceiverError::UntrustedSourceInstance)?;
+    if statement_account.statement.source_instance_pda != pinned_pda {
+        return Err(EtherReceiverError::UntrustedSourceInstance);
     }
     #[allow(deprecated)]
     claim_ether_u256(&statement_account.statement, nullifiers, min_wei)
@@ -1026,7 +1030,10 @@ pub struct AtomicEtherClaimArgsU256 {
     pub min_wei: U256,
 }
 
-/// Execute atomic same-transaction Native Ether claim with full 256-bit amount preservation.
+#[cfg(any(test, feature = "test-harness"))]
+#[deprecated(
+    note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use claim_ether_authenticated_store_u256 with pinned TrustedBridgeConfig."
+)]
 pub fn claim_ether_atomic_u256(
     args: AtomicEtherClaimArgsU256,
     nullifiers: &mut EtherNullifierSet,
@@ -1119,6 +1126,7 @@ pub fn claim_ether_atomic_u256(
 /// Directly invokes `mosoo_core::verifier::handle_attest_state` in-guest, verifies the MPT inclusion
 /// proof against the authenticated `HeaderRecord`, evaluates the predicate, asserts account identity,
 /// derives the deterministic statement nullifier, checks for replay, and credits wei.
+#[cfg(any(test, feature = "test-harness"))]
 #[deprecated(
     note = "Use `claim_ether_atomic_u256` for full U256 precision to prevent overflow/truncation of amounts > u64::MAX"
 )]
@@ -1137,6 +1145,7 @@ pub fn claim_ether_atomic(
         recipient: args.recipient,
         min_wei: U256::from(args.min_wei),
     };
+    #[allow(deprecated)]
     let val_u256 = claim_ether_atomic_u256(u256_args, nullifiers)?;
     let val_u64: u64 = val_u256.try_into().map_err(|_| {
         EtherReceiverError::AttestationFailed(
@@ -1863,6 +1872,7 @@ impl MethLedger {
     /// Mint synthetic `mETH` via atomic same-transaction verification.
     /// Strictly validates escrow deposit backing from MosooLocker, converts U256 to u128 with
     /// checked arithmetic, and verifies balance additions BEFORE consuming nullifiers.
+    #[cfg(any(test, feature = "test-harness"))]
     #[deprecated(
         note = "In-memory test harness entrypoint. Production LEZ contract calls MUST use mint_deposit_authenticated_store_u256 or mint_deposit_authenticated_pda_u256."
     )]
@@ -2020,17 +2030,15 @@ impl MethLedger {
             return Err(EtherReceiverError::UnauthenticatedAttester);
         }
 
-        if let Some(pinned_pda) = self
+        if statement_account.statement.source_instance_pda == [0u8; 32] {
+            return Err(EtherReceiverError::UnauthenticatedSourceInstance);
+        }
+        let pinned_pda = self
             .config
             .get_trusted_instance(statement_account.statement.chain_id)
-        {
-            if statement_account.statement.source_instance_pda != [0u8; 32]
-                && statement_account.statement.source_instance_pda != pinned_pda
-            {
-                return Err(EtherReceiverError::AttestationFailed(
-                    "statement source_instance_pda does not match pinned trusted instance".into(),
-                ));
-            }
+            .ok_or(EtherReceiverError::UntrustedSourceInstance)?;
+        if statement_account.statement.source_instance_pda != pinned_pda {
+            return Err(EtherReceiverError::UntrustedSourceInstance);
         }
 
         if expected_deposit_contract == [0u8; 20] {
@@ -2265,9 +2273,11 @@ mod tests {
         verified_value[24..32].copy_from_slice(&wei.to_be_bytes());
         let mut stmt = VerifiedStatement {
             chain_id,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(chain_id),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: TrustedBridgeConfig::canonical()
+                .get_trusted_instance(chain_id)
+                .unwrap_or([0u8; 32]),
             attester_program_id: attester,
             statement_id: [0u8; 32],
             predicate_holds: holds,
@@ -2312,9 +2322,11 @@ mod tests {
         );
         let mut stmt = VerifiedStatement {
             chain_id,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(chain_id),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: TrustedBridgeConfig::canonical()
+                .get_trusted_instance(chain_id)
+                .unwrap_or([0u8; 32]),
             attester_program_id: attester,
             statement_id: [0u8; 32],
             predicate_holds: holds,
@@ -3711,11 +3723,13 @@ mod tests {
             &verified_value,
         );
 
-        let statement = VerifiedStatement {
+        let mut statement = VerifiedStatement {
             chain_id: ETH_MAINNET_CHAIN_ID,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(
+                ETH_MAINNET_CHAIN_ID,
+            ),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE,
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3732,6 +3746,7 @@ mod tests {
                 recipient,
             },
         };
+        statement.statement_id = statement.derive_canonical_id();
 
         // Standard u64 claim fails closed with overflow protection
         let u64_res = claim_ether(&statement, &mut nullifiers, 1_000_000_000);
@@ -3781,11 +3796,13 @@ mod tests {
             &verified_value,
         );
 
-        let statement = VerifiedStatement {
+        let mut statement = VerifiedStatement {
             chain_id: ETH_MAINNET_CHAIN_ID,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(
+                ETH_MAINNET_CHAIN_ID,
+            ),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE,
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3802,6 +3819,7 @@ mod tests {
                 recipient,
             },
         };
+        statement.statement_id = statement.derive_canonical_id();
 
         #[allow(deprecated)]
         let claimed = claim_ether_u128(&statement, &mut nullifiers, large_wei)
@@ -3840,11 +3858,13 @@ mod tests {
             &val_bytes,
         );
 
-        let statement = VerifiedStatement {
+        let mut statement = VerifiedStatement {
             chain_id: ETH_MAINNET_CHAIN_ID,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(
+                ETH_MAINNET_CHAIN_ID,
+            ),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE,
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3861,6 +3881,7 @@ mod tests {
                 recipient,
             },
         };
+        statement.statement_id = statement.derive_canonical_id();
 
         // 1. Adversary fabricates statement account with fake owner program ID
         let fake_owner = [0x99; 32];
@@ -3943,11 +3964,13 @@ mod tests {
             &amount_wei.to_be_bytes::<32>(),
         );
 
-        let statement = VerifiedStatement {
+        let mut statement = VerifiedStatement {
             chain_id: ETH_SEPOLIA_CHAIN_ID,
-            genesis_validators_root: [0u8; 32],
+            genesis_validators_root: mosoo_core::crypto::genesis_validators_root(
+                ETH_SEPOLIA_CHAIN_ID,
+            ),
             source_instance_id: [0u8; 32],
-            source_instance_pda: [0u8; 32],
+            source_instance_pda: mosoo_core::types::CANONICAL_SEPOLIA_MOSOO_INSTANCE,
             attester_program_id: MOSOO_PROGRAM_ID,
             statement_id,
             predicate_holds: true,
@@ -3964,6 +3987,7 @@ mod tests {
                 recipient,
             },
         };
+        statement.statement_id = statement.derive_canonical_id();
 
         // 1. Fabricated account rejected
         let fabricated = StatementAccount {

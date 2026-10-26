@@ -26,6 +26,9 @@ pub enum MosooError {
     #[error("invalid sync committee bits length: actual {actual}, expected {expected}")]
     InvalidSyncCommitteeBitsLength { actual: usize, expected: usize },
 
+    #[error("invalid sync committee member count: actual {actual}, expected {expected}")]
+    InvalidSyncCommitteeLength { actual: usize, expected: usize },
+
     #[error("invalid sync committee signature length: actual {actual}, expected {expected}")]
     InvalidSyncCommitteeSignatureLength { actual: usize, expected: usize },
 
@@ -197,6 +200,20 @@ pub enum MosooError {
 
     #[error("job account is unauthenticated or PDA does not match expected address")]
     UnauthenticatedJobAccount,
+
+    #[error("job account collision: conflicting update already exists at this job PDA")]
+    JobAccountCollision,
+
+    #[error("unconfigured genesis validators root: custom network must provide non-zero genesis_validators_root")]
+    UnconfiguredGenesisValidatorsRoot,
+
+    #[error("unauthenticated source instance: zero instance PDA is not permitted")]
+    UnauthenticatedSourceInstance,
+
+    #[error(
+        "untrusted source instance: statement source_instance_pda does not match trusted instance"
+    )]
+    UntrustedSourceInstance,
 
     #[error("persistent storage write failed: {0}")]
     StorageWriteFailed(String),

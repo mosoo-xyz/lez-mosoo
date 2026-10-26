@@ -3020,6 +3020,7 @@ dependencies = [
  "erc20-receiver",
  "ether-receiver",
  "hex",
+ "mosoo-core",
  "nybbles",
  "serde",
  "serde_json",

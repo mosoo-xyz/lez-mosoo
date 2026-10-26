@@ -858,6 +858,16 @@ pub fn verify_sync_committee_signature_with_config(
     signature_slot: u64,
     network_config: Option<&NetworkConfig>,
 ) -> Result<(), MosooError> {
+    verify_sync_aggregate_lengths(
+        &aggregate.sync_committee_bits,
+        &aggregate.sync_committee_signature,
+    )?;
+    if committee.pubkeys.len() != 512 {
+        return Err(MosooError::InvalidSyncCommitteeLength {
+            actual: committee.pubkeys.len(),
+            expected: 512,
+        });
+    }
     let participation = count_participation(&aggregate.sync_committee_bits);
     let threshold = (512usize * 2).div_ceil(3); // 342 validators (2/3 quorum)
     if participation < threshold {
