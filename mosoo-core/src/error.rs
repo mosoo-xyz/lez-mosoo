@@ -92,6 +92,9 @@ pub enum MosooError {
     MissingMillerOutput,
 
     // Merkle / inclusion proofs
+    #[error("recipient mismatch in event log")]
+    RecipientMismatch,
+
     #[error("invalid Merkle-Patricia trie proof")]
     InvalidTrieProof,
 

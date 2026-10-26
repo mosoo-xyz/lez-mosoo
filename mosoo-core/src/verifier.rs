@@ -107,24 +107,7 @@ pub fn dispatch_guest_instruction(
 ) -> Result<InstructionOutput, MosooError> {
     match instruction {
         GuestInstruction::Initialize(args) => {
-            // Verify bootstrap checkpoint root matches TrustedBridgeConfig
-            let canonical_cfg = crate::types::TrustedBridgeConfig::canonical();
-            if let Some(expected_checkpoint) = canonical_cfg.trusted_checkpoints.get(&args.chain_id)
-            {
-                if args.trusted_checkpoint_root != *expected_checkpoint {
-                    return Err(MosooError::UntrustedCheckpoint {
-                        chain_id: args.chain_id,
-                    });
-                }
-            } else if let Some(ref net_cfg) = args.network_config {
-                if net_cfg.genesis_validators_root == [0u8; 32] {
-                    return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
-                }
-            } else {
-                return Err(MosooError::UnconfiguredTrustedCheckpoint {
-                    chain_id: args.chain_id,
-                });
-            }
+            validate_initialize(&args)?;
             handle_initialize(args)
         }
 
@@ -288,6 +271,64 @@ pub enum InstructionOutput {
         closed_job: JobAccount,
     },
     StatementIssued(VerifiedStatement),
+}
+
+/// Validates initialization arguments against canonical checkpoints or custom network configurations.
+/// Enforced across all dispatchers and entrypoints (RFP-021 Functionality #1 / Finding 1).
+pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
+    // 1. Guard: custom chains without trusted checkpoint anchor must fail closed unless explicit NetworkConfig is provided
+    if !crate::types::is_supported_chain_id(args.chain_id) {
+        let Some(ref net_cfg) = args.network_config else {
+            return Err(MosooError::UnconfiguredTrustedCheckpoint {
+                chain_id: args.chain_id,
+            });
+        };
+        if net_cfg.genesis_validators_root == [0u8; 32] {
+            return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
+        }
+    }
+
+    // 2. Guard: chain_id must be a supported Ethereum network or configured with explicit NetworkConfig
+    if !crypto::is_supported_chain_or_configured(args.chain_id, args.network_config.as_ref()) {
+        return Err(MosooError::UnsupportedChain(args.chain_id));
+    }
+
+    // 3. Verify bootstrap checkpoint root matches TrustedBridgeConfig canonical checkpoints
+    let canonical_cfg = crate::types::TrustedBridgeConfig::canonical();
+    if let Some(expected_checkpoint) = canonical_cfg.trusted_checkpoints.get(&args.chain_id) {
+        if args.trusted_checkpoint_root != *expected_checkpoint {
+            return Err(MosooError::UntrustedCheckpoint {
+                chain_id: args.chain_id,
+            });
+        }
+    } else if let Some(ref net_cfg) = args.network_config {
+        if net_cfg.genesis_validators_root == [0u8; 32] {
+            return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
+        }
+    } else {
+        return Err(MosooError::UnconfiguredTrustedCheckpoint {
+            chain_id: args.chain_id,
+        });
+    }
+
+    // 4. Mandatory Root-of-Trust Checkpoint Anchor:
+    // In strict adherence to Ethereum light client specifications and Logos RFP-021,
+    // the trusted_checkpoint_root is MANDATORY and CANNOT be zero.
+    // An instance cannot be initialized without binding to an authentic beacon block root anchor.
+    if args.trusted_checkpoint_root == [0u8; 32] {
+        return Err(MosooError::InvalidBootstrap(
+            "trusted_checkpoint_root is mandatory and cannot be zero".into(),
+        ));
+    }
+
+    let header_hash = crypto::hash_tree_root_beacon_header(&args.bootstrap_header);
+    if header_hash != args.trusted_checkpoint_root {
+        return Err(MosooError::InvalidBootstrap(
+            "bootstrap header root does not match trusted_checkpoint_root anchor".into(),
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, MosooError> {
@@ -1325,9 +1366,16 @@ pub fn handle_initialize_store<S: AccountStore>(
     store: &mut S,
     args: InitializeArgs,
 ) -> Result<InstructionOutput, MosooError> {
+    validate_initialize(&args)?;
     let out = handle_initialize(args)?;
     if let InstructionOutput::Initialized(ref instance) = out {
         let pda = instance.pda_address();
+        // Guard: Immutable instance defense (Finding 2) - reject re-initialization of an existing instance account
+        if store.has_account(&pda) {
+            return Err(MosooError::AlreadyInitialized {
+                chain_id: instance.chain_id,
+            });
+        }
         let bytes = serde_json::to_vec(instance).map_err(|e| {
             MosooError::Internal(format!("Failed to serialize InstanceAccount: {e}"))
         })?;

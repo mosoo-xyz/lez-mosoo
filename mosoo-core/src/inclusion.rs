@@ -221,36 +221,39 @@ pub fn verify_state_proof(
                 })?,
             };
             let verified_log = verify_receipt_log_proof(&r_proof, header)?;
-            if verified_log.topics.len() < 3 {
-                return Err(MosooError::RlpDecodeFailed(
-                    "ERC-20 Transfer log must have at least 3 topics (sig, from, to)".into(),
-                ));
+            if verified_log.topics.len() != 3 {
+                return Err(MosooError::RlpDecodeFailed(format!(
+                    "ERC-20 Transfer log must have exactly 3 topics (sig, from, to), got {}",
+                    verified_log.topics.len()
+                )));
             }
             let from_topic = verified_log.topics[1];
-            if &from_topic.0[12..32] != sender.as_slice() {
+            if from_topic.0[0..12] != [0u8; 12] || &from_topic.0[12..32] != sender.as_slice() {
                 return Err(MosooError::Internal(
                     "sender address mismatch in Transfer log".into(),
                 ));
             }
             let to_topic = verified_log.topics[2];
+            if to_topic.0[0..12] != [0u8; 12] {
+                return Err(MosooError::Internal(
+                    "to address in Transfer log must have 12 leading zero bytes".into(),
+                ));
+            }
             let matches_recipient = if to_topic.0 == *recipient {
                 true
             } else if recipient[0..12] == [0u8; 12] {
                 to_topic.0[12..32] == recipient[12..32]
-            } else if to_topic.0[0..12] == [0u8; 12] {
-                to_topic.0[12..32] == recipient[12..32] || to_topic.0[12..32] == recipient[0..20]
             } else {
                 false
             };
             if !matches_recipient {
-                return Err(MosooError::Internal(
-                    "recipient mismatch in Transfer log".into(),
-                ));
+                return Err(MosooError::RecipientMismatch);
             }
-            if verified_log.data.is_empty() {
-                return Err(MosooError::Internal(
-                    "missing transfer amount in log data".into(),
-                ));
+            if verified_log.data.len() != 32 {
+                return Err(MosooError::Internal(format!(
+                    "ERC-20 Transfer log data must be exactly 32 bytes (uint256 amount), got {}",
+                    verified_log.data.len()
+                )));
             }
             Ok(VerifiedValue::LogData(verified_log.data))
         }
@@ -385,20 +388,9 @@ pub fn verify_state_proof(
                 ));
             }
             let recipient_topic = verified_log.topics[3];
-            let matches_recipient = if recipient_topic.0 == *recipient {
-                true
-            } else if recipient[0..12] == [0u8; 12] {
-                recipient_topic.0[12..32] == recipient[12..32]
-            } else if recipient_topic.0[0..12] == [0u8; 12] {
-                recipient_topic.0[12..32] == recipient[12..32]
-                    || recipient_topic.0[12..32] == recipient[0..20]
-            } else {
-                false
-            };
-            if !matches_recipient {
-                return Err(MosooError::Internal(
-                    "recipient mismatch in DepositERC20 log".into(),
-                ));
+            // Exact 32-byte matching for DepositERC20(..., bytes32 indexed lezRecipient, ...)
+            if recipient_topic.0 != *recipient {
+                return Err(MosooError::RecipientMismatch);
             }
             if verified_log.data.len() != 64 {
                 return Err(MosooError::Internal(format!(
@@ -1148,6 +1140,70 @@ pub mod test_helpers {
         receipt_list.extend_from_slice(&receipt_payload);
 
         // EIP-2718 typed receipt: prefix with transaction type byte 0x02
+        let mut full_receipt = vec![0x02u8];
+        full_receipt.extend_from_slice(&receipt_list);
+        full_receipt
+    }
+
+    /// Construct an EIP-1559 receipt (type 0x02) with custom topics and payload data.
+    pub fn build_custom_eip1559_transfer_receipt(
+        emitter: Address,
+        topics: Vec<B256>,
+        data: Vec<u8>,
+    ) -> Vec<u8> {
+        let mut topics_payload = Vec::new();
+        for topic in topics {
+            topics_payload.extend_from_slice(&alloy_rlp::encode(topic.0));
+        }
+        let mut topics_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: topics_payload.len(),
+        }
+        .encode(&mut topics_rlp);
+        topics_rlp.extend_from_slice(&topics_payload);
+
+        let data_rlp = alloy_rlp::encode(&data[..]);
+
+        let mut log_payload = Vec::new();
+        log_payload.extend_from_slice(&alloy_rlp::encode(emitter.as_slice()));
+        log_payload.extend_from_slice(&topics_rlp);
+        log_payload.extend_from_slice(&data_rlp);
+        let mut log_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_payload.len(),
+        }
+        .encode(&mut log_rlp);
+        log_rlp.extend_from_slice(&log_payload);
+
+        let mut logs_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_rlp.len(),
+        }
+        .encode(&mut logs_list);
+        logs_list.extend_from_slice(&log_rlp);
+
+        let status_rlp = alloy_rlp::encode(1u8);
+        let gas_rlp = alloy_rlp::encode(50000u64);
+        let bloom_bytes = [0u8; 256];
+        let bloom_rlp = alloy_rlp::encode(&bloom_bytes[..]);
+
+        let mut receipt_payload = Vec::new();
+        receipt_payload.extend_from_slice(&status_rlp);
+        receipt_payload.extend_from_slice(&gas_rlp);
+        receipt_payload.extend_from_slice(&bloom_rlp);
+        receipt_payload.extend_from_slice(&logs_list);
+
+        let mut receipt_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: receipt_payload.len(),
+        }
+        .encode(&mut receipt_list);
+        receipt_list.extend_from_slice(&receipt_payload);
+
         let mut full_receipt = vec![0x02u8];
         full_receipt.extend_from_slice(&receipt_list);
         full_receipt

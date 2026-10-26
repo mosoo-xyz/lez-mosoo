@@ -245,3 +245,43 @@ The external audit on October 26, 2026 identified 6 critical pre-deployment and 
    Added `legacyRoutesEnabled`, `disableLegacyRoutes()`, and `error LegacyRoutesDisabled()` to `contracts/MosooLocker.sol`. Legacy routes can be disabled while instance-bound V2 quorum routes remain active.
 6. **Canonical Invariant Documentation (Finding 6)**:
    Corrected `VerifiedStatement` documentation to reflect that statement nullifiers represent raw verified Ethereum state facts, ensuring invariance across predicate variants ($AtLeast(10) \equiv AtLeast(50)$) to prevent nullifier bypass.
+
+---
+
+## ADR-011: Unified Checkpoint Validation, Atomic Storage Rollback, Strict ABI Event Typing, and Blinding Privacy Nullifiers
+
+### Context & Problem Statement
+An external re-audit of the codebase identified 5 critical and high-priority edge cases across storage persistence, dispatch routing, event matching, and privacy leakage:
+1. **P0 Shared Checkpoint Verification Across Dispatchers (Finding 15)**: `dispatch_guest_instruction()` checked canonical checkpoints, but `dispatch_store_instruction()` (via `handle_initialize_store()`) did not execute the same checkpoint verification, creating a bypass risk if called via persistent storage adapters.
+2. **P1 Immutable Instance Defense (Finding 16)**: `handle_initialize_store()` did not assert that the instance account was absent before writing, creating a risk where re-initialization with the same `(chain_id, instance_id)` could overwrite an existing instance account and reset consensus progress.
+3. **P1 Batch-Write Rollback State Loss (Finding 17)**: `AccountStore::try_set_accounts_batch_with_owner()` recorded written addresses and removed them upon downstream batch failure. If an existing account (such as `InstanceAccount`) was overwritten in a batch that later failed, rollback deleted the account rather than restoring its pre-batch state and owner.
+4. **P1 Strict Event Typing & Recipient Matching (Finding 18 & 19)**:
+   - In `ProofTarget::Erc20Deposit`, `recipient` verification allowed ambiguous address fallback instead of strict 32-byte equality against the canonical `bytes32 indexed lezRecipient` topic.
+   - In `ProofTarget::Erc20Transfer`, missing topic count verification (`topics.len() == 3`), data length verification (`data.len() == 32`), and address zero-padding verification allowed non-standard event shapes to be processed.
+5. **P1 Statement Unlinkability & Privacy Blinding (Finding 20)**: `VerifiedStatement::shield()` only blinded the provenance binding. The deterministic `subject_key` and `statement_id` remained public, allowing observers with knowledge of public Ethereum events to correlate candidate keys against the public journal.
+
+### Decision & Implementation
+1. **Unified Initialization Validation (`validate_initialize`)**:
+   Extracted canonical checkpoint validation into `validate_initialize(args: &InitializeArgs) -> Result<(), MosooError>`. Called uniformly in both `dispatch_guest_instruction()` and `handle_initialize_store()` (and `dispatch_store_instruction()`). Enforces that Mainnet, Sepolia, and Holesky match pinned checkpoints and custom networks declare non-zero `genesis_validators_root`.
+2. **Create-Only Instance Storage Guard**:
+   In `handle_initialize_store()`, added an atomic check:
+   ```rust
+   if store.has_account(&pda) {
+       return Err(MosooError::AlreadyInitialized { chain_id: instance.chain_id });
+   }
+   ```
+   Ensures light-client instances are strictly immutable once initialized.
+3. **Snapshot-Restoring Batch Write Rollback**:
+   Updated `AccountStore::try_set_accounts_batch_with_owner()` to capture pre-write `AccountSnapshot { address, data, owner }`. When any write in the batch fails, previous writes are rolled back in reverse order:
+   - Existing accounts are restored to their pre-batch `data` and `owner`.
+   - Newly created accounts (`data: None`) are removed.
+   - Any secondary rollback failures are captured in `StoreError::BatchRollbackPartialFailure`.
+4. **Strict ABI Event Shape & Exact Recipient Equality**:
+   - `Erc20Deposit`: Strictly checks `verified_log.topics[3].0 == *recipient` (exact 32 bytes) and returns `MosooError::RecipientMismatch`.
+   - `Erc20Transfer`: Strictly requires `topics.len() == 3`, `data.len() == 32`, 12 leading zero bytes on address topics, and rejects malformed lengths.
+5. **Blinding Subject Keys & Statement Nullifiers (`shield_with_salt`)**:
+   Updated `VerifiedStatement::shield_with_salt(salt)` to blind both `subject_key` and `statement_id`:
+   $$\text{salted\_subject\_key} = \text{SHA-256}(\text{"mosoo\_salted\_subject\_key\_v1:"} \parallel \text{salt} \parallel \text{subject\_key})$$
+   $$\text{salted\_statement\_id} = \text{SHA-256}(\text{"mosoo\_salted\_statement\_id\_v1:"} \parallel \text{salt} \parallel \text{statement\_id})$$
+   Provided `verify_salted_blinding()` for consumers holding the blinding salt to authenticate the statement and replay nullifier privately.
+   Documented the privacy nullifier trade-off: public deterministic nullifiers prevent double-spend publicly at the expense of unlinkability against public Ethereum event observers; salted blinding provides zero-leakage unlinkability for private consumer redemption routes.

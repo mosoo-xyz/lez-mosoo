@@ -678,6 +678,14 @@ pub enum StoreError {
     Custom(String),
 }
 
+/// Account state snapshot before batch write mutation, enabling atomic rollback to pre-batch state (Finding 3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountSnapshot {
+    pub address: [u8; 32],
+    pub data: Option<Vec<u8>>,
+    pub owner: Option<[u8; 32]>,
+}
+
 /// Persistent storage abstraction for LEZ Program-Derived Accounts (PDAs).
 pub trait AccountStore {
     fn get_account(&self, address: &[u8; 32]) -> Option<Vec<u8>>;
@@ -710,24 +718,41 @@ pub trait AccountStore {
         Ok(self.remove_account(address))
     }
 
-    /// Transactional batch account write enforcing atomicity.
+    /// Transactional batch account write enforcing atomicity (Finding 3).
     /// If any write fails, all previously written accounts in the batch are immediately
-    /// removed to prevent orphaned/inconsistent storage state.
-    /// If any removal fails during rollback, a `BatchRollbackPartialFailure` is returned to notify the caller.
+    /// rolled back to their pre-batch state: restoring original data and owner for modified accounts,
+    /// or removing newly created accounts to prevent orphaned/corrupted storage state.
+    /// If any restoration or removal fails during rollback, a `BatchRollbackPartialFailure` is returned.
     fn try_set_accounts_batch_with_owner(
         &mut self,
         entries: &[([u8; 32], Vec<u8>, [u8; 32])],
     ) -> Result<(), StoreError> {
-        let mut written = Vec::new();
+        // Record prior snapshots: (address, previous_data, previous_owner)
+        let mut snapshots: Vec<AccountSnapshot> = Vec::new();
         for (addr, data, owner) in entries {
+            let prev_data = self.get_account(addr);
+            let prev_owner = self.get_account_owner(addr);
             match self.try_set_account_with_owner(addr, data.clone(), *owner) {
-                Ok(()) => written.push(*addr),
+                Ok(()) => snapshots.push(AccountSnapshot {
+                    address: *addr,
+                    data: prev_data,
+                    owner: prev_owner,
+                }),
                 Err(err) => {
-                    // Roll back all previously written accounts in this batch
+                    // Roll back all previously written accounts in reverse order
                     let mut rollback_errors = Vec::new();
-                    for rolled in written {
-                        if let Err(r_err) = self.try_remove_account(&rolled) {
-                            rollback_errors.push((rolled, r_err.to_string()));
+                    for snap in snapshots.into_iter().rev() {
+                        if let Some(orig_data) = snap.data {
+                            let orig_owner = snap.owner.unwrap_or(MOSOO_PROGRAM_ID);
+                            if let Err(r_err) = self.try_set_account_with_owner(
+                                &snap.address,
+                                orig_data,
+                                orig_owner,
+                            ) {
+                                rollback_errors.push((snap.address, r_err.to_string()));
+                            }
+                        } else if let Err(r_err) = self.try_remove_account(&snap.address) {
+                            rollback_errors.push((snap.address, r_err.to_string()));
                         }
                     }
                     if !rollback_errors.is_empty() {
@@ -1360,12 +1385,51 @@ impl VerifiedStatement {
         shielded
     }
 
-    /// Converts this verified statement into a shielded statement with a secret 256-bit blinding salt (Finding 4),
-    /// preventing observers of public Ethereum events from correlating the emitted statement.
+    /// Converts this verified statement into a shielded statement with a secret 256-bit blinding salt (Finding 5),
+    /// blinding the verbose provenance binding, subject key, and statement ID (nullifier) to prevent observers
+    /// of public Ethereum events from correlating the emitted statement.
     pub fn shield_with_salt(&self, salt: &[u8; 32]) -> Self {
         let mut shielded = self.clone();
         shielded.binding = self.binding.to_shielded_salted(salt);
+
+        // Blind subject_key with secret salt
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_salted_subject_key_v1:");
+        hasher.update(salt);
+        hasher.update(self.subject_key);
+        shielded.subject_key = hasher.finalize().into();
+
+        // Blind statement_id (privacy-preserving nullifier) with secret salt
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_salted_statement_id_v1:");
+        hasher.update(salt);
+        hasher.update(self.statement_id);
+        shielded.statement_id = hasher.finalize().into();
+
         shielded
+    }
+
+    /// Returns true if this statement's subject key and statement ID match the expected
+    /// unblinded values when blinded with `salt`.
+    pub fn verify_salted_blinding(
+        &self,
+        salt: &[u8; 32],
+        unblinded_subject_key: &[u8; 32],
+        unblinded_statement_id: &[u8; 32],
+    ) -> bool {
+        let mut h1 = Sha256::new();
+        h1.update(b"mosoo_salted_subject_key_v1:");
+        h1.update(salt);
+        h1.update(unblinded_subject_key);
+        let expected_subj: [u8; 32] = h1.finalize().into();
+
+        let mut h2 = Sha256::new();
+        h2.update(b"mosoo_salted_statement_id_v1:");
+        h2.update(salt);
+        h2.update(unblinded_statement_id);
+        let expected_stmt: [u8; 32] = h2.finalize().into();
+
+        self.subject_key == expected_subj && self.statement_id == expected_stmt
     }
 
     /// Decode the verified 32-byte EVM value as a U256 (big-endian).

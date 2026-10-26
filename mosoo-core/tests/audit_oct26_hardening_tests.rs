@@ -1065,6 +1065,467 @@ fn test_finding14_attest_state_salted_shielding_journal() {
     assert!(matches!(stmt1.binding, StatementBinding::Shielded { .. }));
     assert!(matches!(stmt2.binding, StatementBinding::Shielded { .. }));
 
-    // Unlinkability: different salts produce distinct commitments
+    // Unlinkability: different salts produce distinct commitments, subject keys, and statement nullifiers
     assert_ne!(stmt1.binding, stmt2.binding);
+    assert_ne!(stmt1.subject_key, stmt2.subject_key);
+    assert_ne!(stmt1.statement_id, stmt2.statement_id);
+}
+
+// ---------------------------------------------------------------------------
+// Finding 15: Shared Checkpoint Verification Across Both Dispatchers (Critical #1 / P0)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding15_shared_checkpoint_verification_across_both_dispatchers() {
+    use mosoo_core::types::{InitializeArgs, CANONICAL_HOLESKY_INSTANCE_ID};
+    use mosoo_core::verifier::{dispatch_guest_instruction, dispatch_store_instruction};
+
+    let mut store = MockStore::default();
+    let dummy_beacon_header = mosoo_core::types::BeaconBlockHeader {
+        slot: 100,
+        proposer_index: 0,
+        parent_root: [0u8; 32],
+        state_root: [0x11; 32],
+        body_root: [0x22; 32],
+    };
+
+    // 1. Untrusted Holesky checkpoint root rejected by BOTH dispatchers
+    let untrusted_holesky_args = InitializeArgs {
+        instance_id: CANONICAL_HOLESKY_INSTANCE_ID,
+        network_config: None,
+        chain_id: 17000,
+        bootstrap_header: dummy_beacon_header.clone(),
+        trusted_checkpoint_root: [0xee; 32], // Tampered checkpoint root!
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_000_000,
+    };
+
+    let res_guest =
+        dispatch_guest_instruction(GuestInstruction::Initialize(untrusted_holesky_args.clone()));
+    assert!(matches!(
+        res_guest,
+        Err(MosooError::UntrustedCheckpoint { chain_id: 17000 })
+    ));
+
+    let res_store = dispatch_store_instruction(
+        &mut store,
+        GuestInstruction::Initialize(untrusted_holesky_args),
+    );
+    assert!(matches!(
+        res_store,
+        Err(MosooError::UntrustedCheckpoint { chain_id: 17000 })
+    ));
+
+    // 2. Unconfigured custom network rejected by BOTH dispatchers
+    let unconfigured_custom_args = InitializeArgs {
+        instance_id: [0x77; 32],
+        network_config: None,
+        chain_id: 888888,
+        bootstrap_header: dummy_beacon_header,
+        trusted_checkpoint_root: [0xaa; 32],
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_000_000,
+    };
+
+    let res_guest_custom = dispatch_guest_instruction(GuestInstruction::Initialize(
+        unconfigured_custom_args.clone(),
+    ));
+    assert!(matches!(
+        res_guest_custom,
+        Err(MosooError::UnconfiguredTrustedCheckpoint { chain_id: 888888 })
+    ));
+
+    let res_store_custom = dispatch_store_instruction(
+        &mut store,
+        GuestInstruction::Initialize(unconfigured_custom_args),
+    );
+    assert!(matches!(
+        res_store_custom,
+        Err(MosooError::UnconfiguredTrustedCheckpoint { chain_id: 888888 })
+    ));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 16: Immutable Instance Defense (Existing Instance Overwrite) (High #2 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding16_reinitialization_existing_instance_rejected() {
+    use mosoo_core::types::{BeaconBlockHeader, InitializeArgs, NetworkConfig};
+    use mosoo_core::verifier::handle_initialize_store;
+
+    let mut store = MockStore::default();
+
+    let committee = make_valid_committee();
+    let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee).unwrap();
+    let branch = vec![[0x11; 32]; 5];
+    let state_root = mosoo_core::crypto::compute_branch_root(leaf, &branch, 54);
+
+    let bootstrap_header = BeaconBlockHeader {
+        slot: 1_000_000,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root,
+        body_root: [0; 32],
+    };
+    let checkpoint_root = mosoo_core::crypto::hash_tree_root_beacon_header(&bootstrap_header);
+
+    let chain_id = 999999;
+    let instance_id = [0x42; 32];
+    let net_cfg = NetworkConfig {
+        chain_id,
+        genesis_validators_root: [0x88; 32],
+        altair_fork_version: [0x01; 4],
+        bellatrix_fork_version: [0x02; 4],
+        capella_fork_version: [0x03; 4],
+        deneb_fork_version: [0x04; 4],
+        electra_fork_version: [0x05; 4],
+        fulu_fork_version: [0x06; 4],
+        gloas_fork_version: [0x07; 4],
+    };
+
+    let init_args = InitializeArgs {
+        instance_id,
+        network_config: Some(net_cfg),
+        chain_id,
+        bootstrap_header,
+        trusted_checkpoint_root: checkpoint_root,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050_000,
+    };
+
+    // First initialization succeeds and persists instance
+    let res1 = handle_initialize_store(&mut store, init_args.clone());
+    assert!(res1.is_ok());
+
+    let pda = match res1.unwrap() {
+        mosoo_core::verifier::InstructionOutput::Initialized(inst) => inst.pda_address(),
+        _ => panic!("Expected Initialized"),
+    };
+    assert!(store.has_account(&pda));
+    let original_bytes = store.get_account(&pda).unwrap();
+
+    // Second initialization with same (chain_id, instance_id) MUST be rejected with AlreadyInitialized
+    let res2 = handle_initialize_store(&mut store, init_args);
+    assert!(matches!(
+        res2,
+        Err(MosooError::AlreadyInitialized { chain_id: 999999 })
+    ));
+
+    // Ensure account data in store is intact and unchanged
+    assert_eq!(store.get_account(&pda).unwrap(), original_bytes);
+}
+
+// ---------------------------------------------------------------------------
+// Finding 17: Batch-Write Rollback Restores Original State (High #3 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding17_batch_write_rollback_restores_existing_accounts() {
+    use mosoo_core::types::ProgramAccountStore;
+
+    let mut store = ProgramAccountStore::default();
+    let addr1 = [0x11; 32];
+    let orig_data1 = vec![0xaa; 64];
+    let orig_owner1 = [0x55; 32];
+    store
+        .try_set_account_with_owner(&addr1, orig_data1.clone(), orig_owner1)
+        .unwrap();
+
+    let addr2 = [0x22; 32];
+    let new_data2 = vec![0xbb; 32];
+
+    let addr3 = [0x33; 32];
+    // Configure simulated failure on 3rd write
+    store.fail_on_address = Some(addr3);
+
+    let batch = vec![
+        (addr1, vec![0xcc; 64], MOSOO_PROGRAM_ID), // Overwrites addr1
+        (addr2, new_data2, MOSOO_PROGRAM_ID),      // Creates new addr2
+        (addr3, vec![0xdd; 32], MOSOO_PROGRAM_ID), // Fails
+    ];
+
+    let res = store.try_set_accounts_batch_with_owner(&batch);
+    assert!(res.is_err());
+
+    // CRITICAL: addr1 must be restored to its original pre-batch data and owner, NOT removed!
+    assert_eq!(store.get_account(&addr1), Some(orig_data1));
+    assert_eq!(store.get_account_owner(&addr1), Some(orig_owner1));
+
+    // addr2 was newly created, so it must be removed on rollback
+    assert_eq!(store.get_account(&addr2), None);
+    assert_eq!(store.get_account_owner(&addr2), None);
+
+    // addr3 was never written
+    assert_eq!(store.get_account(&addr3), None);
+}
+
+// ---------------------------------------------------------------------------
+// Finding 18: ERC-20 Deposit Exact 32-Byte Recipient Matching (Medium-High #4 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding18_erc20_deposit_exact_32byte_recipient_matching_and_rejection() {
+    use alloy_primitives::{Address, U256};
+    use mosoo_core::inclusion::{
+        test_helpers::build_test_deposit_erc20_proof, verify_state_proof, ProofTarget, StateProof,
+    };
+
+    let deposit_contract = Address::repeat_byte(0x42);
+    let token = Address::repeat_byte(0xa0);
+    let sender = Address::repeat_byte(0x11);
+    let recipient_exact = [0x22u8; 32];
+    let amount = U256::from(100_000_000u64);
+    let nonce = 1u64;
+
+    let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_erc20_proof(
+        deposit_contract,
+        token,
+        sender,
+        recipient_exact,
+        amount,
+        nonce,
+    );
+
+    let header = HeaderRecord {
+        chain_id: 1,
+        slot: 10_000_000,
+        beacon_block_root: [0x55; 32],
+        execution_block_hash: [0x66; 32],
+        execution_state_root: [0x77; 32],
+        receipts_root: receipts_root.0,
+    };
+
+    // 1. Exact 32-byte matching succeeds
+    let proof_valid = StateProof {
+        target: ProofTarget::Erc20Deposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            token_contract: token,
+            sender,
+            recipient: recipient_exact,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes.clone()),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp.clone()),
+    };
+    assert!(verify_state_proof(&proof_valid, &header).is_ok());
+
+    // 2. Mismatched high 12 bytes strictly fails closed with RecipientMismatch (no ambiguous address fallback)
+    let mut mismatched_recipient = recipient_exact;
+    mismatched_recipient[0] ^= 0x01; // Tamper with top byte
+
+    let proof_tampered = StateProof {
+        target: ProofTarget::Erc20Deposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            token_contract: token,
+            sender,
+            recipient: mismatched_recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp),
+    };
+    let res = verify_state_proof(&proof_tampered, &header);
+    assert!(matches!(res, Err(MosooError::RecipientMismatch)));
+}
+
+// ---------------------------------------------------------------------------
+// Finding 19: ERC-20 Transfer Strict ABI Shape Enforcement (Medium-High #4 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding19_erc20_transfer_strict_abi_shape_enforcement() {
+    use alloy_primitives::{Address, B256, U256};
+    use mosoo_core::inclusion::{
+        test_helpers::{
+            build_custom_eip1559_transfer_receipt, build_leaf_mpt_proof,
+            build_test_eip1559_transfer_receipt,
+        },
+        verify_state_proof, ProofTarget, StateProof,
+    };
+
+    let tok_addr = Address::repeat_byte(0x55);
+    let snd_addr = Address::repeat_byte(0x12);
+    let mut recipient = [0u8; 32];
+    recipient[12..32].copy_from_slice(Address::repeat_byte(0x34).as_slice());
+    let amount = U256::from(500_000u64);
+
+    let rec_addr = Address::from_slice(&recipient[12..32]);
+
+    // 1. Valid Transfer log (exactly 3 topics, exactly 32-byte uint256 data) succeeds
+    let valid_receipt = build_test_eip1559_transfer_receipt(tok_addr, snd_addr, rec_addr, amount);
+    let key = alloy_rlp::encode(0u64);
+    let (root, proof_nodes) = build_leaf_mpt_proof(&key, &valid_receipt);
+
+    let header = HeaderRecord {
+        chain_id: 1,
+        slot: 10_000_000,
+        beacon_block_root: [0xaa; 32],
+        execution_block_hash: [0xbb; 32],
+        execution_state_root: [0xcc; 32],
+        receipts_root: root.0,
+    };
+
+    let proof_valid = StateProof {
+        target: ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract: tok_addr,
+            sender: snd_addr,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(valid_receipt),
+    };
+    assert!(verify_state_proof(&proof_valid, &header).is_ok());
+
+    // 2. Malformed Transfer log with 4 topics strictly fails closed
+    let transfer_sig = B256::from(alloy_primitives::keccak256(
+        b"Transfer(address,address,uint256)",
+    ));
+    let mut from_topic = [0u8; 32];
+    from_topic[12..32].copy_from_slice(snd_addr.as_slice());
+    let mut to_topic = [0u8; 32];
+    to_topic[12..32].copy_from_slice(rec_addr.as_slice());
+
+    let malformed_topics_4 = vec![
+        transfer_sig,
+        B256::from(from_topic),
+        B256::from(to_topic),
+        B256::from([0x99; 32]), // Extra 4th topic!
+    ];
+    let malformed_receipt_bytes = build_custom_eip1559_transfer_receipt(
+        tok_addr,
+        malformed_topics_4,
+        amount.to_be_bytes::<32>().to_vec(),
+    );
+    let (root4, proof_nodes4) = build_leaf_mpt_proof(&key, &malformed_receipt_bytes);
+    let mut header4 = header.clone();
+    header4.receipts_root = root4.0;
+
+    let proof_4_topics = StateProof {
+        target: ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract: tok_addr,
+            sender: snd_addr,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes4),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(malformed_receipt_bytes),
+    };
+    assert!(verify_state_proof(&proof_4_topics, &header4).is_err());
+
+    // 3. Malformed data length (e.g. 64 bytes instead of 32 bytes) strictly fails closed
+    let valid_topics_3 = vec![transfer_sig, B256::from(from_topic), B256::from(to_topic)];
+    let malformed_receipt_64 = build_custom_eip1559_transfer_receipt(
+        tok_addr,
+        valid_topics_3,
+        vec![0u8; 64], // Invalid length for uint256 Transfer data
+    );
+    let (root64, proof_nodes64) = build_leaf_mpt_proof(&key, &malformed_receipt_64);
+    let mut header64 = header.clone();
+    header64.receipts_root = root64.0;
+
+    let proof_64_data = StateProof {
+        target: ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract: tok_addr,
+            sender: snd_addr,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes64),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(malformed_receipt_64),
+    };
+    assert!(verify_state_proof(&proof_64_data, &header64).is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Finding 20: Salted Shielding Blinds Subject Keys & Statement IDs (High #5 / P1)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_finding20_salted_shielding_blinds_subject_key_and_statement_id() {
+    let binding = StatementBinding::Account {
+        address: [0x42; 20],
+    };
+    let original = VerifiedStatement {
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        genesis_validators_root: [0x01; 32],
+        source_instance_id: [0x02; 32],
+        source_instance_pda: [0xaa; 32],
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x03; 32],
+        predicate_holds: true,
+        verified_value: [0x04; 32],
+        subject_key: [0x05; 32],
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: binding.clone(),
+    };
+
+    let salt1 = [0x11; 32];
+    let salt2 = [0x22; 32];
+
+    let shielded1 = original.shield_with_salt(&salt1);
+    let shielded2 = original.shield_with_salt(&salt2);
+
+    // 1. Unlinkability across different salts
+    assert_ne!(shielded1.binding, shielded2.binding);
+    assert_ne!(shielded1.subject_key, shielded2.subject_key);
+    assert_ne!(shielded1.statement_id, shielded2.statement_id);
+
+    // 2. Correlation defense: blinded identifiers differ from raw on-chain identifiers
+    assert_ne!(shielded1.subject_key, original.subject_key);
+    assert_ne!(shielded1.statement_id, original.statement_id);
+
+    // 3. Cryptographic verification of salted blinding with knowledge of salt
+    assert!(shielded1.verify_salted_blinding(
+        &salt1,
+        &original.subject_key,
+        &original.statement_id
+    ));
+    assert!(shielded2.verify_salted_blinding(
+        &salt2,
+        &original.subject_key,
+        &original.statement_id
+    ));
+
+    // Wrong salt fails verification
+    assert!(!shielded1.verify_salted_blinding(
+        &salt2,
+        &original.subject_key,
+        &original.statement_id
+    ));
 }

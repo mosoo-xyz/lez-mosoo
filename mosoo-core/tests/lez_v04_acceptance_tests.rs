@@ -121,7 +121,8 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
     let token_contract = [0x11; 20];
     let deposit_contract = [0x22; 20];
     let sender = [0x33; 20];
-    let recipient = [0x44; 32];
+    let mut recipient = [0u8; 32];
+    recipient[12..32].copy_from_slice(&[0x44; 20]);
 
     let instance = InstanceAccount {
         instance_id: [0u8; 32],
