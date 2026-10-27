@@ -513,3 +513,57 @@ Audit Session 10 code review identified five security findings and production in
 5. **Documentation & CI Alignment (P3)**:
    - Corrected all weak-subjectivity documentation across `types.rs`, `verifier.rs`, and ADRs to reflect exact 7.5 days (54,000 slots * 12s).
    - Added `rustsec/audit-check` step in `.github/workflows/ci.yml`.
+
+---
+
+## ADR-018: Production zkVM Trust Boundary, Universal Strict Configuration Loading, Freshness Anchor Verification, and Value Confidentiality Commitments
+**Date**: October 27, 2026  
+**Status**: Accepted & Implemented  
+
+### Context & Problem Statement
+Audit Session 11 (`t_6ae08a7e61308191964e5c12f3b83e26`) conducted a comprehensive static security review of the full repository architecture, identifying several trust-boundary gaps and configuration risks:
+1. **Critical #1 (P0): Production zkVM Guest Trust Boundary**:
+   - While unauthenticated variants (`AttestState`, `BeginUpdate`, etc.) were gated in release builds, `dispatch_guest_instruction()` retained direct handlers for `*Authenticated` variants taking caller-supplied structs from `env::read()`.
+   - PDA address checks alone do not verify that internal consensus state (sync committee pubkeys, execution state roots, finalized beacon roots) matches persistent on-chain state.
+2. **High #2 (P1): Permissive Fallback via `load_or_canonical()`**:
+   - Despite `TrustedBridgeConfig::load_strict()` being implemented, core handlers (`handle_begin_update_authenticated`, `handle_finish_update_authenticated`, `handle_attest_state_authenticated`, `handle_initialize_store`) continued calling `load_or_canonical(store)`.
+   - On missing, unowned, or malformed configuration accounts, `load_or_canonical()` silently fell back to hardcoded canonical defaults, bypassing custom trust policies.
+3. **High #3 (P1): Weak-Subjectivity Freshness Trust Model**:
+   - If a chain lacked a configured trusted head, callers could supply arbitrary unauthenticated slots (`(Some(s), None) => s`).
+   - Callers could also supply an older slot than the canonical anchor or an unverified inflated slot.
+4. **Medium #4 (P2): Raw Verified Value Exposed Despite Privacy Shielding**:
+   - `VerifiedStatement::shield()` and `shield_with_salt()` blinded binding provenance and subject keys, but left `verified_value` in the clear.
+   - Applications requiring amount confidentiality leaked sensitive values to observers of the public zkVM journal.
+5. **Medium #5 (P2): Non-Blocking Dependency Audit in CI & Documentation Desynchronization**:
+   - `.github/workflows/ci.yml` ran `rustsec/audit-check` with `continue-on-error: true`.
+   - Test counts in README and CI comments diverged from actual test suite metrics.
+6. **Low #6 (P3): Solidity Locker Default Trust Model**:
+   - `MosooLocker.sol` constructor allowed `guardian == address(0)` (silently defaulting to `msg.sender`/owner).
+
+### Decision & Implementation
+1. **Production zkVM Guest Trust Boundary & Runtime Adapter Routing (P0)**:
+   - In `dispatch_guest_instruction()`, gated all caller-supplied `*Authenticated` variants behind `#[cfg(any(test, feature = "test-harness"))]`. In production zkVM guest builds (`#[cfg(not(any(test, feature = "test-harness")))]`), bare caller-supplied state instructions strictly return `Err(MosooError::UnauthenticatedInstance)`.
+   - Production smart contract transactions on LEZ execute natively in the LEZ host runtime via `LezRuntimeAdapter<S>` or `dispatch_store_instruction(&mut host_store, instruction)`, where accounts are loaded strictly from authentic RocksDB persistent storage owned by `MOSOO_PROGRAM_ID`.
+2. **Universal Strict Configuration Loading (P1)**:
+   - Replaced `load_or_canonical()` across all consensus and attestation handlers with `TrustedBridgeConfig::load_strict(store)?`.
+   - Missing, unowned, or corrupted config accounts immediately fail closed with `MosooError::ConfigError(...)`.
+   - Added `ConfigError(#[from] ConfigError)` to `MosooError`.
+3. **Rigorous Weak-Subjectivity Freshness Verification (P1)**:
+   - Required an authenticated anchor head in `TrustedBridgeConfig` for the chain; missing anchor fails closed with `MosooError::InvalidBootstrap`.
+   - If caller supplies `args.trusted_head_slot = Some(s)`:
+     - `s < anchor_head` is rejected fail-closed (`MosooError::InvalidBootstrap`).
+     - `s < args.instance.current_slot` is rejected fail-closed (`MosooError::InvalidBootstrap`).
+     - `s > anchor_head + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS` (fake larger head attack) is rejected fail-closed (`MosooError::InvalidBootstrap`).
+     - Effective head is securely resolved as `s.max(anchor_head)`.
+   - If caller omits `trusted_head_slot`, effective head is `anchor_head.max(args.instance.current_slot)`.
+   - Stale instances exceeding 54,000 slots fail closed with `MosooError::WeakSubjectivityExpired`.
+4. **Value Confidentiality Commitments & Dual Privacy Modes (P2)**:
+   - Extended `StatementBinding` with `StatementBinding::Confidential { commitment: [u8; 32], value_commitment: [u8; 32] }`.
+   - Implemented `VerifiedStatement::shield_confidential(&self, salt: &[u8; 32]) -> Self`, computing a secret 256-bit salt commitment `Sha256(b"mosoo_salted_value_commitment_v1:" || salt || verified_value)` for `verified_value`.
+   - Implemented `VerifiedStatement::verify_salted_value_commitment` for authorized commitment opening.
+   - Formally separated **Address Privacy Mode** (for settlement bridges like ERC20/Ether receiver where `verified_value` must be read by the contract to release funds) and **Confidential Mode** (where both identity and value are committed).
+5. **Blocking CI Security Audit & Test Count Synchronization (P2)**:
+   - Removed `continue-on-error: true` from `rustsec/audit-check@v1` in `.github/workflows/ci.yml`.
+   - Updated test count labels across `README.md` and `.github/workflows/ci.yml`.
+6. **MosooLocker Guardian Independence (P3)**:
+   - Enforced `if (_guardian == address(0)) revert InvalidGuardian();` and `if (_guardian == msg.sender) revert GuardianMustNotBeOwner();` in `MosooLocker.sol` constructor.

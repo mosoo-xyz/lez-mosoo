@@ -232,6 +232,11 @@ impl TrustedBridgeConfig {
         Ok(pda)
     }
 
+    /// Alias for save_to_store.
+    pub fn save<S: AccountStore>(&self, store: &mut S) -> Result<[u8; 32], StoreError> {
+        self.save_to_store(store)
+    }
+
     /// Loads the authenticated TrustedBridgeConfig from persistent storage if present and owned by MOSOO_PROGRAM_ID,
     /// otherwise returns the canonical compile-time default configuration.
     pub fn load_or_canonical<S: AccountStore>(store: &S) -> Self {
@@ -1342,6 +1347,12 @@ pub enum StatementBinding {
     /// Shielded privacy-preserving statement binding (RFP-021 Functionality #8)
     /// Hides Ethereum accounts, contracts, and LEZ recipients behind a cryptographic commitment.
     Shielded { commitment: [u8; 32] },
+    /// Confidential statement binding providing full value and provenance privacy (Finding 4 / Session 11).
+    /// Hides addresses, contracts, and commits to verified_value via a secret 256-bit salt commitment.
+    Confidential {
+        commitment: [u8; 32],
+        value_commitment: [u8; 32],
+    },
 }
 
 impl StatementBinding {
@@ -1350,6 +1361,7 @@ impl StatementBinding {
     pub fn compute_commitment(&self) -> [u8; 32] {
         match self {
             StatementBinding::Shielded { commitment } => *commitment,
+            StatementBinding::Confidential { commitment, .. } => *commitment,
             StatementBinding::Account { address } => {
                 let mut hasher = Sha256::new();
                 hasher.update(b"mosoo_shielded_account:");
@@ -1565,9 +1577,12 @@ impl VerifiedStatement {
         shielded
     }
 
-    /// Returns true if this statement has been shielded (binding is StatementBinding::Shielded).
+    /// Returns true if this statement has been shielded (binding is StatementBinding::Shielded or Confidential).
     pub fn is_shielded(&self) -> bool {
-        matches!(self.binding, StatementBinding::Shielded { .. })
+        matches!(
+            self.binding,
+            StatementBinding::Shielded { .. } | StatementBinding::Confidential { .. }
+        )
     }
 
     /// Converts this verified statement into a shielded statement with a secret 256-bit blinding salt (Finding 5),
@@ -1615,6 +1630,48 @@ impl VerifiedStatement {
         let expected_stmt: [u8; 32] = h2.finalize().into();
 
         self.subject_key == expected_subj && self.statement_id == expected_stmt
+    }
+
+    /// Converts this verified statement into a confidential shielded statement with a secret 256-bit blinding salt,
+    /// blinding the verbose provenance binding, subject key, statement ID (nullifier), AND verified_value
+    /// to provide full value confidentiality in addition to address and event unlinkability (Finding 4 / Session 11).
+    pub fn shield_confidential(&self, salt: &[u8; 32]) -> Self {
+        let mut shielded = self.shield_with_salt(salt);
+
+        // Blind verified_value with secret salt to prevent value leakage to public observers
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_salted_value_commitment_v1:");
+        hasher.update(salt);
+        hasher.update(self.verified_value);
+        let val_commitment: [u8; 32] = hasher.finalize().into();
+
+        shielded.binding = StatementBinding::Confidential {
+            commitment: self.binding.compute_salted_commitment(salt),
+            value_commitment: val_commitment,
+        };
+        shielded.verified_value = val_commitment;
+
+        shielded
+    }
+
+    /// Verifies whether the blinded value commitment in this shielded statement corresponds
+    /// to the given unblinded 32-byte value when opened with `salt`.
+    pub fn verify_salted_value_commitment(
+        &self,
+        salt: &[u8; 32],
+        unblinded_value: &[u8; 32],
+    ) -> bool {
+        let mut hasher = Sha256::new();
+        hasher.update(b"mosoo_salted_value_commitment_v1:");
+        hasher.update(salt);
+        hasher.update(unblinded_value);
+        let expected: [u8; 32] = hasher.finalize().into();
+        self.verified_value == expected
+    }
+
+    /// Returns true if the verified_value in this statement has been blinded.
+    pub fn is_value_shielded(&self) -> bool {
+        matches!(self.binding, StatementBinding::Confidential { .. })
     }
 
     /// Decode the verified 32-byte EVM value as a U256 (big-endian).

@@ -164,6 +164,11 @@ pub fn dispatch_guest_instruction(
         #[cfg(not(any(test, feature = "test-harness")))]
         GuestInstruction::AttestState(_) => Err(MosooError::UnauthenticatedInstance),
 
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::AttestStateAuthenticated { .. } => {
+            Err(MosooError::UnauthenticatedInstance)
+        }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::AttestStateAuthenticated {
             expected_instance_pda,
             expected_header_pda,
@@ -194,6 +199,11 @@ pub fn dispatch_guest_instruction(
             }
             handle_attest_state(args)
         }
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::FinishUpdateAuthenticated { .. } => {
+            Err(MosooError::UnauthenticatedInstance)
+        }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::FinishUpdateAuthenticated {
             expected_instance_pda,
             expected_job_pda,
@@ -235,6 +245,11 @@ pub fn dispatch_guest_instruction(
             }
             handle_finish_update(args)
         }
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::BeginUpdateAuthenticated { .. } => {
+            Err(MosooError::UnauthenticatedInstance)
+        }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::BeginUpdateAuthenticated {
             expected_instance_pda,
             args,
@@ -259,6 +274,11 @@ pub fn dispatch_guest_instruction(
             })?;
             handle_begin_update(args)
         }
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::MillerUpdateAuthenticated { .. } => {
+            Err(MosooError::UnauthenticatedInstance)
+        }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::MillerUpdateAuthenticated {
             expected_instance_pda,
             expected_job_pda,
@@ -1257,10 +1277,17 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         return Err(MosooError::PredicateFailed);
     }
 
-    // Privacy-preserving statement shielding:
-    // If privacy_salt is provided, blind the statement binding to prevent public linkability.
+    // Privacy-preserving statement shielding (Finding 4 / Session 11):
+    // If privacy_salt is provided, blind statement provenance and nullifiers.
+    // For deposit/settlement proofs, blind address/event provenance while disclosing verified_value for token release.
+    // For non-settlement proofs (balance, storage), blind both identity and verified_value with confidential salt commitment.
     let statement = if let Some(salt) = args.privacy_salt {
-        statement.shield_with_salt(&salt)
+        match args.proof.target {
+            inclusion::ProofTarget::Erc20Deposit { .. }
+            | inclusion::ProofTarget::NativeEthDeposit { .. }
+            | inclusion::ProofTarget::Erc20Transfer { .. } => statement.shield_with_salt(&salt),
+            _ => statement.shield_confidential(&salt),
+        }
     } else {
         statement
     };
@@ -1351,35 +1378,37 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let mut args = args;
     args.instance = authentic_instance;
 
-    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 / High #2 & Finding 1 / Session 10)
-    let config = TrustedBridgeConfig::load_or_canonical(store);
-    let anchor_head = config.get_trusted_head(args.instance.chain_id);
-    let effective_head = match (args.trusted_head_slot, anchor_head) {
-        (Some(s), Some(anchor)) => {
+    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 & 3 / Session 11)
+    let config = TrustedBridgeConfig::load_strict(store)?;
+    let anchor_head = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
+        MosooError::InvalidBootstrap(format!(
+            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
+            args.instance.chain_id
+        ))
+    })?;
+    let effective_head = match args.trusted_head_slot {
+        Some(s) => {
+            if s < anchor_head {
+                return Err(MosooError::InvalidBootstrap(format!(
+                    "caller-supplied trusted_head_slot ({s}) cannot precede authenticated anchor head ({anchor_head})"
+                )));
+            }
             if s < args.instance.current_slot {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                    "caller-supplied trusted_head_slot ({s}) cannot precede instance current_slot ({})",
                     args.instance.current_slot
                 )));
             }
-            s.max(anchor)
-        }
-        (Some(s), None) => {
-            if s < args.instance.current_slot {
+            if s > anchor_head
+                .saturating_add(crate::types::CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
+            {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
-                    args.instance.current_slot
+                    "caller-supplied trusted_head_slot ({s}) exceeds weak-subjectivity window beyond authenticated anchor head ({anchor_head})"
                 )));
             }
-            s
+            s.max(anchor_head)
         }
-        (None, Some(anchor)) => anchor.max(args.instance.current_slot),
-        (None, None) => {
-            return Err(MosooError::InvalidBootstrap(format!(
-                "trusted_head_slot is mandatory and no authenticated anchor head is configured for chain_id {}",
-                args.instance.chain_id
-            )));
-        }
+        None => anchor_head.max(args.instance.current_slot),
     };
     if args.instance.is_stale_canonical(effective_head) {
         return Err(MosooError::WeakSubjectivityExpired {
@@ -1474,10 +1503,10 @@ pub fn handle_finish_update_authenticated<S: AccountStore>(
             MosooError::Internal(format!("Failed to serialize Closed JobAccount: {e}"))
         })?;
 
-        // Automatic consensus head advancement (Finding 1 / Session 10):
+        // Automatic consensus head advancement (Finding 1 / Session 10 & Finding 2 / Session 11):
         // When a light-client update is verified and finalized on-chain, automatically advance
         // the authenticated trusted head slot for this chain and commit it atomically to persistent storage.
-        let mut config = TrustedBridgeConfig::load_or_canonical(store);
+        let mut config = TrustedBridgeConfig::load_strict(store)?;
         config.register_trusted_head(updated_instance.chain_id, updated_instance.current_slot);
         let config_pda = crate::types::derive_bridge_config_pda();
         let config_bytes = serde_json::to_vec(&config).map_err(|e| {
@@ -1514,8 +1543,8 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     args.instance = authentic_instance;
 
-    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 / High #2 & Finding 1 / Session 10)
-    let config = TrustedBridgeConfig::load_or_canonical(store);
+    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 & 3 / Session 11)
+    let config = TrustedBridgeConfig::load_strict(store)?;
     // Instance Pinning (Finding 4 / Medium #3):
     // In authenticated attestation paths, enforce that if a trusted instance
     // PDA is configured for this chain, the attesting instance matches it.
@@ -1524,33 +1553,35 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
             return Err(MosooError::UntrustedSourceInstance);
         }
     }
-    let anchor_head = config.get_trusted_head(args.instance.chain_id);
-    let effective_head = match (args.trusted_head_slot, anchor_head) {
-        (Some(s), Some(anchor)) => {
+    let anchor_head = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
+        MosooError::InvalidBootstrap(format!(
+            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
+            args.instance.chain_id
+        ))
+    })?;
+    let effective_head = match args.trusted_head_slot {
+        Some(s) => {
+            if s < anchor_head {
+                return Err(MosooError::InvalidBootstrap(format!(
+                    "caller-supplied trusted_head_slot ({s}) cannot precede authenticated anchor head ({anchor_head})"
+                )));
+            }
             if s < args.instance.current_slot {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                    "caller-supplied trusted_head_slot ({s}) cannot precede instance current_slot ({})",
                     args.instance.current_slot
                 )));
             }
-            s.max(anchor)
-        }
-        (Some(s), None) => {
-            if s < args.instance.current_slot {
+            if s > anchor_head
+                .saturating_add(crate::types::CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
+            {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
-                    args.instance.current_slot
+                    "caller-supplied trusted_head_slot ({s}) exceeds weak-subjectivity window beyond authenticated anchor head ({anchor_head})"
                 )));
             }
-            s
+            s.max(anchor_head)
         }
-        (None, Some(anchor)) => anchor.max(args.instance.current_slot),
-        (None, None) => {
-            return Err(MosooError::InvalidBootstrap(format!(
-                "trusted_head_slot is mandatory and no authenticated anchor head is configured for chain_id {}",
-                args.instance.chain_id
-            )));
-        }
+        None => anchor_head.max(args.instance.current_slot),
     };
     if args.instance.is_stale_canonical(effective_head) {
         return Err(MosooError::WeakSubjectivityExpired {
@@ -1592,7 +1623,15 @@ pub fn handle_initialize_store<S: AccountStore>(
     store: &mut S,
     args: InitializeArgs,
 ) -> Result<InstructionOutput, MosooError> {
-    let config = TrustedBridgeConfig::load_or_canonical(store);
+    let config = if store.has_account(&crate::types::derive_bridge_config_pda()) {
+        TrustedBridgeConfig::load_strict(store)?
+    } else {
+        // Bootstrap persistent canonical bridge configuration
+        let cfg = TrustedBridgeConfig::canonical();
+        cfg.save(store)
+            .map_err(|e| MosooError::StorageWriteFailed(e.to_string()))?;
+        cfg
+    };
     validate_initialize_with_config(&args, &config)?;
     let out = handle_initialize(args)?;
     if let InstructionOutput::Initialized(ref instance) = out {

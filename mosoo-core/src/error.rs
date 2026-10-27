@@ -232,6 +232,9 @@ pub enum MosooError {
     #[error("serialization error: {0}")]
     Serialization(String),
 
+    #[error("trusted bridge configuration error: {0}")]
+    ConfigError(#[from] crate::types::ConfigError),
+
     #[error("internal error: {0}")]
     Internal(String),
 }

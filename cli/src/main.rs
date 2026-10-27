@@ -1549,6 +1549,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     let mut config = TrustedBridgeConfig::canonical();
     config.register_trusted_instance(args.chain_id, instance_pda);
     config.register_trusted_checkpoint(args.chain_id, beacon_block_root);
+    config.register_trusted_head(args.chain_id, bootstrap_slot);
     config.save_to_store(&mut store)?;
 
     store.insert_program_account(

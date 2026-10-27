@@ -243,6 +243,8 @@ contract MosooLocker {
     error GovernanceTimelockActive(uint256 currentTime, uint256 unlockTime);
     error NoPendingGovernanceAction();
     error DirectGovernanceDeprecated();
+    error InvalidGuardian();
+    error GuardianMustNotBeOwner();
     error LegacyRoutesDisabled();
     error LegacyRoutesPermanentlyRetired();
 
@@ -269,8 +271,10 @@ contract MosooLocker {
 
     constructor(address _attesterAuthority, address _guardian) {
         if (_attesterAuthority == address(0)) revert ZeroAddress();
+        if (_guardian == address(0)) revert InvalidGuardian();
+        if (_guardian == msg.sender) revert GuardianMustNotBeOwner();
         owner = msg.sender;
-        guardian = _guardian != address(0) ? _guardian : msg.sender; // Finding M-05/Chat 17 hardening: support independent guardian
+        guardian = _guardian;
         attesterAuthority = _attesterAuthority;
         isAttester[_attesterAuthority] = true;
         attesterCount = 1;

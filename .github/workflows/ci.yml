@@ -36,13 +36,13 @@ jobs:
       - name: Workspace check
         run: cargo check --workspace
 
-      - name: Run unit & integration tests (254 total — core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
+      - name: Run unit & integration tests (core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
         run: cargo test --workspace --verbose
 
       - name: Run 4/4 LEZ v0.4 Conformance & Acceptance Tests (RFP-021 Deployment Gate)
         run: cargo test --test lez_v04_acceptance_tests --verbose
 
-      - name: Run 47/47 Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)
+      - name: Run Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)
         run: cargo test --test adversarial_mutation_tests --verbose
 
       - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (ETH/mETH & USDC Settlement, 22/22 tests)
@@ -96,7 +96,6 @@ jobs:
         uses: rustsec/audit-check@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
 
       - name: Verify committed execution evidence manifest
         run: python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
