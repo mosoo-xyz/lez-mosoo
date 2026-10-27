@@ -1,0 +1,13 @@
+# Cargo Audit Configuration for Mosoo Repository
+# Upstream transitive dependency exceptions documented per RFP-021 Security Policy
+
+[advisories]
+ignore = [
+    # RUSTSEC-2026-0387: crypto-bigint 0.5.5 constant-time timing variability
+    # Transitive upstream dependency pinned via alloy v0.4.2 -> k256 v0.13.4 -> elliptic-curve v0.13.8.
+    "RUSTSEC-2026-0387",
+
+    # RUSTSEC-2025-0055: tracing-subscriber 0.2.25 ANSI escape sequence logging
+    # Transitive upstream dependency pinned via risc0-zkvm v1.2.6 -> risc0-groth16 -> ark-relations v0.4.0.
+    "RUSTSEC-2025-0055",
+]
