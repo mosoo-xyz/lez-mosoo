@@ -316,10 +316,13 @@ pub fn dispatch_guest_instruction(
             }
             handle_miller_update(args)
         }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::StoreBacked {
             mut store,
             instruction,
         } => dispatch_store_instruction(&mut store, *instruction),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
     }
 }
 
@@ -337,10 +340,13 @@ pub enum InstructionOutput {
     StatementIssued(VerifiedStatement),
 }
 
-/// Validates initialization arguments against canonical checkpoints or custom network configurations.
-/// Enforced across all dispatchers and entrypoints (RFP-021 Functionality #1 / Finding 1).
-pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
-    // 1. Guard: custom chains without trusted checkpoint anchor must fail closed unless explicit NetworkConfig is provided
+/// Validates initialization arguments against authorized checkpoints in TrustedBridgeConfig.
+/// Caller-supplied NetworkConfig is NEVER treated as its own root-of-trust authorization (Finding 3 / High #3).
+pub fn validate_initialize_with_config(
+    args: &InitializeArgs,
+    config: &TrustedBridgeConfig,
+) -> Result<(), MosooError> {
+    // 1. Guard: custom chains without trusted checkpoint anchor must fail closed unless registered in TrustedBridgeConfig
     if !crate::types::is_supported_chain_id(args.chain_id) {
         let Some(ref net_cfg) = args.network_config else {
             return Err(MosooError::UnconfiguredTrustedCheckpoint {
@@ -357,34 +363,29 @@ pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
         return Err(MosooError::UnsupportedChain(args.chain_id));
     }
 
-    // 3. Verify bootstrap checkpoint root matches TrustedBridgeConfig canonical checkpoints or verified NetworkConfig anchor
-    let canonical_cfg = crate::types::TrustedBridgeConfig::canonical();
-    if let Some(expected_checkpoint) = canonical_cfg.trusted_checkpoints.get(&args.chain_id) {
-        if args.trusted_checkpoint_root != *expected_checkpoint {
-            return Err(MosooError::UntrustedCheckpoint {
-                chain_id: args.chain_id,
-            });
-        }
-    } else if let Some(ref net_cfg) = args.network_config {
-        if net_cfg.genesis_validators_root == [0u8; 32] {
-            return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
-        }
-        // Custom networks MUST provide an independently authenticated root-of-trust checkpoint anchor.
-        // Self-certifying or unanchored custom networks are strictly rejected (Finding 3 / P1).
-        let Some(expected_checkpoint) = net_cfg.trusted_checkpoint_root else {
-            return Err(MosooError::UnconfiguredTrustedCheckpoint {
-                chain_id: args.chain_id,
-            });
-        };
-        if expected_checkpoint == [0u8; 32] || args.trusted_checkpoint_root != expected_checkpoint {
-            return Err(MosooError::UntrustedCheckpoint {
-                chain_id: args.chain_id,
-            });
-        }
-    } else {
+    // 3. Verify bootstrap checkpoint root against independently authorized TrustedBridgeConfig.
+    // Self-certifying caller NetworkConfig is STRICTLY REJECTED:
+    // Unregistered networks MUST be independently registered in TrustedBridgeConfig (Finding 3 / High #3).
+    let Some(expected_checkpoint) = config.get_trusted_checkpoint(args.chain_id) else {
         return Err(MosooError::UnconfiguredTrustedCheckpoint {
             chain_id: args.chain_id,
         });
+    };
+    if expected_checkpoint == [0u8; 32] || args.trusted_checkpoint_root != expected_checkpoint {
+        return Err(MosooError::UntrustedCheckpoint {
+            chain_id: args.chain_id,
+        });
+    }
+
+    // If caller provided a NetworkConfig with a checkpoint, verify it matches the independently authorized checkpoint
+    if let Some(ref net_cfg) = args.network_config {
+        if let Some(net_checkpoint) = net_cfg.trusted_checkpoint_root {
+            if net_checkpoint != expected_checkpoint {
+                return Err(MosooError::UntrustedCheckpoint {
+                    chain_id: args.chain_id,
+                });
+            }
+        }
     }
 
     // 4. Mandatory Root-of-Trust Checkpoint Anchor:
@@ -405,6 +406,11 @@ pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
     }
 
     Ok(())
+}
+
+/// Validates initialization arguments against canonical TrustedBridgeConfig.
+pub fn validate_initialize(args: &InitializeArgs) -> Result<(), MosooError> {
+    validate_initialize_with_config(args, &TrustedBridgeConfig::canonical())
 }
 
 pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, MosooError> {
@@ -1329,8 +1335,7 @@ pub fn verify_job_account_authenticity<S: AccountStore>(
         ))
     })?;
     let derived_pda = job.pda_address();
-    let alt_pda = JobAccount::derive_pda(&job.instance_pda(), job.nonce);
-    if derived_pda != *expected_pda && alt_pda != *expected_pda {
+    if derived_pda != *expected_pda {
         return Err(MosooError::DomainSeparationFailed);
     }
     Ok(job)
@@ -1347,6 +1352,31 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     let mut args = args;
     args.instance = authentic_instance;
+
+    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 / High #2)
+    let config = TrustedBridgeConfig::load_or_canonical(store);
+    if let Some(anchor_head) = config.get_trusted_head(args.instance.chain_id) {
+        let effective_head = match args.trusted_head_slot {
+            Some(s) => {
+                if s < args.instance.current_slot {
+                    return Err(MosooError::InvalidBootstrap(format!(
+                        "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                        args.instance.current_slot
+                    )));
+                }
+                s.max(anchor_head)
+            }
+            None => anchor_head,
+        };
+        if args.instance.is_stale_canonical(effective_head) {
+            return Err(MosooError::WeakSubjectivityExpired {
+                update_slot: effective_head,
+                current_slot: args.instance.current_slot,
+            });
+        }
+        args.trusted_head_slot = Some(effective_head);
+    }
+
     let out = handle_begin_update(args)?;
     if let InstructionOutput::JobCreated(ref job) = out {
         let job_pda = job.pda_address();
@@ -1461,6 +1491,35 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     args.instance = authentic_instance;
 
+    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 / High #2)
+    let config = TrustedBridgeConfig::load_or_canonical(store);
+    let anchor_head = config.get_trusted_head(args.instance.chain_id).unwrap_or(0);
+    let effective_head = match args.trusted_head_slot {
+        Some(s) => {
+            if s < args.instance.current_slot {
+                return Err(MosooError::InvalidBootstrap(format!(
+                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                    args.instance.current_slot
+                )));
+            }
+            s.max(anchor_head)
+        }
+        None => {
+            if anchor_head > 0 {
+                anchor_head
+            } else {
+                args.instance.current_slot
+            }
+        }
+    };
+    if args.instance.is_stale_canonical(effective_head) {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: effective_head,
+            current_slot: args.instance.current_slot,
+        });
+    }
+    args.trusted_head_slot = Some(effective_head);
+
     // 2. If a header PDA is provided, load and authenticate HeaderRecord from store
     if let Some(h_pda) = header_pda {
         if let Some(owner) = store.get_account_owner(h_pda) {
@@ -1493,7 +1552,8 @@ pub fn handle_initialize_store<S: AccountStore>(
     store: &mut S,
     args: InitializeArgs,
 ) -> Result<InstructionOutput, MosooError> {
-    validate_initialize(&args)?;
+    let config = TrustedBridgeConfig::load_or_canonical(store);
+    validate_initialize_with_config(&args, &config)?;
     let out = handle_initialize(args)?;
     if let InstructionOutput::Initialized(ref instance) = out {
         let pda = instance.pda_address();

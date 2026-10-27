@@ -428,3 +428,46 @@ Audit Session 8 static code review raised five critical and high-priority concer
    - Added Foundry unit test verifying permanent retirement.
 5. **Outbound Multi-Signer Quorum Operational Policy (P2)**:
    - Documented mandatory multi-signer committee setup prior to mainnet deposit acceptance, ensuring quorum thresholds (`requiredQuorum >= 2/3`) and independent guardian controls are active from genesis.
+
+---
+
+## ADR-016: Unified Job PDA Derivation, Store-Backed Guest Isolation, Independent Checkpoint Authorization, and Stale Instance Update Shielding
+**Date**: October 27, 2026  
+**Status**: Accepted & Implemented  
+
+### Context & Problem Statement
+Audit Session 9 code review identified five critical and security-relevant vulnerabilities and configuration risks:
+1. **Critical #1 (P0): `StoreBacked` Untrusted Serialized Storage in zkVM Guest Entrypoint**:
+   `GuestInstruction::StoreBacked` received `ProgramAccountStore` directly inside the instruction envelope deserialized from `env::read()`. Because `ProgramAccountStore` and `ProgramAccount` are serializable, an untrusted prover could construct an in-memory store with `owner: MOSOO_PROGRAM_ID`, fabricated headers, and forged execution roots, bypassing LEZ blockchain storage backing.
+2. **High #2 (P1): Weak-Subjectivity Freshness Dependency on Caller Input**:
+   In `BeginUpdateArgs`, `trusted_head_slot` was optional (`None`), falling back to `update.signature_slot`. Attestation handlers only verified freshness if `trusted_head_slot` was present. An adversary could attempt to keep an expired instance usable through small chained incremental updates or bypass freshness checks by passing `None`.
+3. **High #3 (P1): Custom `NetworkConfig` Self-Certifying Checkpoint Trust Anchor**:
+   In `validate_initialize()`, for unconfigured networks, caller-supplied `NetworkConfig.trusted_checkpoint_root` was compared against caller-supplied `args.trusted_checkpoint_root`. Both came from caller input, allowing unanchored networks to self-certify.
+4. **Medium #4 (P2): Job PDA Derivation Formula Inconsistency**:
+   `JobAccount` exhibited three diverging derivation formulas:
+   - `pda_address()` hashed `b"mosoo_job" || chain_id || instance_id || nonce` (omitted `MOSOO_PROGRAM_ID`).
+   - `instance_pda()` hashed `b"mosoo_instance" || chain_id || instance_id` (omitted `MOSOO_PROGRAM_ID`).
+   - `derive_pda(instance_pda, nonce)` hashed `b"mosoo_job" || instance_pda || nonce`.
+5. **Medium #5 (P2): Mainnet and Holesky Placeholder Constants Removal**:
+   Placeholder constants (`CANONICAL_MAINNET_CHECKPOINT_ROOT = [0xaa, 0xbb, ...]`, `CANONICAL_HOLESKY_CHECKPOINT_ROOT = [0x57, 0x8b, ...11223344...]`, dummy lockers `0x10500...1`, `0x17000...1`) remained in source code, carrying the risk of accidental production trust assumptions.
+
+### Decision & Implementation
+1. **zkVM Guest Store-Backed Isolation (P0)**:
+   - Gated `GuestInstruction::StoreBacked` behind `#[cfg(any(test, feature = "test-harness"))]` in `dispatch_guest_instruction`. In production zkVM guest builds, caller-supplied serialized `ProgramAccountStore` instructions are strictly rejected fail-closed with `MosooError::UnauthenticatedInstance`.
+   - In LEZ runtime, host executions strictly call `dispatch_store_instruction(&mut host_store, instruction)` with genuine RocksDB/host-owned accounts, never accepting caller-provided serialized stores.
+   - Added adversarial test (`test_session9_finding1_adversarial_forged_store_fails_closed`) asserting that fabricated stores with forged accounts and fake headers fail closed.
+2. **Authenticated Freshness Anchor & Incremental Update Shielding (P1)**:
+   - Added `trusted_heads: HashMap<u64, u64>` and administrative registration methods (`register_trusted_head`, `register_trusted_head_authorized`, `get_trusted_head`) to `TrustedBridgeConfig`.
+   - In `handle_begin_update_authenticated` and `handle_attest_state_authenticated`, instances must not be stale relative to the authenticated network head (`anchor_head`). Caller attempts to provide fake low heads or pass `None` cannot bypass the authenticated anchor.
+   - Added automated test (`test_session9_finding2_stale_instance_cannot_advance_via_small_incremental_updates`) proving that an expired instance cannot be revived or kept alive via chained small incremental updates (e.g. 100-slot jumps).
+3. **Independent Checkpoint Authorization Enforcement (P1)**:
+   - Updated `validate_initialize_with_config` and `validate_initialize` so that checkpoint trust roots MUST be independently registered in `TrustedBridgeConfig`. Caller-supplied `NetworkConfig` is never self-certifying. Unregistered networks fail closed with `UnconfiguredTrustedCheckpoint`.
+   - Added regression test (`test_session9_finding3_and_5_unregistered_networks_fail_closed_without_config_registration`) verifying that unconfigured networks (Mainnet, Holesky, custom chains) fail closed without independent authorization.
+4. **Unified Canonical JobAccount PDA Derivation (P2)**:
+   - Unified `JobAccount::instance_pda(&self)` to delegate directly to `derive_instance_pda(self.instance_chain_id, &self.instance_id)` (incorporating `MOSOO_PROGRAM_ID`).
+   - Unified `JobAccount::pda_address(&self)` to delegate directly to `Self::derive_pda(&self.instance_pda(), self.nonce)`.
+   - Standardized `verify_job_account_authenticity` to check `job.pda_address() == *expected_pda`.
+   - Added invariant unit test (`test_session9_finding4_job_pda_derivation_unification`) across multiple networks and nonces.
+5. **Elimination of Placeholder Constants (P2)**:
+   - Completely deleted placeholder constants `CANONICAL_MAINNET_CHECKPOINT_ROOT`, `CANONICAL_MAINNET_MOSOO_LOCKER`, `CANONICAL_HOLESKY_CHECKPOINT_ROOT`, and `CANONICAL_HOLESKY_MOSOO_LOCKER` from `mosoo-core/src/types.rs`.
+   - Added test asserting that canonical configuration contains zero placeholder checkpoints for Mainnet and Holesky.

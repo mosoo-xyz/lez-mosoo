@@ -1226,6 +1226,11 @@ fn test_finding16_reinitialization_existing_instance_rejected() {
         trusted_head_slot: 1_050_000,
     };
 
+    // Register custom network checkpoint in TrustedBridgeConfig persistent storage (Finding 3 / High #3)
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    bridge_cfg.register_custom_network(chain_id, checkpoint_root);
+    bridge_cfg.save_to_store(&mut store).unwrap();
+
     // First initialization succeeds and persists instance
     let res1 = handle_initialize_store(&mut store, init_args.clone());
     assert!(res1.is_ok());
@@ -1847,7 +1852,7 @@ fn test_finding24_custom_network_independent_checkpoint_anchor_registration() {
     use mosoo_core::types::{
         BeaconBlockHeader, InitializeArgs, NetworkConfig, TrustedBridgeConfig,
     };
-    use mosoo_core::verifier::validate_initialize;
+    use mosoo_core::verifier::{validate_initialize, validate_initialize_with_config};
 
     let chain_id = 888888u64;
     let custom_checkpoint = [0x99; 32];
@@ -1895,45 +1900,11 @@ fn test_finding24_custom_network_independent_checkpoint_anchor_registration() {
         "Unanchored custom network must fail with UnconfiguredTrustedCheckpoint"
     );
 
-    // 2. Custom network with mismatched checkpoint root is strictly rejected
-    let net_cfg_mismatched = NetworkConfig {
-        chain_id,
-        genesis_validators_root: [0x42; 32],
-        trusted_checkpoint_root: Some(custom_checkpoint), // Different from header_hash!
-        altair_fork_version: [1; 4],
-        bellatrix_fork_version: [2; 4],
-        capella_fork_version: [3; 4],
-        deneb_fork_version: [4; 4],
-        electra_fork_version: [5; 4],
-        fulu_fork_version: [6; 4],
-        gloas_fork_version: [7; 4],
-    };
-    let init_mismatched = InitializeArgs {
-        instance_id: [1; 32],
-        chain_id,
-        bootstrap_header: header.clone(),
-        trusted_checkpoint_root: header_hash, // Does not match net_cfg!
-        current_sync_committee: make_valid_committee(),
-        current_sync_committee_branch: vec![[0u8; 32]; 5],
-        initial_next_committee: None,
-        initial_next_committee_branch: None,
-        trusted_head_slot: 1_050,
-        network_config: Some(net_cfg_mismatched),
-    };
-    let res = validate_initialize(&init_mismatched);
-    assert!(
-        matches!(
-            res,
-            Err(mosoo_core::error::MosooError::UntrustedCheckpoint { chain_id: 888888 })
-        ),
-        "Mismatched custom network checkpoint must fail with UntrustedCheckpoint"
-    );
-
-    // 3. Custom network with independently matched checkpoint root succeeds
+    // 2. Custom network with self-certifying NetworkConfig (not registered in TrustedBridgeConfig) fails closed (Finding 3 / High #3)
     let net_cfg_anchored = NetworkConfig {
         chain_id,
         genesis_validators_root: [0x42; 32],
-        trusted_checkpoint_root: Some(header_hash), // Authenticated match!
+        trusted_checkpoint_root: Some(header_hash),
         altair_fork_version: [1; 4],
         bellatrix_fork_version: [2; 4],
         capella_fork_version: [3; 4],
@@ -1945,7 +1916,7 @@ fn test_finding24_custom_network_independent_checkpoint_anchor_registration() {
     let init_anchored = InitializeArgs {
         instance_id: [1; 32],
         chain_id,
-        bootstrap_header: header,
+        bootstrap_header: header.clone(),
         trusted_checkpoint_root: header_hash,
         current_sync_committee: make_valid_committee(),
         current_sync_committee_branch: vec![[0u8; 32]; 5],
@@ -1954,9 +1925,16 @@ fn test_finding24_custom_network_independent_checkpoint_anchor_registration() {
         trusted_head_slot: 1_050,
         network_config: Some(net_cfg_anchored),
     };
-    assert!(validate_initialize(&init_anchored).is_ok());
+    let res_unreg = validate_initialize(&init_anchored);
+    assert!(
+        matches!(
+            res_unreg,
+            Err(mosoo_core::error::MosooError::UnconfiguredTrustedCheckpoint { chain_id: 888888 })
+        ),
+        "Self-certifying custom network without registration in TrustedBridgeConfig must fail closed"
+    );
 
-    // 4. Verify TrustedBridgeConfig registration APIs for custom network checkpoints
+    // 3. Register custom network in TrustedBridgeConfig with administrative authorization
     let mut bridge_cfg = TrustedBridgeConfig::canonical();
     let admin = [0x55; 32];
     bridge_cfg.set_admin_authority(admin);
@@ -1966,6 +1944,43 @@ fn test_finding24_custom_network_independent_checkpoint_anchor_registration() {
         Some(header_hash)
     );
     assert!(bridge_cfg.is_trusted_checkpoint(chain_id, &header_hash));
+
+    // 4. Once registered in TrustedBridgeConfig, validation succeeds for matching checkpoint
+    assert!(validate_initialize_with_config(&init_anchored, &bridge_cfg).is_ok());
+
+    // 5. Mismatched checkpoint against registered TrustedBridgeConfig fails closed with UntrustedCheckpoint
+    let net_cfg_mismatched = NetworkConfig {
+        chain_id,
+        genesis_validators_root: [0x42; 32],
+        trusted_checkpoint_root: Some(custom_checkpoint), // Different from registered header_hash!
+        altair_fork_version: [1; 4],
+        bellatrix_fork_version: [2; 4],
+        capella_fork_version: [3; 4],
+        deneb_fork_version: [4; 4],
+        electra_fork_version: [5; 4],
+        fulu_fork_version: [6; 4],
+        gloas_fork_version: [7; 4],
+    };
+    let init_mismatched = InitializeArgs {
+        instance_id: [1; 32],
+        chain_id,
+        bootstrap_header: header,
+        trusted_checkpoint_root: custom_checkpoint,
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 1_050,
+        network_config: Some(net_cfg_mismatched),
+    };
+    let res_mismatch = validate_initialize_with_config(&init_mismatched, &bridge_cfg);
+    assert!(
+        matches!(
+            res_mismatch,
+            Err(mosoo_core::error::MosooError::UntrustedCheckpoint { chain_id: 888888 })
+        ),
+        "Mismatched custom network checkpoint against registered config must fail with UntrustedCheckpoint"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2875,4 +2890,382 @@ fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_
         res_head_stale.unwrap_err(),
         MosooError::WeakSubjectivityExpired { .. }
     ));
+}
+
+// ===========================================================================
+// Session 9 Hardening Verification Tests (Audit Session 9)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Finding 4: Job PDA Derivation Inconsistency Unification (Medium #4)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session9_finding4_job_pda_derivation_unification() {
+    use mosoo_core::types::{
+        derive_instance_pda, JobAccount, JobStage, LightClientUpdate, RuntimeAccount,
+        SyncAggregate, CANONICAL_MAINNET_INSTANCE_ID, CANONICAL_SEPOLIA_INSTANCE_ID,
+        ETH_MAINNET_CHAIN_ID, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    };
+
+    let test_cases = [
+        (ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID, 0u64),
+        (ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID, 42u64),
+        (ETH_MAINNET_CHAIN_ID, CANONICAL_MAINNET_INSTANCE_ID, 1u64),
+        (
+            ETH_MAINNET_CHAIN_ID,
+            CANONICAL_MAINNET_INSTANCE_ID,
+            99999u64,
+        ),
+        (1337u64, [0x77; 32], 100u64),
+    ];
+
+    for (chain_id, inst_id, nonce) in test_cases {
+        let dummy_header = mosoo_core::types::BeaconBlockHeader {
+            slot: 5000,
+            proposer_index: 0,
+            parent_root: [0; 32],
+            state_root: [0; 32],
+            body_root: [0; 32],
+        };
+        let dummy_update = LightClientUpdate {
+            attested_header: dummy_header.clone(),
+            next_sync_committee: None,
+            next_sync_committee_branch: None,
+            finalized_header: dummy_header,
+            finality_branch: vec![[0u8; 32]; 6],
+            execution_payload_header: None,
+            execution_branch: None,
+            execution_rlp: None,
+            sync_aggregate: SyncAggregate {
+                sync_committee_bits: vec![0xff; 64],
+                sync_committee_signature: vec![0x11; 96],
+            },
+            signature_slot: 5001,
+        };
+
+        let job = JobAccount {
+            instance_chain_id: chain_id,
+            instance_id: inst_id,
+            instance_slot: 5000,
+            update_digest: [0xaa; 32],
+            stage: JobStage::Begin,
+            update: dummy_update,
+            miller_input: None,
+            miller_output: None,
+            nonce,
+        };
+
+        // 1. Invariant: job.instance_pda() strictly equals derive_instance_pda(chain_id, &instance_id)
+        let expected_inst_pda = derive_instance_pda(chain_id, &inst_id);
+        assert_eq!(
+            job.instance_pda(),
+            expected_inst_pda,
+            "job.instance_pda() must match derive_instance_pda with MOSOO_PROGRAM_ID"
+        );
+
+        // 2. Invariant: job.pda_address() strictly equals JobAccount::derive_pda(&job.instance_pda(), nonce)
+        let expected_job_pda = JobAccount::derive_pda(&expected_inst_pda, nonce);
+        assert_eq!(
+            job.pda_address(),
+            expected_job_pda,
+            "job.pda_address() must match JobAccount::derive_pda(&job.instance_pda(), nonce)"
+        );
+
+        // 3. RuntimeAccount authenticity parsing succeeds with matching PDA
+        let job_bytes = serde_json::to_vec(&job).unwrap();
+        let runtime_acc = RuntimeAccount {
+            address: expected_job_pda,
+            owner: MOSOO_PROGRAM_ID,
+            data: job_bytes.clone(),
+        };
+        let parsed = JobAccount::try_from_runtime_account(&runtime_acc);
+        assert!(parsed.is_ok());
+
+        // 4. RuntimeAccount with tampered PDA fails closed with UnauthenticatedJobAccount
+        let tampered_acc = RuntimeAccount {
+            address: [0xde; 32],
+            owner: MOSOO_PROGRAM_ID,
+            data: job_bytes,
+        };
+        let err = JobAccount::try_from_runtime_account(&tampered_acc);
+        assert!(matches!(
+            err.unwrap_err(),
+            mosoo_core::error::MosooError::UnauthenticatedJobAccount
+        ));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2: Stale Instance Chained Incremental Update Rejection (High #2)
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session9_finding2_stale_instance_cannot_advance_via_small_incremental_updates() {
+    use mosoo_core::types::{
+        LightClientUpdate, SyncAggregate, TrustedBridgeConfig, CANONICAL_SEPOLIA_INSTANCE_ID,
+        CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    };
+    use mosoo_core::verifier::{handle_begin_update_authenticated, BeginUpdateArgs};
+
+    let mut store = MockStore::default();
+    let instance_id = CANONICAL_SEPOLIA_INSTANCE_ID;
+    let initial_slot = 1_000_000u64;
+
+    // Instance was stalled at slot 1,000,000
+    let mut inst = make_test_instance(ETH_SEPOLIA_CHAIN_ID, instance_id);
+    inst.current_slot = initial_slot;
+    let inst_pda = inst.pda_address();
+    store.set_account_with_owner(
+        &inst_pda,
+        serde_json::to_vec(&inst).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // Network has advanced to slot 2,000,000 (well past weak-subjectivity window: 1,000,000 slots delta >> 54,000)
+    let authenticated_head = initial_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 50_000;
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    bridge_cfg.register_trusted_head(ETH_SEPOLIA_CHAIN_ID, authenticated_head);
+    bridge_cfg.save_to_store(&mut store).unwrap();
+
+    // Adversary attempts to revive the stale instance via small chained incremental updates:
+    // Update 1: slot 1,000,100 (delta = 100)
+    // Update 2: slot 1,000,200 (delta = 100)
+    // Update 3: slot 1,000,300 (delta = 100)
+    for jump in [100u64, 200, 300, 400] {
+        let dummy_header = mosoo_core::types::BeaconBlockHeader {
+            slot: initial_slot + jump,
+            proposer_index: 1,
+            parent_root: [0x11; 32],
+            state_root: [0x22; 32],
+            body_root: [0x33; 32],
+        };
+        let update = LightClientUpdate {
+            attested_header: dummy_header.clone(),
+            next_sync_committee: None,
+            next_sync_committee_branch: None,
+            finalized_header: dummy_header,
+            finality_branch: vec![[0u8; 32]; 6],
+            execution_payload_header: None,
+            execution_branch: None,
+            execution_rlp: None,
+            sync_aggregate: SyncAggregate {
+                sync_committee_bits: vec![0xff; 64],
+                sync_committee_signature: vec![0x11; 96],
+            },
+            signature_slot: initial_slot + jump + 1,
+        };
+
+        // 1. Adversary omits trusted_head_slot (trusted_head_slot: None) to hide staleness
+        let args_omitted = BeginUpdateArgs {
+            instance: inst.clone(),
+            update: update.clone(),
+            nonce: jump,
+            trusted_head_slot: None,
+        };
+        let res_omitted = handle_begin_update_authenticated(&mut store, &inst_pda, args_omitted);
+        assert!(
+            matches!(
+                res_omitted.unwrap_err(),
+                MosooError::WeakSubjectivityExpired { .. }
+            ),
+            "Chained small update (jump {}) with None head must fail closed against authenticated head",
+            jump
+        );
+
+        // 2. Adversary supplies a fake low trusted_head_slot to attempt clock rollback
+        let args_faked = BeginUpdateArgs {
+            instance: inst.clone(),
+            update,
+            nonce: jump + 10_000,
+            trusted_head_slot: Some(initial_slot + jump + 5), // Fake head!
+        };
+        let res_faked = handle_begin_update_authenticated(&mut store, &inst_pda, args_faked);
+        assert!(
+            matches!(
+                res_faked.unwrap_err(),
+                MosooError::WeakSubjectivityExpired { .. }
+            ),
+            "Chained small update (jump {}) with faked low head must fail closed against authenticated anchor",
+            jump
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3 & 5: Unregistered Networks & Placeholder Trust Anchor Elimination
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session9_finding3_and_5_unregistered_networks_fail_closed_without_config_registration() {
+    use mosoo_core::types::{
+        BeaconBlockHeader, InitializeArgs, NetworkConfig, TrustedBridgeConfig,
+        ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID,
+    };
+    use mosoo_core::verifier::{validate_initialize, validate_initialize_with_config};
+
+    let dummy_header = BeaconBlockHeader {
+        slot: 10_000,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root: [0x11; 32],
+        body_root: [0; 32],
+    };
+    let dummy_root = mosoo_core::crypto::hash_tree_root_beacon_header(&dummy_header);
+
+    // 1. Mainnet (chain 1) has no active trusted checkpoint in canonical TrustedBridgeConfig
+    let init_mainnet = InitializeArgs {
+        instance_id: [1; 32],
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: dummy_header.clone(),
+        trusted_checkpoint_root: dummy_root,
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_050,
+        network_config: None,
+    };
+    let res_mainnet = validate_initialize(&init_mainnet);
+    assert!(
+        matches!(
+            res_mainnet,
+            Err(mosoo_core::error::MosooError::UnconfiguredTrustedCheckpoint { chain_id: 1 })
+        ),
+        "Mainnet without authorized TrustedBridgeConfig checkpoint must fail closed"
+    );
+
+    // 2. Holesky (chain 17000) has no active trusted checkpoint in canonical TrustedBridgeConfig
+    let init_holesky = InitializeArgs {
+        instance_id: [2; 32],
+        chain_id: ETH_HOLESKY_CHAIN_ID,
+        bootstrap_header: dummy_header.clone(),
+        trusted_checkpoint_root: dummy_root,
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_050,
+        network_config: None,
+    };
+    let res_holesky = validate_initialize(&init_holesky);
+    assert!(
+        matches!(
+            res_holesky,
+            Err(mosoo_core::error::MosooError::UnconfiguredTrustedCheckpoint { chain_id: 17000 })
+        ),
+        "Holesky without authorized TrustedBridgeConfig checkpoint must fail closed"
+    );
+
+    // 3. Custom network (chain 777777) with caller-supplied NetworkConfig is NEVER self-certifying
+    let net_cfg_custom = NetworkConfig {
+        chain_id: 777777,
+        genesis_validators_root: [0x55; 32],
+        trusted_checkpoint_root: Some(dummy_root), // Caller supplied!
+        altair_fork_version: [1; 4],
+        bellatrix_fork_version: [2; 4],
+        capella_fork_version: [3; 4],
+        deneb_fork_version: [4; 4],
+        electra_fork_version: [5; 4],
+        fulu_fork_version: [6; 4],
+        gloas_fork_version: [7; 4],
+    };
+    let init_custom = InitializeArgs {
+        instance_id: [3; 32],
+        chain_id: 777777,
+        bootstrap_header: dummy_header,
+        trusted_checkpoint_root: dummy_root,
+        current_sync_committee: make_valid_committee(),
+        current_sync_committee_branch: vec![[0u8; 32]; 5],
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: 10_050,
+        network_config: Some(net_cfg_custom),
+    };
+    let res_custom = validate_initialize(&init_custom);
+    assert!(
+        matches!(
+            res_custom,
+            Err(mosoo_core::error::MosooError::UnconfiguredTrustedCheckpoint { chain_id: 777777 })
+        ),
+        "Self-certifying custom network must fail closed without prior TrustedBridgeConfig registration"
+    );
+
+    // 4. Once explicitly registered in TrustedBridgeConfig by authorized admin, initialization succeeds
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    let admin = [0x99; 32];
+    bridge_cfg.set_admin_authority(admin);
+    assert!(bridge_cfg.register_trusted_checkpoint_authorized(&admin, 777777, dummy_root));
+    assert!(validate_initialize_with_config(&init_custom, &bridge_cfg).is_ok());
+
+    // 5. Canonical config has zero placeholder checkpoints for Mainnet and Holesky
+    let canonical = TrustedBridgeConfig::canonical();
+    assert!(canonical
+        .get_trusted_checkpoint(ETH_MAINNET_CHAIN_ID)
+        .is_none());
+    assert!(canonical
+        .get_trusted_checkpoint(ETH_HOLESKY_CHAIN_ID)
+        .is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Finding 1: Untrusted Serialized Store Rejection in zkVM Guest Path
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session9_finding1_adversarial_forged_store_fails_closed() {
+    use mosoo_core::types::{AccountStore, HeaderRecord, MOSOO_PROGRAM_ID};
+    use mosoo_core::verifier::{handle_attest_state_authenticated, AttestStateArgs};
+
+    let mut fake_store = MockStore::default();
+    let chain_id = 11155111u64;
+    let fake_instance_id = [0xee; 32];
+    let fake_instance = make_test_instance(chain_id, fake_instance_id);
+    let fake_pda = fake_instance.pda_address();
+
+    // Adversary fabricates an in-memory store with MOSOO_PROGRAM_ID ownership and forged execution root
+    fake_store.set_account_with_owner(
+        &fake_pda,
+        serde_json::to_vec(&fake_instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let forged_header = HeaderRecord {
+        chain_id,
+        slot: 1000,
+        beacon_block_root: [0xaa; 32],
+        execution_block_hash: [0xbb; 32],
+        execution_state_root: [0xcc; 32], // Fabricated!
+        receipts_root: [0xdd; 32],
+    };
+    let forged_header_pda = forged_header.pda_address();
+    fake_store.set_account_with_owner(
+        &forged_header_pda,
+        serde_json::to_vec(&forged_header).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // Attestation against unpinned instance PDA must fail closed
+    let args = AttestStateArgs {
+        instance: fake_instance,
+        header: forged_header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x01),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+        trusted_head_slot: None,
+    };
+
+    // Authenticated attestation verifies instance against canonical pinned instance:
+    // Sepolia is pinned to CANONICAL_SEPOLIA_MOSOO_INSTANCE.
+    // The adversary's fabricated fake_pda is rejected!
+    let res =
+        handle_attest_state_authenticated(&fake_store, &fake_pda, Some(&forged_header_pda), args);
+    // When fake_instance is validated for authenticity, its instance_id is [0xee; 32]
+    // which does not match CANONICAL_SEPOLIA_INSTANCE_ID -> validation fails closed!
+    assert!(
+        res.is_err(),
+        "Attestation with fabricated instance in untrusted store must fail closed"
+    );
 }

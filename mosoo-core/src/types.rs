@@ -68,18 +68,6 @@ pub const CANONICAL_MAINNET_INSTANCE_ID: [u8; 32] = [
     0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc,
 ];
 
-/// Canonical Mainnet weak-subjectivity trusted checkpoint root (Period 1280).
-pub const CANONICAL_MAINNET_CHECKPOINT_ROOT: [u8; 32] = [
-    0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99,
-    0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0, 0xb0, 0xc0, 0xd0, 0xe0, 0xf0, 0x01,
-];
-
-/// Canonical deployed Mosoo locker vault contract on Ethereum Mainnet.
-pub const CANONICAL_MAINNET_MOSOO_LOCKER: [u8; 20] = [
-    0x10, 0x50, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x01,
-];
-
 /// Canonical Sepolia weak-subjectivity trusted checkpoint root (Period 1395, Slot 11,434,912).
 /// Independently verified via Sepolia Lodestar consensus endpoint:
 /// `https://lodestar-sepolia.chainsafe.io/eth/v1/beacon/light_client/bootstrap/0x9e63ec3735177d6f97988238c6dfba0d262f0b7251a25ce6d07a0cd77ae12395`
@@ -111,18 +99,6 @@ pub const MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 1_728_000;
 pub const CANONICAL_HOLESKY_INSTANCE_ID: [u8; 32] = [
     0xa2, 0xd7, 0x6b, 0x41, 0x16, 0x19, 0xcc, 0xac, 0xa5, 0x56, 0x76, 0xd7, 0x35, 0x8f, 0xfb, 0x3d,
     0x11, 0xa5, 0x35, 0xa0, 0x1e, 0xa3, 0x83, 0x3b, 0x14, 0x5b, 0xed, 0x13, 0xb5, 0xa8, 0x3a, 0x11,
-];
-
-/// Canonical Holesky weak-subjectivity trusted checkpoint root.
-pub const CANONICAL_HOLESKY_CHECKPOINT_ROOT: [u8; 32] = [
-    0x57, 0x8b, 0x91, 0x33, 0x72, 0xfa, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
-    0x12, 0x34, 0x56, 0x78, 0x9a, 0xbc, 0xde, 0xf0, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
-];
-
-/// Canonical deployed Mosoo locker vault contract on Holesky.
-pub const CANONICAL_HOLESKY_MOSOO_LOCKER: [u8; 20] = [
-    0x17, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x01,
 ];
 
 /// Computes the deterministic 32-byte PDA address of a light-client instance on LEZ.
@@ -170,6 +146,9 @@ pub struct TrustedBridgeConfig {
     pub trusted_instances: HashMap<u64, [u8; 32]>,
     /// Approved root-of-trust beacon checkpoint root per chain ID (authenticates bootstrap header hash)
     pub trusted_checkpoints: HashMap<u64, [u8; 32]>,
+    /// Authenticated trusted head slot (or consensus checkpoint slot) per chain ID
+    #[serde(default)]
+    pub trusted_heads: HashMap<u64, u64>,
 }
 
 impl Default for TrustedBridgeConfig {
@@ -208,12 +187,15 @@ impl TrustedBridgeConfig {
         let mut trusted_checkpoints = HashMap::new();
         trusted_checkpoints.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
 
+        let trusted_heads = HashMap::new();
+
         Self {
             admin_authority: None,
             trusted_lockers,
             allowed_tokens,
             trusted_instances,
             trusted_checkpoints,
+            trusted_heads,
         }
     }
 
@@ -433,6 +415,36 @@ impl TrustedBridgeConfig {
             return false;
         }
         self.trusted_checkpoints.get(&chain_id) == Some(candidate)
+    }
+
+    /// Registers or updates the trusted head slot for a given chain ID.
+    pub fn register_trusted_head(&mut self, chain_id: u64, head_slot: u64) -> bool {
+        if head_slot == 0 {
+            return false;
+        }
+        self.trusted_heads.insert(chain_id, head_slot);
+        true
+    }
+
+    /// Registers or updates the trusted head slot with administrative authorization.
+    pub fn register_trusted_head_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        head_slot: u64,
+    ) -> bool {
+        let Some(expected_admin) = self.admin_authority else {
+            return false;
+        };
+        if *caller != expected_admin {
+            return false;
+        }
+        self.register_trusted_head(chain_id, head_slot)
+    }
+
+    /// Returns the registered trusted head slot for a given chain ID, if configured.
+    pub fn get_trusted_head(&self, chain_id: u64) -> Option<u64> {
+        self.trusted_heads.get(&chain_id).copied()
     }
 }
 
@@ -1068,23 +1080,16 @@ pub struct JobAccount {
 }
 
 impl JobAccount {
-    /// Computes the deterministic 32-byte PDA address of this job account on LEZ.
-    pub fn pda_address(&self) -> [u8; 32] {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(b"mosoo_job");
-        hasher.update(self.instance_chain_id.to_le_bytes());
-        hasher.update(self.instance_id);
-        hasher.update(self.nonce.to_le_bytes());
-        hasher.finalize().into()
+    /// Computes the corresponding InstanceAccount PDA address for this job,
+    /// strictly unified with [`derive_instance_pda`] including MOSOO_PROGRAM_ID (Finding 4 / Medium #4).
+    pub fn instance_pda(&self) -> [u8; 32] {
+        derive_instance_pda(self.instance_chain_id, &self.instance_id)
     }
 
-    /// Computes the corresponding InstanceAccount PDA address for this job.
-    pub fn instance_pda(&self) -> [u8; 32] {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(b"mosoo_instance");
-        hasher.update(self.instance_chain_id.to_le_bytes());
-        hasher.update(self.instance_id);
-        hasher.finalize().into()
+    /// Computes the deterministic 32-byte PDA address of this job account on LEZ,
+    /// strictly derived from [`Self::instance_pda`] and sequential nonce.
+    pub fn pda_address(&self) -> [u8; 32] {
+        Self::derive_pda(&self.instance_pda(), self.nonce)
     }
 
     /// Computes the deterministic 32-byte PDA address using an instance PDA and nonce.
