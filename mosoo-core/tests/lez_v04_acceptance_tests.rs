@@ -197,6 +197,7 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     })
     .expect("Attest ERC-20 transfer state must succeed");
 
@@ -280,6 +281,7 @@ fn test_lez_v04_dual_consumer_settlement_e2e() {
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     })
     .expect("Attest Native ETH deposit state must succeed");
 

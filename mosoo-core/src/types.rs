@@ -446,11 +446,16 @@ impl TrustedBridgeConfig {
     }
 
     /// Registers or updates the trusted head slot for a given chain ID.
+    /// Also aligns the default pinned instance for this chain, if configured.
     pub fn register_trusted_head(&mut self, chain_id: u64, head_slot: u64) -> bool {
         if head_slot == 0 {
             return false;
         }
         self.trusted_heads.insert(chain_id, head_slot);
+        if let Some(pinned) = self.get_trusted_instance(chain_id) {
+            self.instance_trusted_heads
+                .insert(hex::encode(pinned), head_slot);
+        }
         true
     }
 
@@ -485,17 +490,18 @@ impl TrustedBridgeConfig {
         }
     }
 
-    /// Registers or updates the trusted head slot for a given chain ID and instance PDA.
+    /// Registers or updates the trusted head slot for a specific instance PDA.
+    /// Does NOT mutate the chain-wide trusted_heads map, ensuring complete cross-instance
+    /// isolation and preventing an advance in instance A from altering the freshness baseline for instance B (Finding 2 / Session 13).
     pub fn register_trusted_head_for_instance(
         &mut self,
-        chain_id: u64,
+        _chain_id: u64,
         instance_pda: [u8; 32],
         head_slot: u64,
     ) -> bool {
         if head_slot == 0 {
             return false;
         }
-        self.trusted_heads.insert(chain_id, head_slot);
         self.instance_trusted_heads
             .insert(hex::encode(instance_pda), head_slot);
         true
@@ -506,6 +512,17 @@ impl TrustedBridgeConfig {
         self.instance_trusted_heads
             .get(&hex::encode(instance_pda))
             .copied()
+    }
+
+    /// Returns the effective trusted head slot for an instance PDA:
+    /// returns the instance-specific head if registered, falling back to the chain-wide anchor head.
+    pub fn get_effective_instance_head(
+        &self,
+        chain_id: u64,
+        instance_pda: &[u8; 32],
+    ) -> Option<u64> {
+        self.get_instance_trusted_head(instance_pda)
+            .or_else(|| self.get_trusted_head(chain_id))
     }
 }
 

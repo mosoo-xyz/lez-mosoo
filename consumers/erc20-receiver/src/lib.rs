@@ -1424,6 +1424,7 @@ pub fn claim_atomic_u256(
         predicate: args.predicate,
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1647,6 +1648,7 @@ pub fn verify_authenticated_store_erc20_claim_details<S: mosoo_core::types::Acco
         predicate: args.predicate,
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state_authenticated(
@@ -2156,6 +2158,7 @@ impl Erc20Ledger {
             predicate: args.predicate,
             privacy_salt: None,
             trusted_head_slot: None,
+            privacy_mode: None,
         };
 
         let output = mosoo_core::verifier::handle_attest_state(attest_args)

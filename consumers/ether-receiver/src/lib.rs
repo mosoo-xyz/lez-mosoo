@@ -1220,6 +1220,7 @@ pub fn claim_ether_atomic_u256(
         predicate: args.predicate,
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1374,6 +1375,7 @@ pub fn claim_account_balance_atomic(
         predicate: args.predicate,
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1498,6 +1500,7 @@ pub fn claim_native_eth_deposit_atomic_with_config(
         predicate: args.predicate,
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state(attest_args)
@@ -1666,6 +1669,7 @@ pub fn verify_native_eth_deposit_authenticated_store_details<S: mosoo_core::type
         predicate: args.predicate,
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let output = mosoo_core::verifier::handle_attest_state_authenticated(
@@ -2139,6 +2143,7 @@ impl MethLedger {
             predicate: args.predicate,
             privacy_salt: None,
             trusted_head_slot: None,
+            privacy_mode: None,
         };
 
         let output = mosoo_core::verifier::handle_attest_state(attest_args)

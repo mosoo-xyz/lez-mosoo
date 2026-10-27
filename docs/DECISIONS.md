@@ -613,3 +613,50 @@ Audit Session 12 (`t_6ae0a89707d88191b1048c4ae7d7770f`) reviewed the latest repo
    - Added `PrivacyMode` enum (`Public`, `AddressPrivate`, `Confidential`) in `mosoo-core/src/types.rs`.
    - Enforced in `methods/guest/src/main.rs` that private statement types (`AccountBalance`, `StorageSlot`, `ReceiptLog`) require value confidentiality (`stmt.is_value_shielded()`) in the public zkVM journal, rejecting unshielded value leakage.
    - Verified that settlement proofs use `shield_with_salt` (Address Privacy) while non-settlement proofs use `shield_confidential` (Confidential Privacy).
+
+---
+
+## ADR-020: Per-Instance Trusted Head Isolation, Hoodi Deprecation & Holesky Alignment, Fail-Closed Confidential Privacy Mode, and Operational Checkpoint Recovery Governance
+**Date**: October 27, 2026  
+**Status**: Accepted & Implemented  
+
+### Context & Problem Statement
+Audit Session 13 (`t_6ae0badadd2881918bb1eb5361ed685b`) identified 4 critical operational and architectural findings in the consensus verifier and daemon infrastructure:
+1. **Finding 1 (High): Cross-Instance Trusted-Head Contamination**:
+   - `register_trusted_head_for_instance()` was mutating both `self.instance_trusted_heads` AND global `self.trusted_heads[chain_id]`.
+   - In multi-instance or unpinned environments, an advance in Instance A inflated the chain-wide anchor head, shifting the freshness baseline for Instance B and causing unintended DoS or weak-subjectivity isolation failure.
+2. **Finding 2 (Medium): Daemon CLI Advertised Hoodi, But Core Verifier Rejects It**:
+   - Daemon and CLI help strings advertised `560048 = Hoodi`. However, `mosoo_core::types::is_supported_chain_id` only supports Mainnet (`1`), Sepolia (`11155111`), and Holesky (`17000`).
+   - Running the daemon or CLI with chain ID `560048` led to runtime panics or obscure verification errors.
+3. **Finding 3 (Medium): Optional Privacy Mode Permitted Silent Unshielded Emission**:
+   - `privacy_salt` was optional in `AttestStateArgs`. When omitted, statements were emitted unshielded even when callers desired confidential assertions.
+4. **Finding 4 (Operational Gap): Checkpoint Recovery & Stalled Instance Governance**:
+   - Lack of formalized operational guidance on recovering stalled light-client instances exceeding the 54,000-slot operational freshness bound, rotating trusted heads, and administering 2-step timelocks.
+
+### Decision & Implementation
+1. **Per-Instance Trusted Head Isolation (Finding 1)**:
+   - Updated `register_trusted_head_for_instance` in `mosoo-core/src/types.rs` to ONLY update `self.instance_trusted_heads`, preventing any cross-instance contamination of `trusted_heads[chain_id]`.
+   - Global `trusted_heads[chain_id]` is strictly reserved for network-wide anchor observations configured by governance.
+   - Added `get_effective_instance_head(&self, chain_id, instance_pda)` to safely resolve the instance's effective head:
+     ```rust
+     self.get_instance_trusted_head(instance_pda)
+         .or_else(|| self.get_trusted_head(chain_id))
+     ```
+   - In `handle_begin_update_authenticated` and `handle_attest_state_authenticated`, resolved the anchor head using this per-instance isolation pattern.
+2. **Hoodi Deprecation & Holesky Alignment (Finding 2)**:
+   - Deprecated Hoodi (chain ID `560048`). Aligned all CLI options, daemon CLI flags, and error messages to officially support Ethereum Holesky (chain ID `17000`), Sepolia (`11155111`), and Mainnet (`1`).
+   - Added startup validation in `daemon/src/main.rs`:
+     ```rust
+     if !mosoo_core::types::is_supported_chain_id(cli.eth_chain_id) {
+         anyhow::bail!(
+             "Unsupported Ethereum chain ID {}. Mosoo supports Mainnet (1), Sepolia (11155111), and Holesky (17000).",
+             cli.eth_chain_id
+         );
+     }
+     ```
+3. **Fail-Closed Confidential Privacy Mode (Finding 3)**:
+   - Added first-class `pub privacy_mode: Option<PrivacyMode>` to `AttestStateArgs`.
+   - Implemented Step 0 guard in `handle_attest_state`: when `privacy_mode` is `Some(PrivacyMode::Confidential)` or `Some(PrivacyMode::AddressPrivate)`, a secret 256-bit `privacy_salt` is strictly required. If omitted, execution immediately fails closed with `MosooError::InvalidBootstrap`.
+4. **Comprehensive Operations & Governance Guide (Finding 4)**:
+   - Created `docs/OPERATIONS.md` detailing trusted head provisioning, stalled instance retirement and fresh checkpoint replacement (ADR-004), 2-step timelock workflows (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), Guardian veto procedures, and multi-network registration standards.
+

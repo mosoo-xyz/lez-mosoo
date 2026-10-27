@@ -44,7 +44,7 @@ pub struct Cli {
     )]
     pub eth_execution_rpc: String,
 
-    /// EIP-155 chain ID of the Ethereum network to track (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi).
+    /// EIP-155 chain ID of the Ethereum network to track (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky).
     #[arg(long, env = "ETH_CHAIN_ID", default_value = "11155111")]
     pub eth_chain_id: u64,
 
@@ -83,6 +83,14 @@ pub struct Cli {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    // Guard: Validate chain ID alignment against core supported networks (Finding 3 / Session 13)
+    if !mosoo_core::types::is_supported_chain_id(cli.eth_chain_id) {
+        anyhow::bail!(
+            "Chain ID {} is not supported by mosoo-core. Supported networks: Ethereum Mainnet (1), Sepolia (11155111), Holesky (17000)",
+            cli.eth_chain_id
+        );
+    }
 
     let filter = EnvFilter::try_new(&cli.log_level).unwrap_or_else(|_| EnvFilter::new("info"));
     if cli.log_format == "json" {

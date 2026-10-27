@@ -160,6 +160,7 @@ fn test_finding1_zkvm_authenticated_guest_instruction_rejects_unauthenticated_pd
         },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     // 1. Adversary supplies fake expected instance PDA
@@ -1071,6 +1072,7 @@ fn test_finding14_attest_state_salted_shielding_journal() {
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some(salt1),
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let args2 = AttestStateArgs {
@@ -1082,6 +1084,7 @@ fn test_finding14_attest_state_salted_shielding_journal() {
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some(salt2),
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     // Both evaluations yield StatementIssued with Shielded binding
@@ -1627,6 +1630,7 @@ fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() 
         },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     // Store-backed dispatch must load and authenticate the genuine instance from store,
@@ -1670,6 +1674,7 @@ fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() 
                 },
                 privacy_salt: None,
                 trusted_head_slot: None,
+                privacy_mode: None,
             },
         }),
     };
@@ -1703,6 +1708,7 @@ fn test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store() 
                 },
                 privacy_salt: None,
                 trusted_head_slot: None,
+                privacy_mode: None,
             },
         }),
     };
@@ -2396,6 +2402,7 @@ fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
             },
             privacy_salt: None,
             trusted_head_slot: None,
+            privacy_mode: None,
         },
     };
 
@@ -2456,6 +2463,7 @@ fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
                 },
                 privacy_salt: None,
                 trusted_head_slot: None,
+                privacy_mode: None,
             },
         }),
     };
@@ -2557,6 +2565,7 @@ fn test_finding30_weak_subjectivity_window_expiry_rejected() {
         },
         privacy_salt: None,
         trusted_head_slot: Some(current_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 10),
+        privacy_mode: None,
     };
     let res_attest_stale = mosoo_core::verifier::handle_attest_state(attest_args);
     assert!(
@@ -2813,6 +2822,7 @@ fn test_session8_finding1_fabricated_committee_and_execution_roots_under_canonic
         },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let instruction = GuestInstruction::AttestStateAuthenticated {
@@ -2862,6 +2872,7 @@ fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_
         },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let res_stale_hist = handle_attest_state(args_stale_history);
@@ -2889,6 +2900,7 @@ fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_
         },
         privacy_salt: None,
         trusted_head_slot: Some(current_slot - 100), // Precedes instance!
+        privacy_mode: None,
     };
     let res_preceding = handle_attest_state(args_head_preceding);
     assert!(matches!(
@@ -2910,6 +2922,7 @@ fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_
         },
         privacy_salt: None,
         trusted_head_slot: Some(current_slot + 60_000), // 60,000 slots ahead of instance!
+        privacy_mode: None,
     };
     let res_head_stale = handle_attest_state(args_head_stale);
     assert!(matches!(
@@ -3284,6 +3297,7 @@ fn test_session9_finding1_adversarial_forged_store_fails_closed() {
         },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     // Authenticated attestation verifies instance against canonical pinned instance:
@@ -3506,12 +3520,18 @@ fn test_session10_finding2_finish_update_advances_authenticated_head_slot() {
     let res = handle_finish_update_authenticated(&mut store, &instance_pda, &job_pda, finish_args);
     assert!(res.is_ok(), "Finish update must succeed: {:?}", res.err());
 
-    // Verify that TrustedBridgeConfig in store was automatically updated to new_slot
+    // Verify that TrustedBridgeConfig in store was automatically updated for this instance
     let updated_config = TrustedBridgeConfig::load_strict(&store).unwrap();
     assert_eq!(
-        updated_config.get_trusted_head(chain_id),
+        updated_config.get_instance_trusted_head(&instance_pda),
         Some(new_slot),
-        "Authenticated head must automatically advance to finalized update slot"
+        "Authenticated instance head must automatically advance to finalized update slot"
+    );
+    // Confirm chain-wide anchor head was NOT altered by this single instance update (Finding 2 / Session 13)
+    assert_eq!(
+        updated_config.get_trusted_head(chain_id),
+        Some(5000),
+        "Chain-wide anchor head must remain isolated and unaltered by single instance update"
     );
 }
 
@@ -3560,6 +3580,7 @@ fn test_session10_finding3_core_loader_enforces_instance_pinning() {
         },
         privacy_salt: None,
         trusted_head_slot: Some(1000),
+        privacy_mode: None,
     };
 
     // Attestation against unpinned instance PDA on pinned chain MUST fail with UntrustedSourceInstance
@@ -3681,6 +3702,7 @@ fn test_session10_finding5_lez_runtime_adapter_dispatch_flow() {
         },
         privacy_salt: Some([0x77; 32]),
         trusted_head_slot: Some(11_435_000),
+        privacy_mode: None,
     };
 
     let res = adapter.dispatch_attest_state(&instance_pda, Some(&header_pda), attest_args);
@@ -3740,6 +3762,7 @@ fn test_session11_finding1_production_guest_dispatcher_rejects_unauthenticated_s
         },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     };
 
     let zero_pda_instruction = GuestInstruction::AttestStateAuthenticated {
@@ -3762,6 +3785,7 @@ fn test_session11_finding1_production_guest_dispatcher_rejects_unauthenticated_s
         expected_header_pda: None,
         args: AttestStateArgs {
             instance: unpinned_instance,
+            privacy_mode: None,
             ..args
         },
     };
@@ -3813,6 +3837,7 @@ fn test_session11_finding2_strict_config_loading_fails_closed_when_missing_or_un
         },
         privacy_salt: None,
         trusted_head_slot: Some(11_435_000),
+        privacy_mode: None,
     };
     let res_attest = handle_attest_state_authenticated(
         &empty_store,
@@ -4179,6 +4204,7 @@ fn test_session12_finding3_attest_state_rejects_untrusted_deposit_locker_and_dis
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
         trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: None,
     };
     let res = mosoo_core::verifier::handle_attest_state_authenticated(
         &store,
@@ -4219,6 +4245,7 @@ fn test_session12_finding3_attest_state_rejects_untrusted_deposit_locker_and_dis
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
         trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: None,
     };
     let res2 = mosoo_core::verifier::handle_attest_state_authenticated(
         &store,
@@ -4372,6 +4399,7 @@ fn test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e() {
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some([0x88; 32]),
         trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: None,
     };
     let attest_out = adapter
         .dispatch_attest_state(&instance_pda, Some(&header_pda), attest_args)
@@ -4433,6 +4461,7 @@ fn test_session12_finding5_privacy_mode_and_confidential_shielding_enforcement()
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some(salt),
         trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: None,
     };
     let out = mosoo_core::verifier::handle_attest_state(attest_confidential)
         .expect("Attest state with salt must succeed");
@@ -4499,6 +4528,7 @@ fn test_session12_finding5_privacy_mode_and_confidential_shielding_enforcement()
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: Some(salt),
         trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: None,
     };
     let out2 = mosoo_core::verifier::handle_attest_state(attest_settlement)
         .expect("Attest settlement with salt must succeed");
@@ -4514,4 +4544,352 @@ fn test_session12_finding5_privacy_mode_and_confidential_shielding_enforcement()
         stmt2.is_shielded(),
         "Settlement proof must shield addresses and provenance"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Session 13 Finding 1: Multi-Instance Trusted Head Isolation
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session13_finding1_multi_instance_trusted_head_isolation() {
+    use mosoo_core::types::{
+        BeaconBlockHeader, JobAccount, JobStage, LightClientUpdate, MillerOutput, SyncAggregate,
+    };
+    use mosoo_core::verifier::{handle_finish_update_authenticated, FinishUpdateArgs};
+
+    let mut store = MockStore::default();
+    let mut config = TrustedBridgeConfig::canonical();
+    let chain_id = 999_999; // Isolated test network without canonical instance pinning
+    let initial_slot = 5000;
+    config.register_trusted_checkpoint(chain_id, [0x11; 32]);
+    config.register_trusted_head(chain_id, initial_slot);
+
+    // Initialize Instance A
+    let instance_id_a = [0x0a; 32];
+    let mut inst_a = make_test_instance(chain_id, instance_id_a);
+    inst_a.current_slot = initial_slot;
+    inst_a.bootstrap_slot = initial_slot;
+    let pda_a = inst_a.pda_address();
+    config.register_trusted_head_for_instance(chain_id, pda_a, initial_slot);
+    store.set_account_with_owner(
+        &pda_a,
+        serde_json::to_vec(&inst_a).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // Initialize Instance B
+    let instance_id_b = [0x0b; 32];
+    let mut inst_b = make_test_instance(chain_id, instance_id_b);
+    inst_b.current_slot = initial_slot;
+    inst_b.bootstrap_slot = initial_slot;
+    let pda_b = inst_b.pda_address();
+    config.register_trusted_head_for_instance(chain_id, pda_b, initial_slot);
+    store.set_account_with_owner(
+        &pda_b,
+        serde_json::to_vec(&inst_b).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    config.save_to_store(&mut store).unwrap();
+
+    // Verify initial state: both instances and chain-wide head are at initial_slot
+    assert_eq!(config.get_instance_trusted_head(&pda_a), Some(initial_slot));
+    assert_eq!(config.get_instance_trusted_head(&pda_b), Some(initial_slot));
+    assert_eq!(config.get_trusted_head(chain_id), Some(initial_slot));
+
+    // Construct and finish update for Instance A to advanced slot (5064)
+    let new_slot = 5064;
+    let exec_header = mosoo_core::types::ExecutionPayloadHeader {
+        parent_hash: [0; 32],
+        fee_recipient: [0; 20],
+        state_root: [0x33; 32],
+        receipts_root: [0x44; 32],
+        logs_bloom: vec![0u8; 256],
+        prev_randao: [0; 32],
+        block_number: 1000,
+        gas_limit: 30_000_000,
+        gas_used: 10_000,
+        timestamp: 1_700_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0; 32],
+        block_hash: [0x55; 32],
+        transactions_root: [0; 32],
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+    };
+    let exec_branch = vec![[0x22; 32]; 4];
+    let exec_leaf =
+        mosoo_core::crypto::hash_tree_root_execution_payload_header(&exec_header).unwrap();
+    let exec_gindex = mosoo_core::crypto::execution_proof_gindex(chain_id, new_slot);
+    let body_root = mosoo_core::crypto::compute_branch_root(exec_leaf, &exec_branch, exec_gindex);
+
+    let finalized_header = BeaconBlockHeader {
+        slot: new_slot,
+        proposer_index: 10,
+        parent_root: [0x11; 32],
+        state_root: [0x22; 32],
+        body_root,
+    };
+    let branch = vec![[0x11; 32]; 6];
+    let gindex = mosoo_core::crypto::finalized_root_gindex(chain_id, new_slot + 1);
+    let finalized_leaf = mosoo_core::crypto::hash_tree_root_beacon_header(&finalized_header);
+    let attested_state_root =
+        mosoo_core::crypto::compute_branch_root(finalized_leaf, &branch, gindex);
+
+    let attested_header = BeaconBlockHeader {
+        slot: new_slot + 1,
+        proposer_index: 11,
+        parent_root: [0x44; 32],
+        state_root: attested_state_root,
+        body_root: [0x55; 32],
+    };
+
+    let update = LightClientUpdate {
+        attested_header,
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header,
+        finality_branch: branch,
+        execution_payload_header: Some(exec_header),
+        execution_branch: Some(exec_branch),
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0x11; 96],
+        },
+        signature_slot: new_slot + 1,
+    };
+
+    let mut ml = blst::blst_fp12::default();
+    unsafe {
+        let g1 = blst::blst_p1_affine_generator();
+        let g2 = blst::blst_p2_affine_generator();
+        blst::blst_miller_loop(&mut ml, g2, g1);
+    }
+    let mut miller_result = vec![0u8; 1152];
+    unsafe {
+        let p = &ml as *const _ as *const u8;
+        core::ptr::copy_nonoverlapping(p, miller_result.as_mut_ptr(), 576);
+        core::ptr::copy_nonoverlapping(p, miller_result.as_mut_ptr().add(576), 576);
+    }
+
+    let job_a = JobAccount {
+        instance_id: instance_id_a,
+        instance_chain_id: chain_id,
+        instance_slot: initial_slot,
+        stage: JobStage::Finish,
+        update_digest: mosoo_core::crypto::compute_update_digest(&update),
+        update,
+        miller_input: None,
+        miller_output: Some(MillerOutput { miller_result }),
+        nonce: 100,
+    };
+    let job_pda_a = job_a.pda_address();
+    store.set_account_with_owner(
+        &job_pda_a,
+        serde_json::to_vec(&job_a).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let finish_args = FinishUpdateArgs {
+        instance: inst_a,
+        job: job_a,
+    };
+    let res = handle_finish_update_authenticated(&mut store, &pda_a, &job_pda_a, finish_args);
+    assert!(
+        res.is_ok(),
+        "Finish update for Instance A must succeed: {:?}",
+        res.err()
+    );
+
+    // 1. Instance A's head MUST advance to new_slot
+    let updated_config = TrustedBridgeConfig::load_strict(&store).unwrap();
+    assert_eq!(
+        updated_config.get_instance_trusted_head(&pda_a),
+        Some(new_slot),
+        "Instance A head must be updated to 5064"
+    );
+
+    // 2. ISOLATION: Instance B's head MUST NOT advance or change
+    assert_eq!(
+        updated_config.get_instance_trusted_head(&pda_b),
+        Some(initial_slot),
+        "Instance B head must remain strictly unchanged at 5000"
+    );
+
+    // 3. ISOLATION: Chain-wide anchor head MUST NOT be mutated by Instance A
+    assert_eq!(
+        updated_config.get_trusted_head(chain_id),
+        Some(initial_slot),
+        "Chain-wide anchor head must remain strictly unchanged at 5000"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session 13 Finding 3: Confidential Mode Missing Salt Fails Closed
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session13_finding3_confidential_mode_missing_salt_fails_closed() {
+    use mosoo_core::types::{PrivacyMode, CANONICAL_SEPOLIA_CHECKPOINT_SLOT};
+
+    let mut instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    instance.bootstrap_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    instance.current_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    let header = make_test_header(&instance);
+
+    let balance_proof = empty_state_proof(ProofTarget::AccountBalance {
+        address: alloy_primitives::Address::repeat_byte(0x55),
+    });
+
+    // 1. Explicit Confidential mode without salt fails closed with InvalidBootstrap
+    let args_missing_salt = AttestStateArgs {
+        instance: instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: balance_proof.clone(),
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: None,
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: Some(PrivacyMode::Confidential),
+    };
+    let res = mosoo_core::verifier::handle_attest_state(args_missing_salt);
+    assert!(
+        matches!(res, Err(MosooError::InvalidBootstrap(_))),
+        "Confidential privacy mode without salt must fail closed"
+    );
+    let err_msg = res.unwrap_err().to_string();
+    assert!(
+        err_msg
+            .contains("Confidential privacy mode strictly requires a secret 256-bit privacy_salt"),
+        "Error message must specify missing salt requirement: {err_msg}"
+    );
+
+    // 2. Explicit AddressPrivate mode without salt also fails closed
+    let args_address_private_no_salt = AttestStateArgs {
+        instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: balance_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: None,
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: Some(PrivacyMode::AddressPrivate),
+    };
+    let res2 = mosoo_core::verifier::handle_attest_state(args_address_private_no_salt);
+    assert!(
+        matches!(res2, Err(MosooError::InvalidBootstrap(_))),
+        "AddressPrivate privacy mode without salt must fail closed"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session 13 Finding 2: Chain ID Support Alignment & Hoodi Deprecation Rejection
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session13_finding2_chain_id_support_and_hoodi_rejection() {
+    use mosoo_core::types::is_supported_chain_id;
+
+    // Supported networks
+    assert!(is_supported_chain_id(1), "Mainnet (1) must be supported");
+    assert!(
+        is_supported_chain_id(11_155_111),
+        "Sepolia (11155111) must be supported"
+    );
+    assert!(
+        is_supported_chain_id(17_000),
+        "Holesky (17000) must be supported"
+    );
+
+    // Deprecated / Unsupported networks fail closed
+    assert!(
+        !is_supported_chain_id(560_048),
+        "Hoodi (560048) must not be supported by core"
+    );
+    assert!(!is_supported_chain_id(0), "Chain 0 must not be supported");
+    assert!(
+        !is_supported_chain_id(999_999),
+        "Arbitrary chain must not be supported without custom config"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session 13 Finding 4: Confidential Journal Emits No Raw Value
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session13_finding4_confidential_journal_emits_no_raw_value() {
+    use mosoo_core::types::{PrivacyMode, CANONICAL_SEPOLIA_CHECKPOINT_SLOT};
+
+    let balance_addr = alloy_primitives::Address::repeat_byte(0x77);
+    let raw_balance = 250_000u64;
+    let (state_root, proof_nodes, account_rlp) =
+        mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(
+            balance_addr,
+            alloy_primitives::U256::from(raw_balance),
+        );
+
+    let mut instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    instance.bootstrap_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    instance.current_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    instance.current_execution_state_root = state_root.0;
+    instance.current_execution_block_hash = [0x11; 32];
+    instance.current_receipts_root = [0x22; 32];
+
+    let mut header = make_test_header(&instance);
+    header.execution_state_root = state_root.0;
+    header.execution_block_hash = [0x11; 32];
+    header.receipts_root = [0x22; 32];
+
+    let salt = [0x99u8; 32];
+    let balance_proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: balance_addr,
+        },
+        account_proof: proof_nodes,
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: Some(account_rlp),
+        storage_value: None,
+        receipt_value: None,
+    };
+
+    let args = AttestStateArgs {
+        instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: balance_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: Some(salt),
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+        privacy_mode: Some(PrivacyMode::Confidential),
+    };
+
+    let out = mosoo_core::verifier::handle_attest_state(args)
+        .expect("Confidential balance attestation with salt must succeed");
+    let stmt = match out {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => panic!("Expected StatementIssued"),
+    };
+
+    // Public structure invariant: verified_value must NOT leak the cleartext balance
+    let mut expected_bytes = [0u8; 32];
+    expected_bytes[24..].copy_from_slice(&raw_balance.to_be_bytes());
+    assert_ne!(
+        stmt.verified_value, expected_bytes,
+        "Verified value in public statement struct MUST NOT leak the cleartext balance"
+    );
+    assert_ne!(
+        stmt.verified_value, [0u8; 32],
+        "Verified value in public statement struct is replaced by the salted commitment"
+    );
+    assert!(stmt.is_value_shielded(), "Statement must be value-shielded");
+    assert!(stmt.is_shielded(), "Statement must be identity-shielded");
+
+    // Only someone with the secret witness salt can open the commitment
+    assert!(stmt.verify_salted_value_commitment(&salt, &expected_bytes));
+
+    let wrong_salt = [0x00; 32];
+    assert!(!stmt.verify_salted_value_commitment(&wrong_salt, &expected_bytes));
 }

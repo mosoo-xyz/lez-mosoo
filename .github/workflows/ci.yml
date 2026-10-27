@@ -39,7 +39,10 @@ jobs:
       - name: Run unit & integration tests (core, consumers, daemon, sequencer, lez_v04, cli, doc-tests)
         run: cargo test --workspace --verbose
 
-      - name: Run 4/4 LEZ v0.4 Conformance & Acceptance Tests (RFP-021 Deployment Gate)
+      - name: Run 55/55 Security Audit Hardening Tests (Oct 26-27 Comprehensive Defense)
+        run: cargo test --test audit_oct26_hardening_tests --verbose
+
+      - name: Run 18/18 LEZ v0.4 Conformance & Acceptance Tests (RFP-021 Deployment Gate)
         run: cargo test --test lez_v04_acceptance_tests --verbose
 
       - name: Run Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)

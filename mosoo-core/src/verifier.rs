@@ -56,6 +56,8 @@ pub struct AttestStateArgs {
     pub privacy_salt: Option<[u8; 32]>,
     #[serde(default)]
     pub trusted_head_slot: Option<u64>,
+    #[serde(default)]
+    pub privacy_mode: Option<crate::types::PrivacyMode>,
 }
 
 impl AttestStateArgs {
@@ -76,6 +78,7 @@ impl AttestStateArgs {
             predicate,
             privacy_salt: None,
             trusted_head_slot: None,
+            privacy_mode: None,
         }
     }
 
@@ -86,6 +89,23 @@ impl AttestStateArgs {
 
     pub fn with_trusted_head_slot(mut self, slot: u64) -> Self {
         self.trusted_head_slot = Some(slot);
+        self
+    }
+
+    pub fn with_privacy_mode(mut self, mode: crate::types::PrivacyMode) -> Self {
+        self.privacy_mode = Some(mode);
+        self
+    }
+
+    pub fn with_confidential_privacy(mut self, salt: [u8; 32]) -> Self {
+        self.privacy_mode = Some(crate::types::PrivacyMode::Confidential);
+        self.privacy_salt = Some(salt);
+        self
+    }
+
+    pub fn with_address_privacy(mut self, salt: [u8; 32]) -> Self {
+        self.privacy_mode = Some(crate::types::PrivacyMode::AddressPrivate);
+        self.privacy_salt = Some(salt);
         self
     }
 }
@@ -947,6 +967,27 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
 }
 
 pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, MosooError> {
+    // 0a. Guard: Confidential and AddressPrivate privacy modes strictly require a secret 256-bit privacy_salt (Finding 3 / Session 13)
+    if let Some(mode) = args.privacy_mode {
+        match mode {
+            crate::types::PrivacyMode::Confidential => {
+                if args.privacy_salt.is_none() {
+                    return Err(MosooError::InvalidBootstrap(
+                        "Confidential privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded value leakage".into(),
+                    ));
+                }
+            }
+            crate::types::PrivacyMode::AddressPrivate => {
+                if args.privacy_salt.is_none() {
+                    return Err(MosooError::InvalidBootstrap(
+                        "AddressPrivate privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded identity leakage".into(),
+                    ));
+                }
+            }
+            crate::types::PrivacyMode::Public => {}
+        }
+    }
+
     // 0. Instance Authentication & Authenticated Account Binding:
     // A caller cannot supply an unauthenticated, uninitialized, or fabricated InstanceAccount.
     if !args.instance.initialized {
@@ -1354,22 +1395,46 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         _ => {}
     }
 
-    // Privacy-preserving statement shielding (Finding 4 / Session 11 & Finding 5 / Session 12):
-    // Dual privacy modes:
-    // When privacy_salt is provided:
-    // - For settlement proofs (Erc20Deposit, NativeEthDeposit, Erc20Transfer), Address Privacy mode
-    //   shields account identity and subject keys while disclosing verified_value for EVM contract release.
-    // - For non-settlement proofs (AccountBalance, StorageSlot, ReceiptLog), Confidential Privacy mode
-    //   shields account identity AND commits verified_value with secret salt to eliminate journal value leakage.
-    let statement = if let Some(salt) = args.privacy_salt {
-        match args.proof.target {
-            inclusion::ProofTarget::Erc20Deposit { .. }
-            | inclusion::ProofTarget::NativeEthDeposit { .. }
-            | inclusion::ProofTarget::Erc20Transfer { .. } => statement.shield_with_salt(&salt),
-            _ => statement.shield_confidential(&salt),
+    // Privacy-preserving statement shielding (Finding 4 / Session 11, Finding 5 / Session 12, & Finding 4 / Session 13):
+    // Explicit Privacy Modes:
+    // - Confidential: Full confidentiality, blinds subject key, statement id, and verified value commitment.
+    //                 STRICTLY REQUIRES privacy_salt; missing salt FAILS CLOSED to prevent raw value leakage.
+    // - AddressPrivate: Blinds subject key and statement id; leaves verified_value in the clear for EVM token claim.
+    //                 STRICTLY REQUIRES privacy_salt; missing salt FAILS CLOSED to prevent identity leakage.
+    // - Public: Verifiable statement in the clear.
+    let effective_privacy_mode = args.privacy_mode.unwrap_or_else(|| {
+        if args.privacy_salt.is_some() {
+            match args.proof.target {
+                inclusion::ProofTarget::Erc20Deposit { .. }
+                | inclusion::ProofTarget::NativeEthDeposit { .. }
+                | inclusion::ProofTarget::Erc20Transfer { .. } => {
+                    crate::types::PrivacyMode::AddressPrivate
+                }
+                _ => crate::types::PrivacyMode::Confidential,
+            }
+        } else {
+            crate::types::PrivacyMode::Public
         }
-    } else {
-        statement
+    });
+
+    let statement = match effective_privacy_mode {
+        crate::types::PrivacyMode::Confidential => {
+            let salt = args.privacy_salt.ok_or_else(|| {
+                MosooError::InvalidBootstrap(
+                    "Confidential privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded value leakage".into(),
+                )
+            })?;
+            statement.shield_confidential(&salt)
+        }
+        crate::types::PrivacyMode::AddressPrivate => {
+            let salt = args.privacy_salt.ok_or_else(|| {
+                MosooError::InvalidBootstrap(
+                    "AddressPrivate privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded identity leakage".into(),
+                )
+            })?;
+            statement.shield_with_salt(&salt)
+        }
+        crate::types::PrivacyMode::Public => statement,
     };
 
     Ok(InstructionOutput::StatementIssued(statement))
@@ -1465,12 +1530,18 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     if !config.is_trusted_or_unpinned(args.instance.chain_id, instance_pda) {
         return Err(MosooError::UntrustedSourceInstance);
     }
-    let anchor_head = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
-        MosooError::InvalidBootstrap(format!(
-            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
-            args.instance.chain_id
-        ))
-    })?;
+    // Per-instance freshness anchor resolution (Finding 1 / Session 13):
+    // Prioritizes instance-specific trusted head, falling back to chain-wide anchor head.
+    let anchor_head = config
+        .get_instance_trusted_head(instance_pda)
+        .or_else(|| config.get_trusted_head(args.instance.chain_id))
+        .ok_or_else(|| {
+            MosooError::InvalidBootstrap(format!(
+                "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for instance {} (chain_id {})",
+                hex::encode(instance_pda),
+                args.instance.chain_id
+            ))
+        })?;
     let effective_head = match args.trusted_head_slot {
         Some(s) => {
             if s < anchor_head {
@@ -1657,12 +1728,18 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
             return Err(MosooError::UntrustedSourceInstance);
         }
     }
-    let anchor_head = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
-        MosooError::InvalidBootstrap(format!(
-            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
-            args.instance.chain_id
-        ))
-    })?;
+    // Per-instance freshness anchor resolution (Finding 1 / Session 13):
+    // Prioritizes instance-specific trusted head, falling back to chain-wide anchor head.
+    let anchor_head = config
+        .get_instance_trusted_head(instance_pda)
+        .or_else(|| config.get_trusted_head(args.instance.chain_id))
+        .ok_or_else(|| {
+            MosooError::InvalidBootstrap(format!(
+                "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for instance {} (chain_id {})",
+                hex::encode(instance_pda),
+                args.instance.chain_id
+            ))
+        })?;
     let effective_head = match args.trusted_head_slot {
         Some(s) => {
             if s < anchor_head {

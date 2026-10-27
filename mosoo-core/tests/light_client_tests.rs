@@ -1176,6 +1176,7 @@ fn test_end_to_end_proof_derivation_to_reference_consumer_claim() {
         predicate: Predicate::AtLeast { min: [0; 32] },
         privacy_salt: None,
         trusted_head_slot: None,
+        privacy_mode: None,
     })
     .expect("handle_attest_state must succeed");
 

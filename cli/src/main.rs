@@ -32,7 +32,7 @@ struct Cli {
 enum Commands {
     /// Run an end-to-end attestation & consumer demo
     Demo {
-        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi)
+        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
         /// Deposit amount in token units
@@ -44,7 +44,7 @@ enum Commands {
     },
     /// Attest Ethereum state, account balance, or receipt logs with MPT proof to LEZ (RFP-021)
     Attest {
-        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi)
+        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
         /// Target Ethereum address (0x...)
@@ -86,7 +86,7 @@ enum Commands {
     },
     /// Offline local simulation of BLS light client update and MPT proof verification (RFP-021)
     DryRun {
-        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi)
+        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
         /// Optional path to a JSON LightClientUpdate file
@@ -95,7 +95,7 @@ enum Commands {
     },
     /// Manually submit a verified consensus update to the LEZ Sequencer (RFP-021)
     SubmitUpdate {
-        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi)
+        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
         /// Optional path to a JSON LightClientUpdate file (defaults to canonical testnet update)
@@ -110,13 +110,13 @@ enum Commands {
     },
     /// Display system configuration, fork schedules, contract addresses, and weak-subjectivity parameters (RFP-021)
     Config {
-        /// Filter config display by chain ID (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi)
+        /// Filter config display by chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
     },
     /// Independently verify a weak-subjectivity bootstrap checkpoint against consensus rules and public beacon data (RFP-021)
     VerifyCheckpoint {
-        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 560048 = Hoodi)
+        /// Chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
         /// Optional path to a JSON Bootstrap checkpoint file (defaults to canonical testnet fixture)
@@ -240,7 +240,6 @@ fn run_simulation_demo(chain_id: u64, amount: u64) -> anyhow::Result<()> {
     let chain_name = match chain_id {
         1 => "Ethereum Mainnet",
         11_155_111 => "Sepolia Testnet",
-        560_048 => "Hoodi Testnet",
         17_000 => "Holesky Testnet",
         _ => "Custom EVM Chain",
     };
@@ -728,7 +727,7 @@ fn run_info() -> anyhow::Result<()> {
     println!("- Smart Contract:    SPEL framework (Logos Execution Zone)");
     println!("- Cryptography:      blst (optimized pairing & hash-to-curve)");
     println!("- State Prover:      alloy-trie (Merkle-Patricia Trie for EVM state)");
-    println!("- Supported Chains:  Ethereum Mainnet (1), Sepolia (11155111), Holesky (17000), Hoodi (560048)");
+    println!("- Supported Chains:  Ethereum Mainnet (1), Sepolia (11155111), Holesky (17000)");
     println!("- Fork Schedules:    Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas");
     println!("- Licensing:         MIT / Apache-2.0 dual license");
     println!("- Test Evidence:     193 passing automated tests (38/38 adversarial, 6 two-way bridge, 4/4 LEZ v0.4 acceptance, 5/5 privacy, 14 daemon, 21 light-client, 4 E2E sequencer, 27 ERC-20, 30 Ether, 38 core unittests, 3 CLI, 3 doctests)");
@@ -1575,6 +1574,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         predicate,
         privacy_salt: None,
         trusted_head_slot: Some(args.slot.max(bootstrap_slot)),
+        privacy_mode: None,
     };
 
     println!(
@@ -2024,7 +2024,7 @@ fn run_config(chain_id: u64) -> anyhow::Result<()> {
             6_800_000,
             11_296_768,
         ),
-        560_048 => ("Hoodi Testnet", 1_000_000, 500_000, 800_000, 0),
+        17_000 => ("Holesky Testnet", 3_400_000, 1_600_000, 2_000_000, 0),
         _ => ("Custom EVM Chain", 0, 0, 0, 0),
     };
 
