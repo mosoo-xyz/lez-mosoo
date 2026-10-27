@@ -136,7 +136,7 @@ def main():
     # Default Ethereum RPC for Sepolia if not provided
     eth_rpc = args.eth_rpc
     if not eth_rpc and args.chain_id == 11155111:
-        eth_rpc = "https://ethereum-sepolia-rpc.publicnode.com"
+        eth_rpc = "https://gateway.tenderly.co/public/sepolia"
     elif not eth_rpc and args.chain_id == 1:
         eth_rpc = "https://ethereum-rpc.publicnode.com"
 

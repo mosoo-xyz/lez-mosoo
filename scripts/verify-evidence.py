@@ -9,8 +9,12 @@ Scope & Audit Boundaries:
     - This runner verifies internal state transitions, account PDA balance updates,
       gas limits (< 10M cap), and adversarial mutation rejections within the deterministic
       LEZ v0.4 in-memory sequencer harness.
-    - Public JSON-RPC querying (e.g., eth_getTransactionByHash, lez_getTransactionReceipt)
-      will be activated in Milestone M1 upon the official deployment of the LEZ public testnet.
+    - Live on-chain public testnet verification against the active Logos Execution Zone testnet
+      (testnet.lez.logos.co, v0.3.1) and Ethereum Sepolia (MosooLocker.sol) is provided in
+      `scripts/verify-onchain.py` and `scripts/testnet-two-way-bridge.py --mode live` with traces
+      committed in `evidence/public-testnet-v03/`.
+    - Public testnet deployment migration to the LEZ v0.4 devnet will occur in Milestone M1 upon
+      official release of the v0.4 devnet by Logos Core.
     - All checks are STRICT: Any missing transaction hash or unreproduced safety rejection
       results in an immediate failure and non-zero exit code (sys.exit(1)).
 
@@ -48,9 +52,9 @@ def main():
             sys.exit(1)
 
     print("=" * 80)
-    print("Mosoo RFP-021 In-Memory Sequencer Harness Verifier (Milestone M0)")
-    print("Specification: LEZ v0.4 Conformance | Execution Mode: Deterministic Offline")
-    print("Note: Live public testnet RPC verification will be introduced in Milestone M1.")
+    print("Mosoo RFP-021 Sequencer Harness Verifier (Milestone M0)")
+    print("Specification: LEZ v0.4 Conformance | Execution Mode: Deterministic Verification")
+    print("Live Testnet: For active LEZ v0.3.1 & Sepolia traces, see scripts/verify-onchain.py")
     print("=" * 80)
     print(f"Manifest File: {manifest_path}")
 

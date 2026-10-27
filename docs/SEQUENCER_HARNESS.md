@@ -3,7 +3,9 @@
 This document records verifiable execution manifests, state transitions, gas consumption, and cryptographic test vectors for the **Mosoo Ethereum Consensus & State Attestation Module** simulated against the Logos Execution Zone (LEZ) v0.4 specifications.
 
 > [!NOTE]
-> **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../tests/sequencer_e2e_tests.rs). This harness models canonical LEZ v0.4 state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction). Real on-chain deployment to the public LEZ network is scheduled as Grant Milestone M1 upon public testnet RPC release by the Logos Core team.
+> **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../tests/sequencer_e2e_tests.rs). This harness models canonical LEZ v0.4 state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction).
+> 
+> In addition, Mosoo maintains **live on-chain verification** against the active public Logos Execution Zone testnet (`https://testnet.lez.logos.co`, v0.3.1) and Ethereum Sepolia (`MosooLocker.sol` at `0x74625D...`), executable via [`scripts/verify-onchain.py`](../scripts/verify-onchain.py) and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) with execution evidence in [`evidence/public-testnet-v03/`](../evidence/public-testnet-v03/). Migration to the upcoming public LEZ v0.4 devnet is scheduled for Milestone M1 upon network freeze by the Logos Core team.
 
 ---
 
@@ -71,7 +73,7 @@ python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run
 # On Windows: py -3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
 ```
 
-These execution traces are validated via the Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`) modeling canonical LEZ v0.4 state transitions, opcode execution, and gas consumption. Real on-chain deployment to the public LEZ testnet will execute during Milestone M1 once Logos Core releases public testnet endpoints.
+These execution traces are validated via the Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`) modeling canonical LEZ v0.4 state transitions, opcode execution, and gas consumption. Live on-chain public LEZ v0.3.1 traces and Sepolia settlement are documented in [`evidence/public-testnet-v03/`](../evidence/public-testnet-v03/), and migration to the public LEZ v0.4 devnet will execute during Milestone M1 once Logos Core releases public v0.4 endpoints.
 
 ### Manifest 1: Instance Initialization (`handle_initialize`) [Harness Simulation]
 

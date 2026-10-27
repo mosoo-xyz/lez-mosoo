@@ -83,11 +83,12 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **317 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **333 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
 - **Complete Test Matrix**: Authoritative inventory across all subsystems includes 58 audit hardening tests, 42 adversarial mutation tests, 22 two-way bridge tests, 22 light-client tests, 15 daemon tests, 5 privacy tests, 4 sequencer E2E tests, 60 core unit tests, 42 ERC-20 receiver unit tests, 39 Ether receiver unit tests, 5 CLI unit tests, and 3 doc tests; plus 16 Foundry EVM suite tests for MosooLocker.
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
+- **Public LEZ v0.3.1 Testnet Verification & Two-Way Settlement Evidence (`evidence/public-testnet-v03/`)**: Live on-chain consensus, block state, and fee verification against the active public LEZ testnet sequencer (`https://testnet.lez.logos.co`, block height > 68,399) via `scripts/verify-onchain.py`, paired with live on-chain Sepolia settlement verification of `MosooLocker.sol` (`0x74625D146B8d9413F3c3976B323d94A739be7856`) via `scripts/testnet-two-way-bridge.py --mode live`.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 
-- **Live Public Testnet Deployment (Milestone M1)**: Dependent on Logos Core releasing public LEZ v0.4 devnet RPC endpoints and network freeze. All current traces are verified via the in-memory sequencer harness; live testnet deployment executes in M1.
+- **Public LEZ v0.4 Devnet Migration (Milestone M1)**: Upgrade from the currently verified public LEZ v0.3.1 testnet to the upcoming public LEZ v0.4 devnet upon network freeze by the Logos Core team.
 - **Logos Core Module Catalog & SPEL Integration (Milestone M2)**: Upstreaming into the official Logos Core module catalog and SPEL compiler tooling.
 - **Production Daemon Telemetry (Milestone M3)**: Multi-RPC weighted failover, automated re-org detection, and Prometheus metrics.
 - **Independent Security Audit (Milestone M4)**: Formal third-party engagement with an external security firm ($10,000 / 3 weeks budgeted upon grant approval).
@@ -103,7 +104,7 @@ To ensure absolute transparency regarding what is functioning today versus what 
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | M0 (Delivered) | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
 | **Execution Manifest & Verification Script** | M0 (Delivered) | Hardened with Strict Exit Codes | Offline Python/Bash runner (`scripts/verify-evidence.py`) |
-| **Public LEZ Testnet RPC & On-Chain Deployment** | M1 (Grant) | Architecture Planned | Live JSON-RPC queries to public LEZ testnet nodes |
+| **Public LEZ Testnet Verification & Two-Way Bridge** | M0 (Delivered) | Live on Public LEZ v0.3.1 & Sepolia | Live RPC queries (`scripts/verify-onchain.py`) & bridge pipeline (`scripts/testnet-two-way-bridge.py --mode live`); v0.4 devnet upgrade in M1 |
 | **SPEL IDL Upstreaming & Logos Core Modules** | M2 (Grant) | IDL Specification Defined | Integration with Logos Core module compiler |
 | **Production Consensus Daemon Telemetry** | M3 (Grant) | Prototype Working | Live Prometheus telemetry & automated re-org handler |
 | **Third-Party Security Audit** | M4 (Grant) | Budget Allocated (\$10,000 / 3 wks) | Independent security audit firm certification |
@@ -149,7 +150,7 @@ subject_key = block_hash || slot || tx_index || log_index || emitter || topic0
   - Mosoo provides pseudonymous nullifier tracking, **not** a zero-knowledge mixer or shielded pool.
   - The underlying Ethereum transaction is public on the source chain.
   - External network observers can perform off-chain correlation if deposit amounts and claim timestamps closely match. True unlinkability in production requires relayer batching or third-party relayer aggregation.
-  - These invariants are verified in [`tests/privacy_and_correlation_tests.rs`](tests/privacy_and_correlation_tests.rs) and the sequencer harness. Live public testnet validation will occur in Milestone M1.
+  - These invariants are verified in [`tests/privacy_and_correlation_tests.rs`](tests/privacy_and_correlation_tests.rs), the sequencer harness, and the live two-way bridge settlement pipeline (`evidence/public-testnet-v03/`). Full public v0.4 devnet upgrade validation will occur in Milestone M1.
 
 ---
 

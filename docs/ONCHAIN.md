@@ -56,8 +56,8 @@ RFP-021 strictly mandates that all light client operations execute within a sing
 
 ---
 
-## 4. Testnet Versioning: v0.3 Testnet vs v0.4 Architecture
+## 4. Testnet Versioning: v0.3.1 Live Testnet vs v0.4 Target Architecture
 
-- **LEZ v0.3 Testnet**: Currently running live on `testnet.lez.logos.co` with block heights exceeding 61,000. Genesis block traces deploy `/LEZ/v0.3/GenesisDeposit`.
-- **LEZ v0.4 Architecture**: Specified in RFP-021 with strict 10M gas cap per transaction and SPEL module standards. Mosoo's deterministic sequencer harness (`tests/sequencer_e2e_tests.rs`) executes the exact RISC Zero zkVM guest binaries under this specification.
-- **Milestone M1**: Live contract deployment on the public testnet will execute in Milestone M1 as Logos Core prepares network freeze and public devnet endpoints.
+- **LEZ v0.3.1 Live Testnet (Delivered in M0)**: Currently running live on `testnet.lez.logos.co` with block heights exceeding 68,390. Mosoo's live verification suite (`scripts/verify-onchain.py` and `scripts/testnet-two-way-bridge.py --mode live`) actively connects to this endpoint and verifies consensus state, block progression, single-tx gas caps (< 10M), and Ethereum Sepolia bridge settlement (`MosooLocker.sol` at `0x74625D...`). Full execution logs are committed in `evidence/public-testnet-v03/`.
+- **LEZ v0.4 Architecture (Delivered in M0)**: Specified in RFP-021 with strict 10M gas cap per transaction and SPEL module standards. Mosoo's deterministic sequencer harness (`tests/sequencer_e2e_tests.rs`) executes the exact RISC Zero zkVM guest binaries under this specification.
+- **Milestone M1**: Seamless migration and continuous deployment to the public LEZ v0.4 devnet once Logos Core completes the v0.4 network freeze and public devnet release.
