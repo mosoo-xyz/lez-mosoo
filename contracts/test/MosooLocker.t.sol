@@ -24,6 +24,9 @@ abstract contract Test {
     function assertTrue(bool condition, string memory err) internal pure {
         require(condition, err);
     }
+    function assertFalse(bool condition, string memory err) internal pure {
+        require(!condition, err);
+    }
 }
 
 import "../MosooLocker.sol";

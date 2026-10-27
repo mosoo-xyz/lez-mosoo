@@ -246,7 +246,7 @@ contract MosooLocker {
     error InvalidGuardian();
     error GuardianMustNotBeOwner();
     error LegacyRoutesDisabled();
-    error LegacyRoutesPermanentlyRetired();
+    error LegacyRoutesArePermanentlyRetired();
 
     // --- Modifiers ---
 
@@ -1561,7 +1561,7 @@ contract MosooLocker {
 
     /// @notice Governance control to enable or disable legacy V1 withdrawal routes (Finding 5)
     function setLegacyRoutesEnabled(bool enabled) external onlyOwner {
-        if (enabled && legacyRoutesPermanentlyDisabled) revert LegacyRoutesPermanentlyRetired();
+        if (enabled && legacyRoutesPermanentlyDisabled) revert LegacyRoutesArePermanentlyRetired();
         legacyRoutesEnabled = enabled;
         emit LegacyRoutesToggled(enabled);
     }
