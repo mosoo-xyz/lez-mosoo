@@ -1597,16 +1597,7 @@ pub fn verify_native_eth_deposit_authenticated_store_details<S: mosoo_core::type
     nullifiers: &EtherNullifierSet,
     config: &TrustedBridgeConfig,
 ) -> Result<(EthDepositReceipt, VerifiedStatement), EtherReceiverError> {
-    // 1. Strictly load authentic InstanceAccount from persistent store first (Finding P0)
-    let authentic_instance =
-        mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
-            .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
-
-    if !is_supported_chain_id(authentic_instance.chain_id) {
-        return Err(EtherReceiverError::WrongChain(authentic_instance.chain_id));
-    }
-
-    // 2. Strictly load program-owned TrustedBridgeConfig from persistent storage (Finding P0/P1)
+    // 1. Strictly load program-owned TrustedBridgeConfig from persistent storage (Finding P0/P1)
     let loaded_config = TrustedBridgeConfig::load_strict(store).map_err(|e| {
         EtherReceiverError::AttestationFailed(format!(
             "program-owned config verification failed: {e}"
@@ -1618,6 +1609,15 @@ pub fn verify_native_eth_deposit_authenticated_store_details<S: mosoo_core::type
             "caller-supplied configuration does not match persistent program-owned configuration"
                 .into(),
         ));
+    }
+
+    // 2. Strictly load authentic InstanceAccount from persistent store (Finding P0)
+    let authentic_instance =
+        mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
+            .map_err(|e| EtherReceiverError::AttestationFailed(e.to_string()))?;
+
+    if !is_supported_chain_id(authentic_instance.chain_id) {
+        return Err(EtherReceiverError::WrongChain(authentic_instance.chain_id));
     }
 
     // 3. Guard: Light-client instance must be pinned in program-owned TrustedBridgeConfig

@@ -1599,12 +1599,7 @@ pub fn verify_authenticated_store_erc20_claim_details<S: mosoo_core::types::Acco
     nullifiers: &NullifierSet,
     config: &TrustedBridgeConfig,
 ) -> Result<(VerifiedStatement, u64), ReceiverError> {
-    // 1. Strictly load authentic InstanceAccount from persistent store first (Finding P0)
-    let authentic_instance =
-        mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
-            .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
-
-    // 2. Strictly load program-owned TrustedBridgeConfig from persistent storage (Finding P0/P1)
+    // 1. Strictly load program-owned TrustedBridgeConfig from persistent storage (Finding P0/P1)
     let loaded_config = TrustedBridgeConfig::load_strict(store).map_err(|e| {
         ReceiverError::AttestationFailed(format!("program-owned config verification failed: {e}"))
     })?;
@@ -1615,6 +1610,11 @@ pub fn verify_authenticated_store_erc20_claim_details<S: mosoo_core::types::Acco
                 .into(),
         ));
     }
+
+    // 2. Strictly load authentic InstanceAccount from persistent store (Finding P0)
+    let authentic_instance =
+        mosoo_core::verifier::verify_instance_account_authenticity(store, instance_pda)
+            .map_err(|e| ReceiverError::AttestationFailed(e.to_string()))?;
 
     // 3. Guard: Light-client instance must be pinned in program-owned TrustedBridgeConfig
     if !loaded_config.is_trusted_instance(authentic_instance.chain_id, instance_pda) {

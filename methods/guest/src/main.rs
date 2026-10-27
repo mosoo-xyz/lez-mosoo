@@ -46,12 +46,19 @@ fn main() {
 
     let result: Result<InstructionOutput, MosooError> = dispatch_guest_instruction(instruction);
 
-    // Privacy-preserving public journal emission (RFP-021 Functionality #8 & Finding 4):
+    // Privacy-preserving public journal emission (RFP-021 Functionality #8, Finding 4, & Finding 5 / Session 10):
     // Statements emitted to public zkVM journal are automatically shielded so that
     // Ethereum addresses, event logs, subject keys, and LEZ recipients are never exposed publicly.
+    // In production privacy mode, caller supplies a 256-bit secret salt in AttestStateArgs, ensuring
+    // non-correlation across repeated statements and immunity to dictionary matching.
+    // If the statement is already salted-shielded, its blinding is preserved.
     let safe_result = result.map(|output| match output {
         InstructionOutput::StatementIssued(stmt) => {
-            InstructionOutput::StatementIssued(stmt.shield())
+            if stmt.is_shielded() {
+                InstructionOutput::StatementIssued(stmt)
+            } else {
+                InstructionOutput::StatementIssued(stmt.shield())
+            }
         }
         other => other,
     });

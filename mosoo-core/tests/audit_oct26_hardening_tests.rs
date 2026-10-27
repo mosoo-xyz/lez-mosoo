@@ -518,6 +518,10 @@ fn test_finding7_job_account_collision_prevents_overwrite() {
         MOSOO_PROGRAM_ID,
     );
 
+    let mut config = TrustedBridgeConfig::canonical();
+    config.register_trusted_head(ETH_SEPOLIA_CHAIN_ID, 1000);
+    config.save_to_store(&mut store).unwrap();
+
     let dummy_header = mosoo_core::types::BeaconBlockHeader {
         slot: 1005,
         proposer_index: 1,
@@ -3268,4 +3272,388 @@ fn test_session9_finding1_adversarial_forged_store_fails_closed() {
         res.is_err(),
         "Attestation with fabricated instance in untrusted store must fail closed"
     );
+}
+
+#[test]
+fn test_session10_finding1_initialization_rejects_bootstrap_exceeding_canonical_weak_subjectivity()
+{
+    use mosoo_core::types::{
+        BeaconBlockHeader, InitializeArgs, CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
+        ETH_MAINNET_CHAIN_ID,
+    };
+    use mosoo_core::verifier::handle_initialize;
+
+    let committee = make_valid_committee();
+    let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee).unwrap();
+    let branch = vec![[0x11; 32]; 5];
+    let state_root = mosoo_core::crypto::compute_branch_root(leaf, &branch, 54);
+
+    let bootstrap_slot = 10_000_000;
+    let bootstrap_header = BeaconBlockHeader {
+        slot: bootstrap_slot,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root,
+        body_root: [0; 32],
+    };
+    let checkpoint_root = mosoo_core::crypto::hash_tree_root_beacon_header(&bootstrap_header);
+
+    // Case 1: Within canonical weak subjectivity window (54,000 slots) -> Succeeds
+    let valid_args = InitializeArgs {
+        instance_id: [0x11; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header: bootstrap_header.clone(),
+        trusted_checkpoint_root: checkpoint_root,
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: bootstrap_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
+    };
+    let init_res = handle_initialize(valid_args);
+    assert!(
+        init_res.is_ok(),
+        "Initialization within 54,000 slots must succeed"
+    );
+
+    // Case 2: Exceeding canonical weak subjectivity window (54,001 slots / > 7.5 days) -> Fails closed
+    let stale_args = InitializeArgs {
+        instance_id: [0x22; 32],
+        network_config: None,
+        chain_id: ETH_MAINNET_CHAIN_ID,
+        bootstrap_header,
+        trusted_checkpoint_root: checkpoint_root,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: bootstrap_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 1,
+    };
+    let stale_res = handle_initialize(stale_args);
+    assert!(
+        matches!(
+            stale_res.unwrap_err(),
+            MosooError::WeakSubjectivityExpired {
+                update_slot,
+                current_slot
+            } if update_slot == bootstrap_slot && current_slot == bootstrap_slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS + 1
+        ),
+        "Bootstrap checkpoint exceeding 54,000 slots must fail closed with WeakSubjectivityExpired"
+    );
+}
+
+#[test]
+fn test_session10_finding2_finish_update_advances_authenticated_head_slot() {
+    use mosoo_core::types::{
+        BeaconBlockHeader, ExecutionPayloadHeader, JobAccount, JobStage, LightClientUpdate,
+        MillerOutput, SyncAggregate,
+    };
+    use mosoo_core::verifier::{handle_finish_update_authenticated, FinishUpdateArgs};
+
+    let mut store = MockStore::default();
+    let instance_id = [0x55; 32];
+    let chain_id = 888888;
+    let initial_slot = 5000;
+
+    let mut instance = make_test_instance(chain_id, instance_id);
+    instance.current_slot = initial_slot;
+    instance.bootstrap_slot = initial_slot;
+    let instance_pda = instance.pda_address();
+
+    store.set_account_with_owner(
+        &instance_pda,
+        serde_json::to_vec(&instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // Initial bridge config with head registered at 5000
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    bridge_cfg.register_trusted_head(chain_id, initial_slot);
+    bridge_cfg.save_to_store(&mut store).unwrap();
+
+    let new_slot = 5064;
+
+    let exec_header = ExecutionPayloadHeader {
+        parent_hash: [0; 32],
+        fee_recipient: [0; 20],
+        state_root: [0x33; 32],
+        receipts_root: [0x44; 32],
+        logs_bloom: vec![0u8; 256],
+        prev_randao: [0; 32],
+        block_number: 1000,
+        gas_limit: 30_000_000,
+        gas_used: 10_000,
+        timestamp: 1_700_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0; 32],
+        block_hash: [0x55; 32],
+        transactions_root: [0; 32],
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+    };
+    let exec_branch = vec![[0x22; 32]; 4];
+    let exec_leaf =
+        mosoo_core::crypto::hash_tree_root_execution_payload_header(&exec_header).unwrap();
+    let exec_gindex = mosoo_core::crypto::execution_proof_gindex(chain_id, new_slot);
+    let body_root = mosoo_core::crypto::compute_branch_root(exec_leaf, &exec_branch, exec_gindex);
+
+    let finalized_header = BeaconBlockHeader {
+        slot: new_slot,
+        proposer_index: 10,
+        parent_root: [0x11; 32],
+        state_root: [0x22; 32],
+        body_root,
+    };
+
+    let branch = vec![[0x11; 32]; 6];
+    let gindex = mosoo_core::crypto::finalized_root_gindex(chain_id, new_slot + 1);
+    let finalized_leaf = mosoo_core::crypto::hash_tree_root_beacon_header(&finalized_header);
+    let attested_state_root =
+        mosoo_core::crypto::compute_branch_root(finalized_leaf, &branch, gindex);
+
+    let attested_header = BeaconBlockHeader {
+        slot: new_slot + 1,
+        proposer_index: 11,
+        parent_root: [0x44; 32],
+        state_root: attested_state_root,
+        body_root: [0x55; 32],
+    };
+
+    let update = LightClientUpdate {
+        attested_header,
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header,
+        finality_branch: branch,
+        execution_payload_header: Some(exec_header),
+        execution_branch: Some(exec_branch),
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0x11; 96],
+        },
+        signature_slot: new_slot + 1,
+    };
+
+    // Construct valid Fp12 miller results such that blst_fp12_finalverify returns true
+    let mut ml = blst::blst_fp12::default();
+    unsafe {
+        let g1 = blst::blst_p1_affine_generator();
+        let g2 = blst::blst_p2_affine_generator();
+        blst::blst_miller_loop(&mut ml, g2, g1);
+    }
+    let mut miller_result = vec![0u8; 1152];
+    unsafe {
+        let p = &ml as *const _ as *const u8;
+        core::ptr::copy_nonoverlapping(p, miller_result.as_mut_ptr(), 576);
+        core::ptr::copy_nonoverlapping(p, miller_result.as_mut_ptr().add(576), 576);
+    }
+
+    let job = JobAccount {
+        instance_id,
+        instance_chain_id: chain_id,
+        instance_slot: initial_slot,
+        stage: JobStage::Finish,
+        update_digest: mosoo_core::crypto::compute_update_digest(&update),
+        update,
+        miller_input: None,
+        miller_output: Some(MillerOutput { miller_result }),
+        nonce: 101,
+    };
+    let job_pda = job.pda_address();
+
+    store.set_account_with_owner(
+        &job_pda,
+        serde_json::to_vec(&job).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let finish_args = FinishUpdateArgs {
+        instance: instance.clone(),
+        job,
+    };
+
+    let res = handle_finish_update_authenticated(&mut store, &instance_pda, &job_pda, finish_args);
+    assert!(res.is_ok(), "Finish update must succeed: {:?}", res.err());
+
+    // Verify that TrustedBridgeConfig in store was automatically updated to new_slot
+    let updated_config = TrustedBridgeConfig::load_strict(&store).unwrap();
+    assert_eq!(
+        updated_config.get_trusted_head(chain_id),
+        Some(new_slot),
+        "Authenticated head must automatically advance to finalized update slot"
+    );
+}
+
+#[test]
+fn test_session10_finding3_core_loader_enforces_instance_pinning() {
+    use mosoo_core::types::Predicate;
+    use mosoo_core::verifier::{handle_attest_state_authenticated, AttestStateArgs};
+
+    let mut store = MockStore::default();
+
+    // Canonical Sepolia instance is pinned to CANONICAL_SEPOLIA_MOSOO_INSTANCE.
+    // Create an unpinned instance under Sepolia chain_id (11155111) with a different instance_id.
+    let unpinned_instance_id = [0x99; 32];
+    let unpinned_instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, unpinned_instance_id);
+    let unpinned_pda = unpinned_instance.pda_address();
+
+    assert_ne!(unpinned_pda, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+
+    store.set_account_with_owner(
+        &unpinned_pda,
+        serde_json::to_vec(&unpinned_instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let header = make_test_header(&unpinned_instance);
+    let header_pda = header.pda_address();
+    store.set_account_with_owner(
+        &header_pda,
+        serde_json::to_vec(&header).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let args = AttestStateArgs {
+        instance: unpinned_instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x55),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: None,
+        trusted_head_slot: Some(1000),
+    };
+
+    // Attestation against unpinned instance PDA on pinned chain MUST fail with UntrustedSourceInstance
+    let res = handle_attest_state_authenticated(&store, &unpinned_pda, Some(&header_pda), args);
+    assert!(
+        matches!(res.unwrap_err(), MosooError::UntrustedSourceInstance),
+        "Attestation against unpinned instance on Sepolia must be rejected with UntrustedSourceInstance"
+    );
+}
+
+#[test]
+fn test_session10_finding4_salted_privacy_shielding_prevents_dictionary_matching() {
+    use mosoo_core::types::{StatementBinding, VerifiedStatement};
+
+    let depositor_address = [0x42u8; 20];
+    let mut subject_key = [0u8; 32];
+    subject_key[12..32].copy_from_slice(&depositor_address);
+
+    let statement = VerifiedStatement {
+        chain_id: 11155111,
+        genesis_validators_root: [0x11; 32],
+        source_instance_id: [0x22; 32],
+        source_instance_pda: [0x33; 32],
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0x44; 32],
+        predicate_holds: true,
+        verified_value: [0x55; 32],
+        subject_key,
+        proof_type_tag: 1,
+        binding: StatementBinding::Storage {
+            contract: [0x66; 20],
+            slot: [0x77; 32],
+        },
+    };
+
+    let salt_a = [0x11u8; 32];
+    let salt_b = [0x22u8; 32];
+
+    let shielded_a = statement.shield_with_salt(&salt_a);
+    let shielded_b = statement.shield_with_salt(&salt_b);
+
+    // 1. Outputs for same depositor under different salts are completely unlinkable
+    assert_ne!(
+        shielded_a.subject_key, shielded_b.subject_key,
+        "Blinded subject keys under distinct salts must be distinct"
+    );
+    assert_ne!(
+        shielded_a.statement_id, shielded_b.statement_id,
+        "Blinded statement IDs under distinct salts must be distinct"
+    );
+
+    // 2. An adversary attempting deterministic dictionary attack (without salt) cannot match
+    let deterministic_shielded = statement.shield();
+    assert_ne!(
+        shielded_a.subject_key, deterministic_shielded.subject_key,
+        "Salted subject key must differ from deterministic unsalted shield"
+    );
+    assert_ne!(
+        shielded_b.subject_key, deterministic_shielded.subject_key,
+        "Salted subject key must differ from deterministic unsalted shield"
+    );
+
+    // 3. Legitimate recipient holding secret salt can verify the binding
+    assert!(
+        shielded_a.verify_salted_blinding(&salt_a, &subject_key, &statement.statement_id),
+        "Salt A must successfully verify shielded_a"
+    );
+    assert!(
+        !shielded_a.verify_salted_blinding(&salt_b, &subject_key, &statement.statement_id),
+        "Salt B must fail verification of shielded_a"
+    );
+}
+
+#[test]
+fn test_session10_finding5_lez_runtime_adapter_dispatch_flow() {
+    use mosoo_core::types::Predicate;
+    use mosoo_core::verifier::{AttestStateArgs, LezRuntimeAdapter};
+
+    let mut store = MockStore::default();
+    let instance_id = mosoo_core::types::CANONICAL_SEPOLIA_INSTANCE_ID;
+    let mut instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, instance_id);
+    instance.current_slot = 11_435_000;
+    instance.bootstrap_slot = 11_434_912;
+    let instance_pda = instance.pda_address();
+
+    store.set_account_with_owner(
+        &instance_pda,
+        serde_json::to_vec(&instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let header = make_test_header(&instance);
+    let header_pda = header.pda_address();
+    store.set_account_with_owner(
+        &header_pda,
+        serde_json::to_vec(&header).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let mut config = TrustedBridgeConfig::canonical();
+    config.register_trusted_head(ETH_SEPOLIA_CHAIN_ID, 11_435_000);
+    config.save_to_store(&mut store).unwrap();
+
+    let adapter = LezRuntimeAdapter::new(store);
+
+    let attest_args = AttestStateArgs {
+        instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x99),
+        }),
+        predicate: Predicate::Equal {
+            expected: [0u8; 32],
+        },
+        privacy_salt: Some([0x77; 32]),
+        trusted_head_slot: Some(11_435_000),
+    };
+
+    let res = adapter.dispatch_attest_state(&instance_pda, Some(&header_pda), attest_args);
+    // Attestation loaded genuine instance and header from adapter store and proceeded to state inclusion proof
+    assert!(res.is_err());
+    assert!(!matches!(
+        res.unwrap_err(),
+        MosooError::UnauthenticatedInstance | MosooError::UntrustedSourceInstance
+    ));
 }

@@ -87,7 +87,7 @@ pub const CANONICAL_HOLESKY_MOSOO_INSTANCE: [u8; 32] = [
     0x60, 0xd0, 0x1a, 0x62, 0xe9, 0xa4, 0x62, 0xdc, 0x49, 0x8b, 0x9a, 0x5b, 0x15, 0x96, 0xcc, 0xd0,
 ];
 
-/// Canonical Ethereum weak-subjectivity window in slots (≈ 18.75 days, 54,000 slots).
+/// Canonical Ethereum weak-subjectivity window in slots (≈ 7.5 days, 54,000 slots * 12s = 648,000s).
 /// Under Ethereum consensus rules, light-client sync committees cannot be trusted to sign updates
 /// if the client has stalled longer than the weak-subjectivity window without bootstrap re-initialization.
 pub const CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS: u64 = 54_000;
@@ -187,7 +187,8 @@ impl TrustedBridgeConfig {
         let mut trusted_checkpoints = HashMap::new();
         trusted_checkpoints.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
 
-        let trusted_heads = HashMap::new();
+        let mut trusted_heads = HashMap::new();
+        trusted_heads.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_SLOT);
 
         Self {
             admin_authority: None,
@@ -643,7 +644,7 @@ impl InstanceAccount {
         self.is_stale_with_window(network_slot, MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
     }
 
-    /// Returns true if the instance has stalled past the canonical operational weak-subjectivity window (54,000 slots / ~18.75 days).
+    /// Returns true if the instance has stalled past the canonical operational weak-subjectivity window (54,000 slots / ~7.5 days).
     pub fn is_stale_canonical(&self, network_slot: u64) -> bool {
         self.is_stale_with_window(network_slot, CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
     }

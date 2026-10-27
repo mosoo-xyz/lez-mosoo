@@ -471,3 +471,45 @@ Audit Session 9 code review identified five critical and security-relevant vulne
 5. **Elimination of Placeholder Constants (P2)**:
    - Completely deleted placeholder constants `CANONICAL_MAINNET_CHECKPOINT_ROOT`, `CANONICAL_MAINNET_MOSOO_LOCKER`, `CANONICAL_HOLESKY_CHECKPOINT_ROOT`, and `CANONICAL_HOLESKY_MOSOO_LOCKER` from `mosoo-core/src/types.rs`.
    - Added test asserting that canonical configuration contains zero placeholder checkpoints for Mainnet and Holesky.
+
+---
+
+## ADR-017: Production Runtime Adapter, Strict Weak-Subjectivity Bootstrap, Core Instance Pinning, and Salted Privacy Blinding
+**Date**: October 27, 2026  
+**Status**: Accepted & Implemented  
+
+### Context & Problem Statement
+Audit Session 10 code review identified five security findings and production integration blockers:
+1. **High #1 (P1): Stale Ethereum Light-Client State & Strict Weak-Subjectivity Enforcement**:
+   - `TrustedBridgeConfig::canonical()` initialized `trusted_heads` to an empty map.
+   - `handle_begin_update_authenticated()` only enforced freshness if `config` contained a trusted head for that chain.
+   - `handle_attest_state_authenticated()` fell back to `args.instance.current_slot` when no trusted head was configured (`(None, None) => args.instance.current_slot`), causing `current_slot.saturating_sub(current_slot) == 0` and disabling staleness protection entirely.
+   - Initialization (`handle_initialize`) used `1_728_000` slots (~240 days) instead of the canonical operational weak-subjectivity threshold `54_000` slots (~7.5 days).
+2. **High #2 (P1): Production Dispatcher & LEZ Runtime Integration**:
+   - In `dispatch_guest_instruction()`, authenticated instruction variants (`BeginUpdateAuthenticated`, `MillerUpdateAuthenticated`, `FinishUpdateAuthenticated`, `AttestStateAuthenticated`) had unconditional `#[cfg(not(any(test, feature = "test-harness")))] return Err(MosooError::UnauthenticatedInstance);`, blocking genuine release zkVM executions.
+   - A dedicated native LEZ runtime adapter was needed to connect SPEL transactions directly to `dispatch_store_instruction(&mut host_store, instruction)` with genuine persistent accounts.
+3. **Medium #3 (P2): Instance Pinning in Core Account Loader**:
+   - `verify_instance_account_authenticity()` validated internal invariants, but did not enforce that `instance.pda_address()` matches `TrustedBridgeConfig::get_trusted_instance(chain_id)`.
+4. **Medium #4 (P2): Privacy Shielding Deterministic Hashing**:
+   - `stmt.shield()` performed unsalted hashing if `privacy_salt` was omitted, allowing correlation of repeated statements and dictionary matching for known Ethereum addresses.
+5. **Low #5 (P3): Timing Documentation & CI Dependency Audit Alignment**:
+   - 54,000 slots was documented as "~18.75 days" instead of the exact 7.5 days on Ethereum PoS (12s per slot: 54,000 * 12s = 648,000s = 7.5 days).
+   - CI workflow lacked dedicated dependency vulnerability audits.
+
+### Decision & Implementation
+1. **Strict Weak-Subjectivity Freshness & Automatic Consensus Advancement (P1)**:
+   - Configured canonical Sepolia head (`ETH_SEPOLIA_CHAIN_ID -> CANONICAL_SEPOLIA_CHECKPOINT_SLOT`) in `TrustedBridgeConfig::canonical()`.
+   - In `handle_begin_update_authenticated` and `handle_attest_state_authenticated`, strictly resolve `(args.trusted_head_slot, anchor_head)`: if neither is configured, execution fails closed immediately (`MosooError::InvalidBootstrap`).
+   - In `handle_finish_update_authenticated`, automatically advance `config.register_trusted_head(updated_instance.chain_id, updated_instance.current_slot)` and persist it atomically into persistent storage, ensuring on-chain head progression.
+   - In `handle_initialize` and `validate_initialize_with_config`, enforced `CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS` (54,000 slots / 7.5 days) so stale bootstrap checkpoints are rejected fail-closed.
+2. **Production LEZ Runtime Adapter & zkVM Authenticated Dispatch (P1)**:
+   - Implemented `LezRuntimeAdapter<S: AccountStore>` in `mosoo-core/src/verifier.rs`, providing native transaction dispatch (`dispatch_transaction`, `dispatch_begin_update`, `dispatch_miller_update`, `dispatch_finish_update`, `dispatch_attest_state`) against persistent storage.
+   - Unlocked `*Authenticated` instruction execution in `dispatch_guest_instruction` for release builds, verifying cryptographic witnesses (pinned instance PDA, valid committees, authentic header provenance) without depending on `test-harness`.
+3. **Core Loader Instance Pinning (P2)**:
+   - In `verify_instance_account_authenticity`, load `TrustedBridgeConfig` and assert `*expected_pda == pinned` for any configured chain, returning `MosooError::UntrustedSourceInstance` on mismatch.
+4. **Salted Privacy Shielding (P2)**:
+   - Supported secret 256-bit salt in `AttestStateArgs` (`privacy_salt`), blinding `subject_key` and `statement_id` via `shield_with_salt()`.
+   - In `methods/guest/src/main.rs`, preserved pre-shielded salted statements in the zkVM journal, keeping secret salts strictly within the private witness.
+5. **Documentation & CI Alignment (P3)**:
+   - Corrected all weak-subjectivity documentation across `types.rs`, `verifier.rs`, and ADRs to reflect exact 7.5 days (54,000 slots * 12s).
+   - Added `rustsec/audit-check` step in `.github/workflows/ci.yml`.

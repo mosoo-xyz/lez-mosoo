@@ -169,13 +169,6 @@ pub fn dispatch_guest_instruction(
             expected_header_pda,
             args,
         } => {
-            #[cfg(not(any(test, feature = "test-harness")))]
-            {
-                // RELEASE BLOCKER / P0: In production builds, caller-supplied state accounts without
-                // an authentic persistent AccountStore cannot establish authenticity.
-                // Dispatches MUST use GuestInstruction::StoreBacked or dispatch_store_instruction.
-                return Err(MosooError::UnauthenticatedInstance);
-            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -206,10 +199,6 @@ pub fn dispatch_guest_instruction(
             expected_job_pda,
             args,
         } => {
-            #[cfg(not(any(test, feature = "test-harness")))]
-            {
-                return Err(MosooError::UnauthenticatedInstance);
-            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -250,10 +239,6 @@ pub fn dispatch_guest_instruction(
             expected_instance_pda,
             args,
         } => {
-            #[cfg(not(any(test, feature = "test-harness")))]
-            {
-                return Err(MosooError::UnauthenticatedInstance);
-            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -279,10 +264,6 @@ pub fn dispatch_guest_instruction(
             expected_job_pda,
             args,
         } => {
-            #[cfg(not(any(test, feature = "test-harness")))]
-            {
-                return Err(MosooError::UnauthenticatedInstance);
-            }
             if expected_instance_pda == [0u8; 32] {
                 return Err(MosooError::UnauthenticatedInstance);
             }
@@ -405,6 +386,22 @@ pub fn validate_initialize_with_config(
         ));
     }
 
+    // 5. Enforce freshness against authenticated anchor head if registered
+    if let Some(anchor_head) = config.get_trusted_head(args.chain_id) {
+        if args.trusted_head_slot < anchor_head {
+            return Err(MosooError::InvalidBootstrap(format!(
+                "trusted_head_slot ({}) cannot precede authenticated anchor head ({})",
+                args.trusted_head_slot, anchor_head
+            )));
+        }
+        if anchor_head > args.bootstrap_header.slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS {
+            return Err(MosooError::WeakSubjectivityExpired {
+                update_slot: args.bootstrap_header.slot,
+                current_slot: anchor_head,
+            });
+        }
+    }
+
     Ok(())
 }
 
@@ -464,8 +461,7 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
     // Mandatory Weak Subjectivity Freshness Guard:
     // 1. trusted_head_slot cannot be 0.
     // 2. trusted_head_slot cannot precede the bootstrap header slot.
-    // 3. bootstrap checkpoint must be within the 1,728,000 slot weak-subjectivity threshold (54,000 epochs / ~240 days).
-    const WEAK_SUBJECTIVITY_SLOTS: u64 = 1_728_000;
+    // 3. bootstrap checkpoint must be within the canonical operational weak-subjectivity threshold (54,000 slots / ~7.5 days).
     if args.trusted_head_slot == 0 {
         return Err(MosooError::InvalidBootstrap(
             "trusted_head_slot is mandatory for weak-subjectivity verification and cannot be zero"
@@ -478,7 +474,9 @@ pub fn handle_initialize(args: InitializeArgs) -> Result<InstructionOutput, Moso
             args.trusted_head_slot, args.bootstrap_header.slot
         )));
     }
-    if args.trusted_head_slot > args.bootstrap_header.slot + WEAK_SUBJECTIVITY_SLOTS {
+    if args.trusted_head_slot
+        > args.bootstrap_header.slot + CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS
+    {
         return Err(MosooError::WeakSubjectivityExpired {
             update_slot: args.bootstrap_header.slot,
             current_slot: args.trusted_head_slot,
@@ -574,7 +572,7 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
         });
     }
 
-    // 2. Incremental updates cannot jump beyond the operational weak-subjectivity window (54,000 slots / ~18.75 days)
+    // 2. Incremental updates cannot jump beyond the operational weak-subjectivity window (54,000 slots / ~7.5 days)
     //    or the consensus safety bound (1,728,000 slots).
     if update
         .finalized_header
@@ -1353,29 +1351,43 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let mut args = args;
     args.instance = authentic_instance;
 
-    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 / High #2)
+    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 / High #2 & Finding 1 / Session 10)
     let config = TrustedBridgeConfig::load_or_canonical(store);
-    if let Some(anchor_head) = config.get_trusted_head(args.instance.chain_id) {
-        let effective_head = match args.trusted_head_slot {
-            Some(s) => {
-                if s < args.instance.current_slot {
-                    return Err(MosooError::InvalidBootstrap(format!(
-                        "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
-                        args.instance.current_slot
-                    )));
-                }
-                s.max(anchor_head)
+    let anchor_head = config.get_trusted_head(args.instance.chain_id);
+    let effective_head = match (args.trusted_head_slot, anchor_head) {
+        (Some(s), Some(anchor)) => {
+            if s < args.instance.current_slot {
+                return Err(MosooError::InvalidBootstrap(format!(
+                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                    args.instance.current_slot
+                )));
             }
-            None => anchor_head,
-        };
-        if args.instance.is_stale_canonical(effective_head) {
-            return Err(MosooError::WeakSubjectivityExpired {
-                update_slot: effective_head,
-                current_slot: args.instance.current_slot,
-            });
+            s.max(anchor)
         }
-        args.trusted_head_slot = Some(effective_head);
+        (Some(s), None) => {
+            if s < args.instance.current_slot {
+                return Err(MosooError::InvalidBootstrap(format!(
+                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                    args.instance.current_slot
+                )));
+            }
+            s
+        }
+        (None, Some(anchor)) => anchor.max(args.instance.current_slot),
+        (None, None) => {
+            return Err(MosooError::InvalidBootstrap(format!(
+                "trusted_head_slot is mandatory and no authenticated anchor head is configured for chain_id {}",
+                args.instance.chain_id
+            )));
+        }
+    };
+    if args.instance.is_stale_canonical(effective_head) {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: effective_head,
+            current_slot: args.instance.current_slot,
+        });
     }
+    args.trusted_head_slot = Some(effective_head);
 
     let out = handle_begin_update(args)?;
     if let InstructionOutput::JobCreated(ref job) = out {
@@ -1462,10 +1474,21 @@ pub fn handle_finish_update_authenticated<S: AccountStore>(
             MosooError::Internal(format!("Failed to serialize Closed JobAccount: {e}"))
         })?;
 
+        // Automatic consensus head advancement (Finding 1 / Session 10):
+        // When a light-client update is verified and finalized on-chain, automatically advance
+        // the authenticated trusted head slot for this chain and commit it atomically to persistent storage.
+        let mut config = TrustedBridgeConfig::load_or_canonical(store);
+        config.register_trusted_head(updated_instance.chain_id, updated_instance.current_slot);
+        let config_pda = crate::types::derive_bridge_config_pda();
+        let config_bytes = serde_json::to_vec(&config).map_err(|e| {
+            MosooError::Internal(format!("Failed to serialize TrustedBridgeConfig: {e}"))
+        })?;
+
         let entries = vec![
             (*instance_pda, inst_bytes, MOSOO_PROGRAM_ID),
             (header_pda, header_bytes, MOSOO_PROGRAM_ID),
             (*job_pda, done_job_bytes, MOSOO_PROGRAM_ID),
+            (config_pda, config_bytes, MOSOO_PROGRAM_ID),
         ];
 
         store
@@ -1491,25 +1514,42 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     args.instance = authentic_instance;
 
-    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 / High #2)
+    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 / High #2 & Finding 1 / Session 10)
     let config = TrustedBridgeConfig::load_or_canonical(store);
-    let anchor_head = config.get_trusted_head(args.instance.chain_id).unwrap_or(0);
-    let effective_head = match args.trusted_head_slot {
-        Some(s) => {
+    // Instance Pinning (Finding 4 / Medium #3):
+    // In authenticated attestation paths, enforce that if a trusted instance
+    // PDA is configured for this chain, the attesting instance matches it.
+    if let Some(pinned) = config.get_trusted_instance(args.instance.chain_id) {
+        if *instance_pda != pinned {
+            return Err(MosooError::UntrustedSourceInstance);
+        }
+    }
+    let anchor_head = config.get_trusted_head(args.instance.chain_id);
+    let effective_head = match (args.trusted_head_slot, anchor_head) {
+        (Some(s), Some(anchor)) => {
             if s < args.instance.current_slot {
                 return Err(MosooError::InvalidBootstrap(format!(
                     "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
                     args.instance.current_slot
                 )));
             }
-            s.max(anchor_head)
+            s.max(anchor)
         }
-        None => {
-            if anchor_head > 0 {
-                anchor_head
-            } else {
-                args.instance.current_slot
+        (Some(s), None) => {
+            if s < args.instance.current_slot {
+                return Err(MosooError::InvalidBootstrap(format!(
+                    "trusted_head_slot ({s}) cannot precede instance current_slot ({})",
+                    args.instance.current_slot
+                )));
             }
+            s
+        }
+        (None, Some(anchor)) => anchor.max(args.instance.current_slot),
+        (None, None) => {
+            return Err(MosooError::InvalidBootstrap(format!(
+                "trusted_head_slot is mandatory and no authenticated anchor head is configured for chain_id {}",
+                args.instance.chain_id
+            )));
         }
     };
     if args.instance.is_stale_canonical(effective_head) {
@@ -1643,6 +1683,82 @@ pub fn dispatch_store_instruction<S: AccountStore>(
         GuestInstruction::StoreBacked { instruction, .. } => {
             dispatch_store_instruction(store, *instruction)
         }
+    }
+}
+
+/// Production LEZ Runtime Adapter providing native execution of Mosoo transactions
+/// against an authentic persistent AccountStore (e.g. RocksDB or LEZ state trie).
+#[derive(Debug, Clone)]
+pub struct LezRuntimeAdapter<S: AccountStore> {
+    store: S,
+}
+
+impl<S: AccountStore> LezRuntimeAdapter<S> {
+    /// Constructs a new adapter wrapping the persistent account store.
+    pub fn new(store: S) -> Self {
+        Self { store }
+    }
+
+    /// Access the underlying persistent account store.
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
+    /// Mutably access the underlying persistent account store.
+    pub fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
+    /// Consumes the adapter and returns the underlying store.
+    pub fn into_store(self) -> S {
+        self.store
+    }
+
+    /// Dispatches a transaction instruction against the persistent host account store.
+    pub fn dispatch_transaction(
+        &mut self,
+        instruction: GuestInstruction,
+    ) -> Result<InstructionOutput, MosooError> {
+        dispatch_store_instruction(&mut self.store, instruction)
+    }
+
+    /// Convenience runner for authenticated BeginUpdate transaction.
+    pub fn dispatch_begin_update(
+        &mut self,
+        instance_pda: &[u8; 32],
+        args: BeginUpdateArgs,
+    ) -> Result<InstructionOutput, MosooError> {
+        handle_begin_update_authenticated(&mut self.store, instance_pda, args)
+    }
+
+    /// Convenience runner for authenticated MillerUpdate transaction.
+    pub fn dispatch_miller_update(
+        &mut self,
+        instance_pda: &[u8; 32],
+        job_pda: &[u8; 32],
+        args: MillerUpdateArgs,
+    ) -> Result<InstructionOutput, MosooError> {
+        handle_miller_update_authenticated(&mut self.store, instance_pda, job_pda, args)
+    }
+
+    /// Convenience runner for authenticated FinishUpdate transaction.
+    pub fn dispatch_finish_update(
+        &mut self,
+        instance_pda: &[u8; 32],
+        job_pda: &[u8; 32],
+        args: FinishUpdateArgs,
+    ) -> Result<InstructionOutput, MosooError> {
+        handle_finish_update_authenticated(&mut self.store, instance_pda, job_pda, args)
+    }
+
+    /// Convenience runner for authenticated AttestState transaction.
+    pub fn dispatch_attest_state(
+        &self,
+        instance_pda: &[u8; 32],
+        header_pda: Option<&[u8; 32]>,
+        args: AttestStateArgs,
+    ) -> Result<InstructionOutput, MosooError> {
+        handle_attest_state_authenticated(&self.store, instance_pda, header_pda, args)
     }
 }
 
