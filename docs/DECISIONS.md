@@ -422,9 +422,9 @@ Audit Session 8 static code review raised five critical and high-priority concer
    - Cleaned `TrustedBridgeConfig::canonical()` to pre-register only Sepolia (the live network with verified checkpoint). Mainnet and Holesky require explicit authorized checkpoint registration prior to activation.
    - Added automated invariant test (`test_session8_finding3_pda_derivation_invariants_across_all_networks`) asserting `derive_instance_pda(chain_id, &instance_id) == expected_instance_pda == instance.pda_address()` across all networks.
 4. **Irreversible Permanent Retirement of Legacy Withdrawal Routes (P2)**:
-   - Added `bool public legacyRoutesPermanentlyDisabled;`, `error LegacyRoutesPermanentlyRetired();`, and `event LegacyRoutesPermanentlyRetired();` in `MosooLocker.sol`.
+   - Added `bool public legacyRoutesPermanentlyDisabled;`, `error LegacyRoutesArePermanentlyRetired();`, and `event LegacyRoutesPermanentlyRetired();` in `MosooLocker.sol`.
    - Added `permanentlyRetireLegacyRoutes()` external function (owner only).
-   - `setLegacyRoutesEnabled(true)` strictly reverts with `LegacyRoutesPermanentlyRetired()` if permanently retired.
+   - `setLegacyRoutesEnabled(true)` strictly reverts with `LegacyRoutesArePermanentlyRetired()` if permanently retired.
    - Added Foundry unit test verifying permanent retirement.
 5. **Outbound Multi-Signer Quorum Operational Policy (P2)**:
    - Documented mandatory multi-signer committee setup prior to mainnet deposit acceptance, ensuring quorum thresholds (`requiredQuorum >= 2/3`) and independent guardian controls are active from genesis.

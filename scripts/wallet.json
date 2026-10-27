@@ -1,0 +1,11 @@
+{
+  "network": "Logos Execution Zone (LEZ) Testnet",
+  "sequencerRpc": "https://testnet.lez.logos.co",
+  "explorer": "https://explorer.testnet.lez.logos.co/",
+  "accountId": "DCUXRVhDoLgnmXDWooUUy1oHoj6fV6a2owqgd7ucs159",
+  "publicAddress": "Public/DCUXRVhDoLgnmXDWooUUy1oHoj6fV6a2owqgd7ucs159",
+  "publicKeyHex": "0xb53cc10c40a26851ccb683e08201ebbfc6abcf32ac509077c9a098e9dbb568f0",
+  "privateKeyHex": "0x364a61d659f56928b8bdf46e614b35a9b6ad10f5444e94ad5d0c1974c25d61dc",
+  "canonicalProgramId": "7WpzfeDogs6EgwbtbNVwP2Mberu2UJCPJkiinjV35eT",
+  "sepoliaInstancePda": "BFUncAiNrhTMUrqWizyxfdsvZZw6kzMmUCa6qmaRd31B"
+}
