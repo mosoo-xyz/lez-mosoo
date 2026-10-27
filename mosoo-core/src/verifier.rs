@@ -152,6 +152,21 @@ pub enum GuestInstruction {
         store: ProgramAccountStore,
         instruction: Box<GuestInstruction>,
     },
+    /// Authorized instruction: Register or update an authorized checkpoint and initial anchor head for a network (Finding 3 / Session 14).
+    /// Strictly requires authorization by the configured admin authority.
+    RegisterNetworkCheckpoint {
+        caller: [u8; 32],
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+        initial_head_slot: u64,
+    },
+    /// Authorized instruction: Register an approved light-client instance PDA into the multi-instance registry for a network (Finding 3 / Session 14).
+    /// Strictly requires authorization by the configured admin authority.
+    RegisterTrustedInstance {
+        caller: [u8; 32],
+        chain_id: u64,
+        instance_pda: [u8; 32],
+    },
 }
 
 /// Dispatches a guest instruction inside zkVM, enforcing persistent PDA authentication invariants.
@@ -344,6 +359,11 @@ pub fn dispatch_guest_instruction(
         } => dispatch_store_instruction(&mut store, *instruction),
         #[cfg(not(any(test, feature = "test-harness")))]
         GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
+
+        GuestInstruction::RegisterNetworkCheckpoint { .. }
+        | GuestInstruction::RegisterTrustedInstance { .. } => {
+            Err(MosooError::UnauthenticatedInstance)
+        }
     }
 }
 
@@ -359,6 +379,7 @@ pub enum InstructionOutput {
         closed_job: JobAccount,
     },
     StatementIssued(VerifiedStatement),
+    ConfigUpdated,
 }
 
 /// Validates initialization arguments against authorized checkpoints in TrustedBridgeConfig.
@@ -367,14 +388,12 @@ pub fn validate_initialize_with_config(
     args: &InitializeArgs,
     config: &TrustedBridgeConfig,
 ) -> Result<(), MosooError> {
-    // 0. Canonical Instance Pinning (Finding 1 / Session 12):
-    // If a trusted light-client instance PDA is registered for this chain in TrustedBridgeConfig,
-    // the instance derived from args.chain_id and args.instance_id MUST match it exactly.
-    if let Some(expected_pda) = config.get_trusted_instance(args.chain_id) {
-        let actual_pda = crate::types::derive_instance_pda(args.chain_id, &args.instance_id);
-        if actual_pda != expected_pda {
-            return Err(MosooError::UntrustedSourceInstance);
-        }
+    // 0. Instance Authentication & Pinning (Finding 1 / Session 12 & Issue B / Session 14):
+    // Verifies that the instance derived from args.chain_id and args.instance_id is an approved instance
+    // in the multi-instance registry, matches the pinned instance, or the chain is unpinned.
+    let actual_pda = crate::types::derive_instance_pda(args.chain_id, &args.instance_id);
+    if !config.is_trusted_or_unpinned(args.chain_id, &actual_pda) {
+        return Err(MosooError::UntrustedSourceInstance);
     }
 
     // 1. Guard: custom chains without trusted checkpoint anchor must fail closed unless registered in TrustedBridgeConfig
@@ -396,13 +415,20 @@ pub fn validate_initialize_with_config(
 
     // 3. Verify bootstrap checkpoint root against independently authorized TrustedBridgeConfig.
     // Self-certifying caller NetworkConfig is STRICTLY REJECTED:
-    // Unregistered networks MUST be independently registered in TrustedBridgeConfig (Finding 3 / High #3).
-    let Some(expected_checkpoint) = config.get_trusted_checkpoint(args.chain_id) else {
+    // Unregistered networks MUST be independently registered in TrustedBridgeConfig (Finding 3 / High #3 & Issue B / Session 14).
+    let has_any_checkpoint = config.get_trusted_checkpoint(args.chain_id).is_some()
+        || config
+            .trusted_checkpoints_registry
+            .get(&args.chain_id)
+            .map(|s| !s.is_empty())
+            .unwrap_or(false);
+    if !has_any_checkpoint {
         return Err(MosooError::UnconfiguredTrustedCheckpoint {
             chain_id: args.chain_id,
         });
-    };
-    if expected_checkpoint == [0u8; 32] || args.trusted_checkpoint_root != expected_checkpoint {
+    }
+
+    if !config.is_trusted_checkpoint(args.chain_id, &args.trusted_checkpoint_root) {
         return Err(MosooError::UntrustedCheckpoint {
             chain_id: args.chain_id,
         });
@@ -411,7 +437,7 @@ pub fn validate_initialize_with_config(
     // If caller provided a NetworkConfig with a checkpoint, verify it matches the independently authorized checkpoint
     if let Some(ref net_cfg) = args.network_config {
         if let Some(net_checkpoint) = net_cfg.trusted_checkpoint_root {
-            if net_checkpoint != expected_checkpoint {
+            if !config.is_trusted_checkpoint(args.chain_id, &net_checkpoint) {
                 return Err(MosooError::UntrustedCheckpoint {
                     chain_id: args.chain_id,
                 });
@@ -1523,30 +1549,39 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let mut args = args;
     args.instance = authentic_instance;
 
-    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 & 3 / Session 11)
+    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 & 3 / Session 11, Finding 1 / Session 13 & Issue A / Session 14)
     let config = TrustedBridgeConfig::load_strict(store)?;
-    // Instance Pinning Guard (Finding 1 / Session 12):
-    // Only the approved trusted instance can execute updates and advance consensus state.
+    // Instance Pinning Guard (Finding 1 / Session 12 & Issue B / Session 14):
+    // Only approved trusted instances can execute updates and advance consensus state.
     if !config.is_trusted_or_unpinned(args.instance.chain_id, instance_pda) {
         return Err(MosooError::UntrustedSourceInstance);
     }
-    // Per-instance freshness anchor resolution (Finding 1 / Session 13):
-    // Prioritizes instance-specific trusted head, falling back to chain-wide anchor head.
-    let anchor_head = config
-        .get_instance_trusted_head(instance_pda)
-        .or_else(|| config.get_trusted_head(args.instance.chain_id))
-        .ok_or_else(|| {
-            MosooError::InvalidBootstrap(format!(
-                "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for instance {} (chain_id {})",
-                hex::encode(instance_pda),
-                args.instance.chain_id
-            ))
-        })?;
+    // Network anchor head resolution:
+    // Requires an authenticated anchor head configured in TrustedBridgeConfig for the chain.
+    let network_anchor = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
+        MosooError::InvalidBootstrap(format!(
+            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
+            args.instance.chain_id
+        ))
+    })?;
+
+    // Guard against dormant / stale instances (Issue A / Session 14):
+    // If the network anchor has advanced beyond the instance by more than CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
+    // the instance has stalled past the weak-subjectivity threshold and cannot be updated without a fresh bootstrap.
+    if network_anchor.saturating_sub(args.instance.current_slot)
+        > crate::types::CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS
+    {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: network_anchor,
+            current_slot: args.instance.current_slot,
+        });
+    }
+
     let effective_head = match args.trusted_head_slot {
         Some(s) => {
-            if s < anchor_head {
+            if s < network_anchor {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "caller-supplied trusted_head_slot ({s}) cannot precede authenticated anchor head ({anchor_head})"
+                    "caller-supplied trusted_head_slot ({s}) cannot precede authenticated anchor head ({network_anchor})"
                 )));
             }
             if s < args.instance.current_slot {
@@ -1555,16 +1590,16 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
                     args.instance.current_slot
                 )));
             }
-            if s > anchor_head
+            if s > network_anchor
                 .saturating_add(crate::types::CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
             {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "caller-supplied trusted_head_slot ({s}) exceeds weak-subjectivity window beyond authenticated anchor head ({anchor_head})"
+                    "caller-supplied trusted_head_slot ({s}) exceeds weak-subjectivity window beyond authenticated anchor head ({network_anchor})"
                 )));
             }
-            s.max(anchor_head)
+            s
         }
-        None => anchor_head.max(args.instance.current_slot),
+        None => network_anchor.max(args.instance.current_slot),
     };
     if args.instance.is_stale_canonical(effective_head) {
         return Err(MosooError::WeakSubjectivityExpired {
@@ -1718,33 +1753,40 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     args.instance = authentic_instance;
 
-    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 & 3 / Session 11)
+    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 & 3 / Session 11, Finding 1 / Session 13 & Issue A / Session 14)
     let config = TrustedBridgeConfig::load_strict(store)?;
-    // Instance Pinning (Finding 4 / Medium #3):
-    // In authenticated attestation paths, enforce that if a trusted instance
-    // PDA is configured for this chain, the attesting instance matches it.
-    if let Some(pinned) = config.get_trusted_instance(args.instance.chain_id) {
-        if *instance_pda != pinned {
-            return Err(MosooError::UntrustedSourceInstance);
-        }
+    // Instance Pinning (Finding 4 / Medium #3 & Issue B / Session 14):
+    // In authenticated attestation paths, enforce that if trusted instances
+    // are configured for this chain, the attesting instance matches an approved instance.
+    if !config.is_trusted_or_unpinned(args.instance.chain_id, instance_pda) {
+        return Err(MosooError::UntrustedSourceInstance);
     }
-    // Per-instance freshness anchor resolution (Finding 1 / Session 13):
-    // Prioritizes instance-specific trusted head, falling back to chain-wide anchor head.
-    let anchor_head = config
-        .get_instance_trusted_head(instance_pda)
-        .or_else(|| config.get_trusted_head(args.instance.chain_id))
-        .ok_or_else(|| {
-            MosooError::InvalidBootstrap(format!(
-                "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for instance {} (chain_id {})",
-                hex::encode(instance_pda),
-                args.instance.chain_id
-            ))
-        })?;
+    // Network anchor head resolution:
+    // Requires an authenticated anchor head configured in TrustedBridgeConfig for the chain.
+    let network_anchor = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
+        MosooError::InvalidBootstrap(format!(
+            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
+            args.instance.chain_id
+        ))
+    })?;
+
+    // Guard against dormant / stale instances (Issue A / Session 14):
+    // If the network anchor has advanced beyond the instance by more than CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
+    // the instance has stalled past the weak-subjectivity threshold and cannot issue state attestations without fresh bootstrap.
+    if network_anchor.saturating_sub(args.instance.current_slot)
+        > crate::types::CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS
+    {
+        return Err(MosooError::WeakSubjectivityExpired {
+            update_slot: network_anchor,
+            current_slot: args.instance.current_slot,
+        });
+    }
+
     let effective_head = match args.trusted_head_slot {
         Some(s) => {
-            if s < anchor_head {
+            if s < network_anchor {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "caller-supplied trusted_head_slot ({s}) cannot precede authenticated anchor head ({anchor_head})"
+                    "caller-supplied trusted_head_slot ({s}) cannot precede authenticated anchor head ({network_anchor})"
                 )));
             }
             if s < args.instance.current_slot {
@@ -1753,16 +1795,16 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
                     args.instance.current_slot
                 )));
             }
-            if s > anchor_head
+            if s > network_anchor
                 .saturating_add(crate::types::CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
             {
                 return Err(MosooError::InvalidBootstrap(format!(
-                    "caller-supplied trusted_head_slot ({s}) exceeds weak-subjectivity window beyond authenticated anchor head ({anchor_head})"
+                    "caller-supplied trusted_head_slot ({s}) exceeds weak-subjectivity window beyond authenticated anchor head ({network_anchor})"
                 )));
             }
-            s.max(anchor_head)
+            s
         }
-        None => anchor_head.max(args.instance.current_slot),
+        None => network_anchor.max(args.instance.current_slot),
     };
     if args.instance.is_stale_canonical(effective_head) {
         return Err(MosooError::WeakSubjectivityExpired {
@@ -1939,10 +1981,90 @@ pub fn dispatch_store_instruction<S: AccountStore>(
             args,
         ),
 
+        GuestInstruction::RegisterNetworkCheckpoint {
+            caller,
+            chain_id,
+            checkpoint_root,
+            initial_head_slot,
+        } => handle_register_network_checkpoint_authenticated(
+            store,
+            &caller,
+            chain_id,
+            checkpoint_root,
+            initial_head_slot,
+        ),
+
+        GuestInstruction::RegisterTrustedInstance {
+            caller,
+            chain_id,
+            instance_pda,
+        } => handle_register_trusted_instance_authenticated(store, &caller, chain_id, instance_pda),
+
         GuestInstruction::StoreBacked { instruction, .. } => {
             dispatch_store_instruction(store, *instruction)
         }
     }
+}
+
+/// Authenticated instruction: Registers an approved checkpoint root and initial trusted head
+/// for a network into the persistent TrustedBridgeConfig. Strictly checks admin authorization.
+pub fn handle_register_network_checkpoint_authenticated<S: AccountStore>(
+    store: &mut S,
+    caller: &[u8; 32],
+    chain_id: u64,
+    checkpoint_root: [u8; 32],
+    initial_head_slot: u64,
+) -> Result<InstructionOutput, MosooError> {
+    if checkpoint_root == [0u8; 32] || initial_head_slot == 0 {
+        return Err(MosooError::InvalidBootstrap(
+            "checkpoint_root and initial_head_slot cannot be zero".into(),
+        ));
+    }
+    let mut config = TrustedBridgeConfig::load_strict(store)?;
+    let Some(expected_admin) = config.admin_authority else {
+        return Err(MosooError::InvalidBootstrap(
+            "admin authority not configured in TrustedBridgeConfig".into(),
+        ));
+    };
+    if *caller != expected_admin {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+    config.register_trusted_checkpoint(chain_id, checkpoint_root);
+    config.register_trusted_checkpoint_in_registry(chain_id, checkpoint_root);
+    config.register_trusted_head(chain_id, initial_head_slot);
+    config
+        .save_to_store(store)
+        .map_err(|e| MosooError::Internal(e.to_string()))?;
+    Ok(InstructionOutput::ConfigUpdated)
+}
+
+/// Authenticated instruction: Registers an approved light-client instance PDA into the multi-instance
+/// registry for a network in the persistent TrustedBridgeConfig. Strictly checks admin authorization.
+pub fn handle_register_trusted_instance_authenticated<S: AccountStore>(
+    store: &mut S,
+    caller: &[u8; 32],
+    chain_id: u64,
+    instance_pda: [u8; 32],
+) -> Result<InstructionOutput, MosooError> {
+    if instance_pda == [0u8; 32] {
+        return Err(MosooError::InvalidBootstrap(
+            "instance_pda cannot be zero".into(),
+        ));
+    }
+    let mut config = TrustedBridgeConfig::load_strict(store)?;
+    let Some(expected_admin) = config.admin_authority else {
+        return Err(MosooError::InvalidBootstrap(
+            "admin authority not configured in TrustedBridgeConfig".into(),
+        ));
+    };
+    if *caller != expected_admin {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+    config.register_trusted_instance_in_registry(chain_id, instance_pda);
+    config
+        .save_to_store(store)
+        .map_err(|e| MosooError::Internal(e.to_string()))?;
+    Ok(InstructionOutput::ConfigUpdated)
 }
 
 /// Production LEZ Runtime Adapter providing native execution of Mosoo transactions
@@ -2018,6 +2140,36 @@ impl<S: AccountStore> LezRuntimeAdapter<S> {
         args: AttestStateArgs,
     ) -> Result<InstructionOutput, MosooError> {
         handle_attest_state_authenticated(&self.store, instance_pda, header_pda, args)
+    }
+
+    /// Convenience runner for registering an authorized network checkpoint.
+    pub fn dispatch_register_network_checkpoint(
+        &mut self,
+        caller: [u8; 32],
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+        initial_head_slot: u64,
+    ) -> Result<InstructionOutput, MosooError> {
+        self.dispatch_transaction(GuestInstruction::RegisterNetworkCheckpoint {
+            caller,
+            chain_id,
+            checkpoint_root,
+            initial_head_slot,
+        })
+    }
+
+    /// Convenience runner for registering a trusted instance in the multi-instance registry.
+    pub fn dispatch_register_trusted_instance(
+        &mut self,
+        caller: [u8; 32],
+        chain_id: u64,
+        instance_pda: [u8; 32],
+    ) -> Result<InstructionOutput, MosooError> {
+        self.dispatch_transaction(GuestInstruction::RegisterTrustedInstance {
+            caller,
+            chain_id,
+            instance_pda,
+        })
     }
 }
 

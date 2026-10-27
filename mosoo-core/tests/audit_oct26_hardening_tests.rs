@@ -4893,3 +4893,476 @@ fn test_session13_finding4_confidential_journal_emits_no_raw_value() {
     let wrong_salt = [0x00; 32];
     assert!(!stmt.verify_salted_value_commitment(&wrong_salt, &expected_bytes));
 }
+
+// ---------------------------------------------------------------------------
+// Session 14 Finding 1: Strict Weak-Subjectivity Freshness & Dormant Instance Rejection
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session14_finding1_dormant_stale_instance_fails_closed_even_with_none_head() {
+    use mosoo_core::verifier::{
+        handle_attest_state_authenticated, handle_begin_update_authenticated, AttestStateArgs,
+        BeginUpdateArgs,
+    };
+
+    let mut store = MockStore::default();
+    let chain_id = 888_111;
+    let initial_slot = 1_000;
+    // 30 days of Ethereum elapsed = 216,000 slots (12s per slot)
+    let advanced_network_slot = 1_000 + 216_000;
+
+    let mut config = TrustedBridgeConfig::canonical();
+    config.register_trusted_checkpoint(chain_id, [0x11; 32]);
+    // The network has progressed to advanced_network_slot
+    config.register_trusted_head(chain_id, advanced_network_slot);
+    config.save_to_store(&mut store).unwrap();
+
+    let instance_id = [0x77; 32];
+    let mut instance = make_test_instance(chain_id, instance_id);
+    // Instance has been dormant at initial_slot (1,000)
+    instance.current_slot = initial_slot;
+    instance.bootstrap_slot = initial_slot;
+    let instance_pda = instance.pda_address();
+    store.set_account_with_owner(
+        &instance_pda,
+        serde_json::to_vec(&instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // 1. Calling handle_begin_update_authenticated with trusted_head_slot: None MUST FAIL CLOSED
+    let update = make_test_update(advanced_network_slot, advanced_network_slot + 1);
+    let begin_args = BeginUpdateArgs {
+        instance: instance.clone(),
+        update: update.clone(),
+        trusted_head_slot: None,
+        nonce: 1,
+    };
+    let res_none = handle_begin_update_authenticated(&mut store, &instance_pda, begin_args);
+    assert!(
+        matches!(res_none, Err(MosooError::WeakSubjectivityExpired { .. })),
+        "Dormant instance with None trusted_head_slot must fail with WeakSubjectivityExpired: {:?}",
+        res_none.err()
+    );
+
+    // 2. For an active fresh instance, caller attempting to supply an outdated head slot (< network_anchor) MUST FAIL CLOSED
+    let fresh_instance_id = [0x78; 32];
+    let mut fresh_instance = make_test_instance(chain_id, fresh_instance_id);
+    let fresh_slot = advanced_network_slot - 1_000;
+    fresh_instance.current_slot = fresh_slot;
+    fresh_instance.bootstrap_slot = fresh_slot;
+    let fresh_instance_pda = fresh_instance.pda_address();
+    store.set_account_with_owner(
+        &fresh_instance_pda,
+        serde_json::to_vec(&fresh_instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let begin_args_outdated = BeginUpdateArgs {
+        instance: fresh_instance.clone(),
+        update: update.clone(),
+        trusted_head_slot: Some(advanced_network_slot - 500),
+        nonce: 2,
+    };
+    let res_outdated =
+        handle_begin_update_authenticated(&mut store, &fresh_instance_pda, begin_args_outdated);
+    assert!(
+        matches!(res_outdated, Err(MosooError::InvalidBootstrap(_))),
+        "Outdated caller-supplied head slot must fail with InvalidBootstrap: {:?}",
+        res_outdated.err()
+    );
+
+    // 3. Caller attempting to supply a fabricated far-future head slot MUST FAIL CLOSED
+    let begin_args_future = BeginUpdateArgs {
+        instance: fresh_instance.clone(),
+        update: update.clone(),
+        trusted_head_slot: Some(advanced_network_slot + 100_000),
+        nonce: 3,
+    };
+    let res_future =
+        handle_begin_update_authenticated(&mut store, &fresh_instance_pda, begin_args_future);
+    assert!(
+        matches!(res_future, Err(MosooError::InvalidBootstrap(_))),
+        "Far future caller-supplied head slot must fail with InvalidBootstrap: {:?}",
+        res_future.err()
+    );
+
+    // 4. Calling handle_attest_state_authenticated on dormant instance with None MUST FAIL CLOSED
+    let header = make_test_header(&instance);
+    let attest_args = AttestStateArgs {
+        instance: instance.clone(),
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: empty_state_proof(ProofTarget::AccountBalance {
+            address: alloy_primitives::Address::repeat_byte(0x11),
+        }),
+        predicate: Predicate::Equal { expected: [0; 32] },
+        privacy_salt: None,
+        trusted_head_slot: None,
+        privacy_mode: None,
+    };
+    let attest_res = handle_attest_state_authenticated(&store, &instance_pda, None, attest_args);
+    assert!(
+        matches!(attest_res, Err(MosooError::WeakSubjectivityExpired { .. })),
+        "Dormant instance attestation with None trusted_head_slot must fail with WeakSubjectivityExpired: {:?}",
+        attest_res.err()
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session 14 Finding 2: Multi-Instance Coexistence & Registry Isolation
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session14_finding2_multi_instance_coexistence_and_isolated_state() {
+    use mosoo_core::types::{
+        BeaconBlockHeader, ExecutionPayloadHeader, InitializeArgs, JobAccount, JobStage,
+        LightClientUpdate, MillerOutput, NetworkConfig, SyncAggregate,
+    };
+    use mosoo_core::verifier::{
+        handle_finish_update_authenticated, validate_initialize_with_config, FinishUpdateArgs,
+    };
+
+    let mut store = MockStore::default();
+    let chain_id = 999_998;
+    let initial_slot = 10_000;
+
+    let committee = make_valid_committee();
+    let committee_leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee).unwrap();
+    let committee_branch = vec![[0x11; 32]; 5];
+    let bootstrap_state_root =
+        mosoo_core::crypto::compute_branch_root(committee_leaf, &committee_branch, 54);
+
+    let bootstrap_header_a = BeaconBlockHeader {
+        slot: initial_slot,
+        proposer_index: 1,
+        parent_root: [0; 32],
+        state_root: bootstrap_state_root,
+        body_root: [0; 32],
+    };
+    let checkpoint_a = mosoo_core::crypto::hash_tree_root_beacon_header(&bootstrap_header_a);
+    let checkpoint_b = [0xbb; 32];
+
+    let net_cfg = NetworkConfig {
+        chain_id,
+        genesis_validators_root: [0x88; 32],
+        trusted_checkpoint_root: Some(checkpoint_a),
+        altair_fork_version: [0x01; 4],
+        bellatrix_fork_version: [0x02; 4],
+        capella_fork_version: [0x03; 4],
+        deneb_fork_version: [0x04; 4],
+        electra_fork_version: [0x05; 4],
+        fulu_fork_version: [0x06; 4],
+        gloas_fork_version: [0x07; 4],
+    };
+
+    // Create configuration with multi-instance and multi-checkpoint registry
+    let mut config = TrustedBridgeConfig::canonical();
+    config.register_trusted_checkpoint_in_registry(chain_id, checkpoint_a);
+    config.register_trusted_checkpoint_in_registry(chain_id, checkpoint_b);
+    config.register_trusted_head(chain_id, initial_slot);
+
+    // Instance A
+    let instance_id_a = [0x01; 32];
+    let mut inst_a = make_test_instance(chain_id, instance_id_a);
+    inst_a.current_slot = initial_slot;
+    inst_a.bootstrap_slot = initial_slot;
+    inst_a.bootstrap_header_hash = checkpoint_a;
+    let pda_a = inst_a.pda_address();
+    config.register_trusted_instance_in_registry(chain_id, pda_a);
+    config.register_trusted_head_for_instance(chain_id, pda_a, initial_slot);
+
+    // Instance B (different ID and different checkpoint root on same chain)
+    let instance_id_b = [0x02; 32];
+    let mut inst_b = make_test_instance(chain_id, instance_id_b);
+    inst_b.current_slot = initial_slot;
+    inst_b.bootstrap_slot = initial_slot;
+    inst_b.bootstrap_header_hash = checkpoint_b;
+    let pda_b = inst_b.pda_address();
+    config.register_trusted_instance_in_registry(chain_id, pda_b);
+    config.register_trusted_head_for_instance(chain_id, pda_b, initial_slot);
+
+    // Save configuration
+    config.save_to_store(&mut store).unwrap();
+    store.set_account_with_owner(
+        &pda_a,
+        serde_json::to_vec(&inst_a).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+    store.set_account_with_owner(
+        &pda_b,
+        serde_json::to_vec(&inst_b).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // 1. Both instances pass initialization validation
+    let init_args_a = InitializeArgs {
+        chain_id,
+        instance_id: instance_id_a,
+        network_config: Some(net_cfg.clone()),
+        bootstrap_header: bootstrap_header_a.clone(),
+        trusted_checkpoint_root: checkpoint_a,
+        current_sync_committee: committee.clone(),
+        current_sync_committee_branch: committee_branch.clone(),
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: initial_slot,
+    };
+    assert!(
+        validate_initialize_with_config(&init_args_a, &config).is_ok(),
+        "Instance A initialization must succeed with multi-instance registry"
+    );
+
+    // 2. Unregistered instance C MUST be rejected
+    let unapproved_id_c = [0xcc; 32];
+    let unapproved_init_c = InitializeArgs {
+        chain_id,
+        instance_id: unapproved_id_c,
+        network_config: Some(net_cfg),
+        bootstrap_header: bootstrap_header_a.clone(),
+        trusted_checkpoint_root: checkpoint_a,
+        current_sync_committee: committee,
+        current_sync_committee_branch: committee_branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: initial_slot,
+    };
+    assert!(
+        matches!(
+            validate_initialize_with_config(&unapproved_init_c, &config),
+            Err(MosooError::UntrustedSourceInstance)
+        ),
+        "Unapproved instance C must be rejected with UntrustedSourceInstance"
+    );
+
+    // 3. Advance Instance A and assert complete isolation from Instance B
+    let new_slot_a = initial_slot + 64;
+    let exec_header = ExecutionPayloadHeader {
+        parent_hash: [0; 32],
+        fee_recipient: [0; 20],
+        state_root: [0x33; 32],
+        receipts_root: [0x44; 32],
+        logs_bloom: vec![0u8; 256],
+        prev_randao: [0; 32],
+        block_number: 1000,
+        gas_limit: 30_000_000,
+        gas_used: 10_000,
+        timestamp: 1_700_000_000,
+        extra_data: vec![],
+        base_fee_per_gas: [0; 32],
+        block_hash: [0x55; 32],
+        transactions_root: [0; 32],
+        withdrawals_root: None,
+        blob_gas_used: None,
+        excess_blob_gas: None,
+    };
+    let exec_branch = vec![[0x22; 32]; 4];
+
+    let exec_leaf =
+        mosoo_core::crypto::hash_tree_root_execution_payload_header(&exec_header).unwrap();
+    let exec_gindex = mosoo_core::crypto::execution_proof_gindex(chain_id, new_slot_a);
+    let body_root = mosoo_core::crypto::compute_branch_root(exec_leaf, &exec_branch, exec_gindex);
+
+    let finalized_header = BeaconBlockHeader {
+        slot: new_slot_a,
+        proposer_index: 10,
+        parent_root: [0x11; 32],
+        state_root: [0x22; 32],
+        body_root,
+    };
+    let branch = vec![[0x11; 32]; 6];
+    let gindex = mosoo_core::crypto::finalized_root_gindex(chain_id, new_slot_a + 1);
+    let finalized_leaf = mosoo_core::crypto::hash_tree_root_beacon_header(&finalized_header);
+    let attested_state_root =
+        mosoo_core::crypto::compute_branch_root(finalized_leaf, &branch, gindex);
+
+    let attested_header = BeaconBlockHeader {
+        slot: new_slot_a + 1,
+        proposer_index: 11,
+        parent_root: [0x44; 32],
+        state_root: attested_state_root,
+        body_root: [0x55; 32],
+    };
+
+    let update_a = LightClientUpdate {
+        attested_header,
+        next_sync_committee: None,
+        next_sync_committee_branch: None,
+        finalized_header,
+        finality_branch: branch,
+        execution_payload_header: Some(exec_header),
+        execution_branch: Some(exec_branch),
+        execution_rlp: None,
+        sync_aggregate: SyncAggregate {
+            sync_committee_bits: vec![0xff; 64],
+            sync_committee_signature: vec![0x11; 96],
+        },
+        signature_slot: new_slot_a + 1,
+    };
+
+    let mut ml = blst::blst_fp12::default();
+    unsafe {
+        let g1 = blst::blst_p1_affine_generator();
+        let g2 = blst::blst_p2_affine_generator();
+        blst::blst_miller_loop(&mut ml, g2, g1);
+    }
+    let mut miller_result = vec![0u8; 1152];
+    unsafe {
+        let p = &ml as *const _ as *const u8;
+        core::ptr::copy_nonoverlapping(p, miller_result.as_mut_ptr(), 576);
+        core::ptr::copy_nonoverlapping(p, miller_result.as_mut_ptr().add(576), 576);
+    }
+
+    let job_a = JobAccount {
+        instance_id: instance_id_a,
+        instance_chain_id: chain_id,
+        instance_slot: initial_slot,
+        stage: JobStage::Finish,
+        update_digest: mosoo_core::crypto::compute_update_digest(&update_a),
+        update: update_a,
+        miller_input: None,
+        miller_output: Some(MillerOutput { miller_result }),
+        nonce: 50,
+    };
+    let job_pda_a = job_a.pda_address();
+    store.set_account_with_owner(
+        &job_pda_a,
+        serde_json::to_vec(&job_a).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let finish_args_a = FinishUpdateArgs {
+        instance: inst_a,
+        job: job_a,
+    };
+    let res = handle_finish_update_authenticated(&mut store, &pda_a, &job_pda_a, finish_args_a);
+    assert!(
+        res.is_ok(),
+        "Finish update for Instance A must succeed: {:?}",
+        res.err()
+    );
+
+    // Verify: Instance A's head moved to new_slot_a, Instance B's head remained at initial_slot,
+    // and network anchor head remained at initial_slot
+    let updated_cfg = TrustedBridgeConfig::load_strict(&store).unwrap();
+    assert_eq!(
+        updated_cfg.get_instance_trusted_head(&pda_a),
+        Some(new_slot_a),
+        "Instance A head must advance to new_slot_a"
+    );
+    assert_eq!(
+        updated_cfg.get_instance_trusted_head(&pda_b),
+        Some(initial_slot),
+        "Instance B head must remain completely isolated at initial_slot"
+    );
+    assert_eq!(
+        updated_cfg.get_trusted_head(chain_id),
+        Some(initial_slot),
+        "Chain-wide network anchor must not be mutated by Instance A progress"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Session 14 Finding 3: Mainnet/Holesky Activation & On-Chain Admin Registration
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session14_finding3_mainnet_and_holesky_bootstrap_and_admin_registration() {
+    use mosoo_core::types::{
+        CANONICAL_HOLESKY_CHECKPOINT_ROOT, CANONICAL_HOLESKY_CHECKPOINT_SLOT,
+        CANONICAL_MAINNET_CHECKPOINT_ROOT, CANONICAL_MAINNET_CHECKPOINT_SLOT, ETH_HOLESKY_CHAIN_ID,
+        ETH_MAINNET_CHAIN_ID,
+    };
+    use mosoo_core::verifier::{
+        handle_register_network_checkpoint_authenticated,
+        handle_register_trusted_instance_authenticated,
+    };
+
+    // 1. Verify Ethereum Mainnet (1) and Holesky (17000) canonical constants are defined with correct values
+    assert_eq!(CANONICAL_MAINNET_CHECKPOINT_SLOT, 10_320_000);
+    assert_ne!(CANONICAL_MAINNET_CHECKPOINT_ROOT, [0u8; 32]);
+    assert_eq!(CANONICAL_HOLESKY_CHECKPOINT_SLOT, 3_250_000);
+    assert_ne!(CANONICAL_HOLESKY_CHECKPOINT_ROOT, [0u8; 32]);
+
+    // 2. Unregistered network checkpoints fail closed in default test canonical() until registered
+    let canonical_cfg = TrustedBridgeConfig::canonical();
+    assert!(
+        !canonical_cfg
+            .is_trusted_checkpoint(ETH_MAINNET_CHAIN_ID, &CANONICAL_MAINNET_CHECKPOINT_ROOT),
+        "Mainnet checkpoint is not active by default in test canonical() until registered"
+    );
+
+    // 3. Test on-chain administrative registration instruction for Mainnet and custom chain
+    let mut store = MockStore::default();
+    let admin_key = [0x42; 32];
+    let mut cfg = TrustedBridgeConfig::canonical();
+    cfg.set_admin_authority(admin_key);
+    cfg.save_to_store(&mut store).unwrap();
+
+    // Unauthorized caller MUST fail
+    let unauthorized_caller = [0x99; 32];
+    let unauth_res = handle_register_network_checkpoint_authenticated(
+        &mut store,
+        &unauthorized_caller,
+        ETH_MAINNET_CHAIN_ID,
+        CANONICAL_MAINNET_CHECKPOINT_ROOT,
+        CANONICAL_MAINNET_CHECKPOINT_SLOT,
+    );
+    assert!(
+        matches!(unauth_res, Err(MosooError::DomainSeparationFailed)),
+        "Unauthorized caller must be rejected with DomainSeparationFailed"
+    );
+
+    // Authorized admin registers Mainnet checkpoint
+    let auth_res = handle_register_network_checkpoint_authenticated(
+        &mut store,
+        &admin_key,
+        ETH_MAINNET_CHAIN_ID,
+        CANONICAL_MAINNET_CHECKPOINT_ROOT,
+        CANONICAL_MAINNET_CHECKPOINT_SLOT,
+    );
+    assert!(
+        auth_res.is_ok(),
+        "Authorized admin checkpoint registration must succeed"
+    );
+
+    // Authorized admin registers Mainnet trusted instance
+    let mainnet_inst = mosoo_core::types::CANONICAL_MAINNET_MOSOO_INSTANCE;
+    let inst_res = handle_register_trusted_instance_authenticated(
+        &mut store,
+        &admin_key,
+        ETH_MAINNET_CHAIN_ID,
+        mainnet_inst,
+    );
+    assert!(
+        inst_res.is_ok(),
+        "Authorized admin instance registration must succeed"
+    );
+
+    // Verify Mainnet is now fully active in store
+    let updated_cfg = TrustedBridgeConfig::load_strict(&store).unwrap();
+    assert!(
+        updated_cfg.is_trusted_checkpoint(ETH_MAINNET_CHAIN_ID, &CANONICAL_MAINNET_CHECKPOINT_ROOT)
+    );
+    assert_eq!(
+        updated_cfg.get_trusted_head(ETH_MAINNET_CHAIN_ID),
+        Some(CANONICAL_MAINNET_CHECKPOINT_SLOT)
+    );
+    assert!(updated_cfg.is_trusted_or_unpinned(ETH_MAINNET_CHAIN_ID, &mainnet_inst));
+
+    // Register Holesky as well
+    let holesky_res = handle_register_network_checkpoint_authenticated(
+        &mut store,
+        &admin_key,
+        ETH_HOLESKY_CHAIN_ID,
+        CANONICAL_HOLESKY_CHECKPOINT_ROOT,
+        CANONICAL_HOLESKY_CHECKPOINT_SLOT,
+    );
+    assert!(holesky_res.is_ok());
+
+    let final_cfg = TrustedBridgeConfig::load_strict(&store).unwrap();
+    assert!(
+        final_cfg.is_trusted_checkpoint(ETH_HOLESKY_CHAIN_ID, &CANONICAL_HOLESKY_CHECKPOINT_ROOT)
+    );
+    assert_eq!(
+        final_cfg.get_trusted_head(ETH_HOLESKY_CHAIN_ID),
+        Some(CANONICAL_HOLESKY_CHECKPOINT_SLOT)
+    );
+}

@@ -27,6 +27,13 @@ Mosoo strictly separates network-wide anchor observations from per-instance trac
   - `allow_token(chain_id, token_address)`: Whitelists an ERC-20 token for trustless cross-chain minting.
   - `pause() / unpause()`: Emergency circuit breaker.
 
+### 1.3 Multi-Instance Coexistence & Checkpoint Registries (RFP-021 Functionality #15)
+To support multiple coexisting light-client instances per network (e.g. parallel instances for distinct applications, testing, or multi-period tracking), `TrustedBridgeConfig` maintains multi-registries:
+- `trusted_instances_registry: HashMap<u64, HashSet<[u8; 32]>>`: Approves multiple independent instance PDAs per chain ID.
+- `trusted_checkpoints_registry: HashMap<u64, HashSet<[u8; 32]>>`: Approves multiple historical beacon checkpoint roots per chain ID.
+
+When an instance advances its head slot via `FinishUpdate`, its progress is recorded exclusively in `instance_trusted_heads[instance_pda]`. It never mutates the chain's `trusted_heads[chain_id]`, ensuring complete state isolation across coexisting instances.
+
 ---
 
 ## 2. Weak-Subjectivity Bounds & Operational Freshness
@@ -97,6 +104,13 @@ To eliminate single-key compromise risks, all administrative changes to `MosooLo
 2. Event `AttesterUpdateInitiated` is emitted with unlock timestamp.
 3. During the 48-hour timelock window, the Guardian can inspect the transaction.
 4. After 48 hours, call `executeAttesterUpdate()`.
+
+### 4.2 On-Chain Administrative Instructions on LEZ Runtime
+For on-chain configuration management on LEZ without redeploying code, the `LezRuntimeAdapter<S>` provides authenticated dispatch instructions protected by `admin_authority`:
+- `GuestInstruction::RegisterNetworkCheckpoint { caller, chain_id, checkpoint_root, initial_head_slot }`: Registers an approved root-of-trust checkpoint and initial anchor head slot.
+- `GuestInstruction::RegisterTrustedInstance { caller, chain_id, instance_pda }`: Whitelists an approved instance PDA into `trusted_instances_registry`.
+
+Calls with an unauthorized caller key are rejected immediately with `MosooError::DomainSeparationFailed`. Zero roots, slots, or PDA addresses are rejected with `MosooError::InvalidBootstrap`.
 
 ---
 

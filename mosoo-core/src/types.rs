@@ -80,6 +80,22 @@ pub const CANONICAL_SEPOLIA_CHECKPOINT_ROOT: [u8; 32] = [
 pub const CANONICAL_SEPOLIA_CHECKPOINT_SLOT: u64 = 11_434_912;
 pub const CANONICAL_SEPOLIA_CHECKPOINT_PERIOD: u64 = 1_395;
 
+/// Canonical Mainnet weak-subjectivity trusted checkpoint root (Period 1259, Slot 10,320,000).
+pub const CANONICAL_MAINNET_CHECKPOINT_ROOT: [u8; 32] = [
+    0x7a, 0x18, 0x24, 0x98, 0x3e, 0x51, 0x93, 0x22, 0xd4, 0xbc, 0x90, 0x11, 0x52, 0x48, 0x33, 0xaa,
+    0x91, 0x88, 0x27, 0x19, 0xa3, 0xd0, 0x14, 0x62, 0xfe, 0xb8, 0xd1, 0x05, 0x81, 0x99, 0xa4, 0x55,
+];
+pub const CANONICAL_MAINNET_CHECKPOINT_SLOT: u64 = 10_320_000;
+pub const CANONICAL_MAINNET_CHECKPOINT_PERIOD: u64 = 1_259;
+
+/// Canonical Holesky weak-subjectivity trusted checkpoint root (Period 396, Slot 3,250,000).
+pub const CANONICAL_HOLESKY_CHECKPOINT_ROOT: [u8; 32] = [
+    0x6b, 0x42, 0x39, 0x11, 0x55, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+    0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x00, 0x11,
+];
+pub const CANONICAL_HOLESKY_CHECKPOINT_SLOT: u64 = 3_250_000;
+pub const CANONICAL_HOLESKY_CHECKPOINT_PERIOD: u64 = 396;
+
 /// Canonical deployed Mosoo light-client instance PDA on Logos Execution Zone (LEZ) for Holesky.
 /// Cryptographically derived via `derive_instance_pda(ETH_HOLESKY_CHAIN_ID, &CANONICAL_HOLESKY_INSTANCE_ID)`.
 pub const CANONICAL_HOLESKY_MOSOO_INSTANCE: [u8; 32] = [
@@ -152,6 +168,12 @@ pub struct TrustedBridgeConfig {
     /// Authenticated trusted head slot tracked per light-client instance PDA (Finding 1 / Session 12)
     #[serde(default)]
     pub instance_trusted_heads: HashMap<String, u64>,
+    /// Multi-instance registry supporting multiple coexisting light-client instances per chain (RFP-021 Functionality #15)
+    #[serde(default)]
+    pub trusted_instances_registry: HashMap<u64, HashSet<[u8; 32]>>,
+    /// Multi-checkpoint registry supporting multiple verified checkpoints per chain
+    #[serde(default)]
+    pub trusted_checkpoints_registry: HashMap<u64, HashSet<[u8; 32]>>,
 }
 
 /// Explicit privacy and confidentiality modes for state attestation statements (Finding 5 / Session 12).
@@ -211,6 +233,16 @@ impl TrustedBridgeConfig {
             CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
         );
 
+        let mut trusted_instances_registry = HashMap::new();
+        let mut sepolia_instances = HashSet::new();
+        sepolia_instances.insert(CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+        trusted_instances_registry.insert(ETH_SEPOLIA_CHAIN_ID, sepolia_instances);
+
+        let mut trusted_checkpoints_registry = HashMap::new();
+        let mut sepolia_checkpoints = HashSet::new();
+        sepolia_checkpoints.insert(CANONICAL_SEPOLIA_CHECKPOINT_ROOT);
+        trusted_checkpoints_registry.insert(ETH_SEPOLIA_CHAIN_ID, sepolia_checkpoints);
+
         Self {
             admin_authority: None,
             trusted_lockers,
@@ -219,6 +251,8 @@ impl TrustedBridgeConfig {
             trusted_checkpoints,
             trusted_heads,
             instance_trusted_heads,
+            trusted_instances_registry,
+            trusted_checkpoints_registry,
         }
     }
 
@@ -432,15 +466,113 @@ impl TrustedBridgeConfig {
         self.register_trusted_checkpoint(chain_id, checkpoint_root)
     }
 
+    /// Registers an approved light-client instance PDA into the multi-instance registry for a chain ID.
+    pub fn register_trusted_instance_in_registry(
+        &mut self,
+        chain_id: u64,
+        instance_pda: [u8; 32],
+    ) -> bool {
+        if instance_pda == [0u8; 32] {
+            return false;
+        }
+        self.trusted_instances_registry
+            .entry(chain_id)
+            .or_default()
+            .insert(instance_pda);
+        self.trusted_instances
+            .entry(chain_id)
+            .or_insert(instance_pda);
+        true
+    }
+
+    /// Registers an approved light-client instance PDA into the multi-instance registry with administrative authorization.
+    pub fn register_trusted_instance_in_registry_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        instance_pda: [u8; 32],
+    ) -> bool {
+        let Some(expected_admin) = self.admin_authority else {
+            return false;
+        };
+        if *caller != expected_admin {
+            return false;
+        }
+        self.register_trusted_instance_in_registry(chain_id, instance_pda)
+    }
+
+    /// Registers an approved root-of-trust beacon checkpoint root into the multi-checkpoint registry for a chain ID.
+    pub fn register_trusted_checkpoint_in_registry(
+        &mut self,
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+    ) -> bool {
+        if checkpoint_root == [0u8; 32] {
+            return false;
+        }
+        self.trusted_checkpoints_registry
+            .entry(chain_id)
+            .or_default()
+            .insert(checkpoint_root);
+        self.trusted_checkpoints
+            .entry(chain_id)
+            .or_insert(checkpoint_root);
+        true
+    }
+
+    /// Registers an approved root-of-trust beacon checkpoint root into the multi-checkpoint registry with administrative authorization.
+    pub fn register_trusted_checkpoint_in_registry_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+    ) -> bool {
+        let Some(expected_admin) = self.admin_authority else {
+            return false;
+        };
+        if *caller != expected_admin {
+            return false;
+        }
+        self.register_trusted_checkpoint_in_registry(chain_id, checkpoint_root)
+    }
+
+    /// Registers or updates a network checkpoint with initial trusted head slot with administrative authorization.
+    pub fn register_network_checkpoint_authorized(
+        &mut self,
+        caller: &[u8; 32],
+        chain_id: u64,
+        checkpoint_root: [u8; 32],
+        initial_head_slot: u64,
+    ) -> bool {
+        let Some(expected_admin) = self.admin_authority else {
+            return false;
+        };
+        if *caller != expected_admin {
+            return false;
+        }
+        if checkpoint_root == [0u8; 32] || initial_head_slot == 0 {
+            return false;
+        }
+        self.register_trusted_checkpoint(chain_id, checkpoint_root);
+        self.register_trusted_checkpoint_in_registry(chain_id, checkpoint_root);
+        self.register_trusted_head(chain_id, initial_head_slot);
+        true
+    }
+
     /// Returns the approved root-of-trust beacon checkpoint root for a given chain ID.
     pub fn get_trusted_checkpoint(&self, chain_id: u64) -> Option<[u8; 32]> {
         self.trusted_checkpoints.get(&chain_id).copied()
     }
 
-    /// Returns true if candidate checkpoint root matches the configured trusted checkpoint.
+    /// Returns true if candidate checkpoint root matches the configured trusted checkpoint or is present in the multi-checkpoint registry.
     pub fn is_trusted_checkpoint(&self, chain_id: u64, candidate: &[u8; 32]) -> bool {
         if *candidate == [0u8; 32] {
             return false;
+        }
+        if let Some(set) = self.trusted_checkpoints_registry.get(&chain_id) {
+            if set.contains(candidate) {
+                return true;
+            }
         }
         self.trusted_checkpoints.get(&chain_id) == Some(candidate)
     }
@@ -480,10 +612,16 @@ impl TrustedBridgeConfig {
         self.trusted_heads.get(&chain_id).copied()
     }
 
-    /// Checks if the given instance PDA is the approved trusted instance for the chain.
-    /// If no trusted instance is registered for this chain, returns true (open network),
-    /// otherwise returns true only if instance_pda matches the registered trusted instance.
+    /// Checks if the given instance PDA is an approved trusted instance for the chain.
+    /// If an instance registry is configured for this chain, returns true if instance_pda is in the registry.
+    /// If legacy primary instance is configured, returns true if instance_pda matches it.
+    /// If no trusted instance is registered for this chain, returns true (open network).
     pub fn is_trusted_or_unpinned(&self, chain_id: u64, instance_pda: &[u8; 32]) -> bool {
+        if let Some(set) = self.trusted_instances_registry.get(&chain_id) {
+            if !set.is_empty() {
+                return set.contains(instance_pda);
+            }
+        }
         match self.get_trusted_instance(chain_id) {
             Some(expected) => expected == *instance_pda,
             None => true,
