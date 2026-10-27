@@ -46,21 +46,32 @@ fn main() {
 
     let result: Result<InstructionOutput, MosooError> = dispatch_guest_instruction(instruction);
 
-    // Privacy-preserving public journal emission (RFP-021 Functionality #8, Finding 4, & Finding 5 / Session 10):
+    // Privacy-preserving public journal emission (RFP-021 Functionality #8, Finding 4, & Finding 5 / Session 10 & 12):
     // Statements emitted to public zkVM journal are automatically shielded so that
     // Ethereum addresses, event logs, subject keys, and LEZ recipients are never exposed publicly.
     // In production privacy mode, caller supplies a 256-bit secret salt in AttestStateArgs, ensuring
     // non-correlation across repeated statements and immunity to dictionary matching.
     // If the statement is already salted-shielded, its blinding is preserved.
-    let safe_result = result.map(|output| match output {
+    // For private statement types (AccountBalance, StorageSlot, ReceiptLog), unshielded value leakage is rejected (Finding 5 / Session 12).
+    let safe_result = result.and_then(|output| match output {
         InstructionOutput::StatementIssued(stmt) => {
+            if (stmt.proof_type_tag == mosoo_core::types::PROOF_TYPE_ACCOUNT_BALANCE
+                || stmt.proof_type_tag == mosoo_core::types::PROOF_TYPE_STORAGE_SLOT
+                || stmt.proof_type_tag == mosoo_core::types::PROOF_TYPE_RECEIPT_LOG)
+                && !stmt.is_value_shielded()
+            {
+                return Err(MosooError::InvalidBootstrap(
+                    "private statement types (AccountBalance, StorageSlot, ReceiptLog) require confidential privacy shielding in zkVM public journal"
+                        .into(),
+                ));
+            }
             if stmt.is_shielded() {
-                InstructionOutput::StatementIssued(stmt)
+                Ok(InstructionOutput::StatementIssued(stmt))
             } else {
-                InstructionOutput::StatementIssued(stmt.shield())
+                Ok(InstructionOutput::StatementIssued(stmt.shield()))
             }
         }
-        other => other,
+        other => Ok(other),
     });
 
     // Commit the result to the journal (public outputs of the zkVM program).

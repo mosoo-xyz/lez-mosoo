@@ -149,6 +149,21 @@ pub struct TrustedBridgeConfig {
     /// Authenticated trusted head slot (or consensus checkpoint slot) per chain ID
     #[serde(default)]
     pub trusted_heads: HashMap<u64, u64>,
+    /// Authenticated trusted head slot tracked per light-client instance PDA (Finding 1 / Session 12)
+    #[serde(default)]
+    pub instance_trusted_heads: HashMap<String, u64>,
+}
+
+/// Explicit privacy and confidentiality modes for state attestation statements (Finding 5 / Session 12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum PrivacyMode {
+    /// Public verifiable fact with clear statement binding for on-chain consumption
+    #[default]
+    Public,
+    /// Address privacy: blinds subject key & statement id with secret salt; leaves verified value for token settlement
+    AddressPrivate,
+    /// Full confidentiality: blinds subject key, statement id, and verified value commitment
+    Confidential,
 }
 
 impl Default for TrustedBridgeConfig {
@@ -190,6 +205,12 @@ impl TrustedBridgeConfig {
         let mut trusted_heads = HashMap::new();
         trusted_heads.insert(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_CHECKPOINT_SLOT);
 
+        let mut instance_trusted_heads = HashMap::new();
+        instance_trusted_heads.insert(
+            hex::encode(CANONICAL_SEPOLIA_MOSOO_INSTANCE),
+            CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+        );
+
         Self {
             admin_authority: None,
             trusted_lockers,
@@ -197,6 +218,7 @@ impl TrustedBridgeConfig {
             trusted_instances,
             trusted_checkpoints,
             trusted_heads,
+            instance_trusted_heads,
         }
     }
 
@@ -451,6 +473,39 @@ impl TrustedBridgeConfig {
     /// Returns the registered trusted head slot for a given chain ID, if configured.
     pub fn get_trusted_head(&self, chain_id: u64) -> Option<u64> {
         self.trusted_heads.get(&chain_id).copied()
+    }
+
+    /// Checks if the given instance PDA is the approved trusted instance for the chain.
+    /// If no trusted instance is registered for this chain, returns true (open network),
+    /// otherwise returns true only if instance_pda matches the registered trusted instance.
+    pub fn is_trusted_or_unpinned(&self, chain_id: u64, instance_pda: &[u8; 32]) -> bool {
+        match self.get_trusted_instance(chain_id) {
+            Some(expected) => expected == *instance_pda,
+            None => true,
+        }
+    }
+
+    /// Registers or updates the trusted head slot for a given chain ID and instance PDA.
+    pub fn register_trusted_head_for_instance(
+        &mut self,
+        chain_id: u64,
+        instance_pda: [u8; 32],
+        head_slot: u64,
+    ) -> bool {
+        if head_slot == 0 {
+            return false;
+        }
+        self.trusted_heads.insert(chain_id, head_slot);
+        self.instance_trusted_heads
+            .insert(hex::encode(instance_pda), head_slot);
+        true
+    }
+
+    /// Returns the registered trusted head slot for a specific instance PDA, if configured.
+    pub fn get_instance_trusted_head(&self, instance_pda: &[u8; 32]) -> Option<u64> {
+        self.instance_trusted_heads
+            .get(&hex::encode(instance_pda))
+            .copied()
     }
 }
 

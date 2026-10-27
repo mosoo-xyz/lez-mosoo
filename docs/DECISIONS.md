@@ -567,3 +567,49 @@ Audit Session 11 (`t_6ae08a7e61308191964e5c12f3b83e26`) conducted a comprehensiv
    - Updated test count labels across `README.md` and `.github/workflows/ci.yml`.
 6. **MosooLocker Guardian Independence (P3)**:
    - Enforced `if (_guardian == address(0)) revert InvalidGuardian();` and `if (_guardian == msg.sender) revert GuardianMustNotBeOwner();` in `MosooLocker.sol` constructor.
+
+---
+
+## ADR-019: Canonical Instance Pinning, Independent Freshness Anchor Verification, Deposit Proof Locker & Allowlist Attestation Guards, LEZ Runtime Adapter End-to-End Acceptance, and Default-Deny Privacy Shielding
+**Date**: October 27, 2026  
+**Status**: Accepted & Implemented  
+
+### Context & Problem Statement
+Audit Session 12 (`t_6ae0a89707d88191b1048c4ae7d7770f`) reviewed the latest repository hardening and identified 5 key areas for complete production readiness:
+1. **Finding 1 (High): Unpinned Instance Global Trusted Head Advancement**:
+   - While `validate_initialize_with_config` pinned instances, update steps (`handle_begin_update_authenticated`, `handle_miller_update_authenticated`, `handle_finish_update_authenticated`) and config trusted head tracking permitted unpinned instances on supported chains to advance global `config.trusted_heads`.
+   - In addition, per-instance trusted heads were not tracked separately from chain-wide heads in `TrustedBridgeConfig`.
+2. **Finding 2 (High): Independent Weak-Subjectivity Freshness Verification**:
+   - `validate_initialize_with_config` required an authenticated anchor head check for supported chains, ensuring caller-supplied heads preceding anchor head (`s < anchor`) or leaping beyond 54,000 slots (`s > anchor + 54_000`) are rejected fail-closed.
+   - Operational freshness must enforce 54,000 slots (~7.5 days) against anchor head.
+3. **Finding 3 (High): Deposit Proof Binding to Canonical Locker and Token Allowlist**:
+   - `handle_attest_state_authenticated` and `handle_attest_state` did not validate `deposit_contract` and `token_contract` against `TrustedBridgeConfig` allowlists, permitting claims against arbitrary contracts.
+4. **Finding 4 (Production Blocker): Real LEZ Runtime Integration & E2E Acceptance Test**:
+   - Clarified that LEZ smart contracts execute natively on the host via `LezRuntimeAdapter<S>` and `dispatch_store_instruction` against persistent storage.
+   - Required a full end-to-end acceptance test: `test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e` proving initialize -> 3-Tx update pipeline -> state attestation runs against persistent storage.
+5. **Finding 5 (Medium): Default-Deny Privacy Shielding & Value Confidentiality**:
+   - Added `PrivacyMode { Public, AddressPrivate, Confidential }` in `mosoo-core/src/types.rs`.
+   - In `methods/guest/src/main.rs`: enforced default-deny privacy: private statement types (`AccountBalance`, `StorageSlot`, `ReceiptLog`) in zkVM public journal require value confidentiality (`stmt.is_value_shielded()`), rejecting unshielded value leakage.
+   - Contextually applied `shield_with_salt` for settlement proofs and `shield_confidential` for non-settlement proofs.
+
+### Decision & Implementation
+1. **Canonical Instance Pinning & Per-Instance Head Tracking (Finding 1)**:
+   - Added `instance_trusted_heads: HashMap<String, u64>` to `TrustedBridgeConfig` using hex-encoded PDA strings for fail-safe JSON serialization.
+   - Implemented `is_trusted_or_unpinned(&self, chain_id, instance_pda)`, `register_trusted_head_for_instance()`, and `get_instance_trusted_head()`.
+   - Enforced `config.is_trusted_or_unpinned(chain_id, instance_pda)` across `handle_begin_update_authenticated`, `handle_miller_update_authenticated`, and `handle_finish_update_authenticated`.
+   - In `handle_finish_update_authenticated`, updated both chain head and per-instance trusted head in persistent storage.
+2. **Independent Weak-Subjectivity Freshness Verification (Finding 2)**:
+   - Enforced in `validate_initialize_with_config` that for supported chains, an authenticated anchor head must be registered.
+   - Caller-supplied `trusted_head_slot` cannot precede anchor head (`s < anchor_head`) or exceed anchor head by > 54,000 slots.
+   - Rejected bootstrap checkpoints where `anchor_head > bootstrap_header.slot + 54_000` with `MosooError::WeakSubjectivityExpired`.
+3. **Deposit Proof Canonical Locker & Token Allowlist Attestation Guards (Finding 3)**:
+   - In `handle_attest_state_authenticated` and `handle_attest_state`, enforced that `ProofTarget::NativeEthDeposit` and `ProofTarget::Erc20Deposit` require `config.is_trusted_locker(chain_id, deposit_contract)`.
+   - For `ProofTarget::Erc20Deposit`, enforced `config.is_token_allowed(chain_id, token_contract)`.
+   - Non-compliant targets immediately fail closed with `MosooError::UntrustedDepositContract` and `MosooError::UntrustedTokenContract`.
+4. **Real LEZ Runtime Integration & E2E Acceptance Test (Finding 4)**:
+   - Documented and verified that LEZ smart contracts execute natively on the host via `LezRuntimeAdapter<S>` and `dispatch_store_instruction` against persistent storage.
+   - Implemented `test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e` verifying the complete persistent lifecycle: initialization, update creation, and state attestation using genuine MPT inclusion proofs against persistent storage.
+5. **Default-Deny Privacy Shielding & Value Confidentiality (Finding 5)**:
+   - Added `PrivacyMode` enum (`Public`, `AddressPrivate`, `Confidential`) in `mosoo-core/src/types.rs`.
+   - Enforced in `methods/guest/src/main.rs` that private statement types (`AccountBalance`, `StorageSlot`, `ReceiptLog`) require value confidentiality (`stmt.is_value_shielded()`) in the public zkVM journal, rejecting unshielded value leakage.
+   - Verified that settlement proofs use `shield_with_salt` (Address Privacy) while non-settlement proofs use `shield_confidential` (Confidential Privacy).

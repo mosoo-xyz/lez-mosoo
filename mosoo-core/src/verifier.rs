@@ -347,6 +347,16 @@ pub fn validate_initialize_with_config(
     args: &InitializeArgs,
     config: &TrustedBridgeConfig,
 ) -> Result<(), MosooError> {
+    // 0. Canonical Instance Pinning (Finding 1 / Session 12):
+    // If a trusted light-client instance PDA is registered for this chain in TrustedBridgeConfig,
+    // the instance derived from args.chain_id and args.instance_id MUST match it exactly.
+    if let Some(expected_pda) = config.get_trusted_instance(args.chain_id) {
+        let actual_pda = crate::types::derive_instance_pda(args.chain_id, &args.instance_id);
+        if actual_pda != expected_pda {
+            return Err(MosooError::UntrustedSourceInstance);
+        }
+    }
+
     // 1. Guard: custom chains without trusted checkpoint anchor must fail closed unless registered in TrustedBridgeConfig
     if !crate::types::is_supported_chain_id(args.chain_id) {
         let Some(ref net_cfg) = args.network_config else {
@@ -406,11 +416,22 @@ pub fn validate_initialize_with_config(
         ));
     }
 
-    // 5. Enforce freshness against authenticated anchor head if registered
+    // 5. Independent Weak-Subjectivity Freshness Verification (Finding 2 / Session 12):
+    // For supported Ethereum networks or any network with a configured anchor head,
+    // an instance cannot be initialized without binding to an authentic anchor head in TrustedBridgeConfig.
+    // Callers cannot self-certify freshness by supplying arbitrary head slots.
     if let Some(anchor_head) = config.get_trusted_head(args.chain_id) {
         if args.trusted_head_slot < anchor_head {
             return Err(MosooError::InvalidBootstrap(format!(
                 "trusted_head_slot ({}) cannot precede authenticated anchor head ({})",
+                args.trusted_head_slot, anchor_head
+            )));
+        }
+        if args.trusted_head_slot
+            > anchor_head.saturating_add(CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS)
+        {
+            return Err(MosooError::InvalidBootstrap(format!(
+                "caller-supplied trusted_head_slot ({}) exceeds weak-subjectivity window beyond authenticated anchor head ({})",
                 args.trusted_head_slot, anchor_head
             )));
         }
@@ -420,6 +441,11 @@ pub fn validate_initialize_with_config(
                 current_slot: anchor_head,
             });
         }
+    } else if crate::types::is_supported_chain_id(args.chain_id) {
+        return Err(MosooError::InvalidBootstrap(format!(
+            "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
+            args.chain_id
+        )));
     }
 
     Ok(())
@@ -1277,10 +1303,64 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         return Err(MosooError::PredicateFailed);
     }
 
-    // Privacy-preserving statement shielding (Finding 4 / Session 11):
-    // If privacy_salt is provided, blind statement provenance and nullifiers.
-    // For deposit/settlement proofs, blind address/event provenance while disclosing verified_value for token release.
-    // For non-settlement proofs (balance, storage), blind both identity and verified_value with confidential salt commitment.
+    // Deposit Locker and Token Allowlist Authorization Guard (Finding 3 / Session 12):
+    // Inbound deposit statements are ONLY issued for verified, authentic deposit lockers and allowed tokens.
+    match &args.proof.target {
+        inclusion::ProofTarget::NativeEthDeposit {
+            deposit_contract, ..
+        } => {
+            if let Some(canonical_locker) =
+                TrustedBridgeConfig::canonical().get_trusted_locker(args.instance.chain_id)
+            {
+                let mut dc = [0u8; 20];
+                dc.copy_from_slice(deposit_contract.as_slice());
+                if dc != canonical_locker {
+                    return Err(MosooError::UntrustedDepositContract {
+                        chain_id: args.instance.chain_id,
+                        contract: dc,
+                    });
+                }
+            }
+        }
+        inclusion::ProofTarget::Erc20Deposit {
+            deposit_contract,
+            token_contract,
+            ..
+        } => {
+            let canonical = TrustedBridgeConfig::canonical();
+            if let Some(canonical_locker) = canonical.get_trusted_locker(args.instance.chain_id) {
+                let mut dc = [0u8; 20];
+                dc.copy_from_slice(deposit_contract.as_slice());
+                if dc != canonical_locker {
+                    return Err(MosooError::UntrustedDepositContract {
+                        chain_id: args.instance.chain_id,
+                        contract: dc,
+                    });
+                }
+            }
+            let mut tc = [0u8; 20];
+            tc.copy_from_slice(token_contract.as_slice());
+            if canonical
+                .allowed_tokens
+                .contains_key(&args.instance.chain_id)
+                && !canonical.is_token_allowed(args.instance.chain_id, &tc)
+            {
+                return Err(MosooError::UntrustedTokenContract {
+                    chain_id: args.instance.chain_id,
+                    token: tc,
+                });
+            }
+        }
+        _ => {}
+    }
+
+    // Privacy-preserving statement shielding (Finding 4 / Session 11 & Finding 5 / Session 12):
+    // Dual privacy modes:
+    // When privacy_salt is provided:
+    // - For settlement proofs (Erc20Deposit, NativeEthDeposit, Erc20Transfer), Address Privacy mode
+    //   shields account identity and subject keys while disclosing verified_value for EVM contract release.
+    // - For non-settlement proofs (AccountBalance, StorageSlot, ReceiptLog), Confidential Privacy mode
+    //   shields account identity AND commits verified_value with secret salt to eliminate journal value leakage.
     let statement = if let Some(salt) = args.privacy_salt {
         match args.proof.target {
             inclusion::ProofTarget::Erc20Deposit { .. }
@@ -1380,6 +1460,11 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
 
     // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 & 3 / Session 11)
     let config = TrustedBridgeConfig::load_strict(store)?;
+    // Instance Pinning Guard (Finding 1 / Session 12):
+    // Only the approved trusted instance can execute updates and advance consensus state.
+    if !config.is_trusted_or_unpinned(args.instance.chain_id, instance_pda) {
+        return Err(MosooError::UntrustedSourceInstance);
+    }
     let anchor_head = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
         MosooError::InvalidBootstrap(format!(
             "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
@@ -1455,6 +1540,14 @@ pub fn handle_miller_update_authenticated<S: AccountStore>(
 ) -> Result<InstructionOutput, MosooError> {
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     let authentic_job = verify_job_account_authenticity(store, job_pda)?;
+
+    // Instance Pinning Guard (Finding 1 / Session 12):
+    // Only the approved trusted instance can execute updates.
+    let config = TrustedBridgeConfig::load_strict(store)?;
+    if !config.is_trusted_or_unpinned(authentic_instance.chain_id, instance_pda) {
+        return Err(MosooError::UntrustedSourceInstance);
+    }
+
     let mut args = args;
     args.instance = authentic_instance;
     args.job = authentic_job;
@@ -1483,6 +1576,14 @@ pub fn handle_finish_update_authenticated<S: AccountStore>(
 ) -> Result<InstructionOutput, MosooError> {
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     let authentic_job = verify_job_account_authenticity(store, job_pda)?;
+
+    // Instance Pinning Guard (Finding 1 / Session 12):
+    // Only the approved trusted instance can execute updates and advance consensus state.
+    let mut config = TrustedBridgeConfig::load_strict(store)?;
+    if !config.is_trusted_or_unpinned(authentic_instance.chain_id, instance_pda) {
+        return Err(MosooError::UntrustedSourceInstance);
+    }
+
     let mut args = args;
     args.instance = authentic_instance;
     args.job = authentic_job;
@@ -1503,11 +1604,14 @@ pub fn handle_finish_update_authenticated<S: AccountStore>(
             MosooError::Internal(format!("Failed to serialize Closed JobAccount: {e}"))
         })?;
 
-        // Automatic consensus head advancement (Finding 1 / Session 10 & Finding 2 / Session 11):
+        // Automatic consensus head advancement (Finding 1 / Session 10 & Finding 2 / Session 11 & Finding 1 / Session 12):
         // When a light-client update is verified and finalized on-chain, automatically advance
-        // the authenticated trusted head slot for this chain and commit it atomically to persistent storage.
-        let mut config = TrustedBridgeConfig::load_strict(store)?;
-        config.register_trusted_head(updated_instance.chain_id, updated_instance.current_slot);
+        // the authenticated trusted head slot for this chain and instance PDA and commit it atomically to persistent storage.
+        config.register_trusted_head_for_instance(
+            updated_instance.chain_id,
+            *instance_pda,
+            updated_instance.current_slot,
+        );
         let config_pda = crate::types::derive_bridge_config_pda();
         let config_bytes = serde_json::to_vec(&config).map_err(|e| {
             MosooError::Internal(format!("Failed to serialize TrustedBridgeConfig: {e}"))
@@ -1613,6 +1717,45 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
             return Err(MosooError::DomainSeparationFailed);
         }
         args.header = stored_header;
+    }
+
+    // 3. Verify Deposit Contract and Token Allowlist against TrustedBridgeConfig (Finding 3 / Session 12)
+    match &args.proof.target {
+        inclusion::ProofTarget::NativeEthDeposit {
+            deposit_contract, ..
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            if !config.is_trusted_locker(args.instance.chain_id, &dc) {
+                return Err(MosooError::UntrustedDepositContract {
+                    chain_id: args.instance.chain_id,
+                    contract: dc,
+                });
+            }
+        }
+        inclusion::ProofTarget::Erc20Deposit {
+            deposit_contract,
+            token_contract,
+            ..
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            if !config.is_trusted_locker(args.instance.chain_id, &dc) {
+                return Err(MosooError::UntrustedDepositContract {
+                    chain_id: args.instance.chain_id,
+                    contract: dc,
+                });
+            }
+            let mut tc = [0u8; 20];
+            tc.copy_from_slice(token_contract.as_slice());
+            if !config.is_token_allowed(args.instance.chain_id, &tc) {
+                return Err(MosooError::UntrustedTokenContract {
+                    chain_id: args.instance.chain_id,
+                    token: tc,
+                });
+            }
+        }
+        _ => {}
     }
 
     handle_attest_state(args)

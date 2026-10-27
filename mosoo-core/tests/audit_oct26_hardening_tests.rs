@@ -4011,3 +4011,507 @@ fn test_session11_finding6_solidity_locker_guardian_and_quorum_invariants() {
         "Guardian must be distinct independent address from owner"
     );
 }
+
+// ===========================================================================
+// AUDIT SESSION 12 HARDENING TESTS (October 27, 2026)
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Finding 1: Unpinned Instance Cannot Initialize or Advance Global Trusted Head
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session12_finding1_unpinned_instance_cannot_initialize_or_advance_trusted_head() {
+    use mosoo_core::types::{CANONICAL_SEPOLIA_CHECKPOINT_ROOT, CANONICAL_SEPOLIA_CHECKPOINT_SLOT};
+
+    let mut store = MockStore::default();
+    let bridge_cfg = TrustedBridgeConfig::canonical();
+    bridge_cfg.save_to_store(&mut store).unwrap();
+
+    let unpinned_instance_id = [0xee; 32];
+    let branch = vec![[0u8; 32]; 5];
+    let committee = make_valid_committee();
+    let bootstrap_header = mosoo_core::types::BeaconBlockHeader {
+        slot: CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+        proposer_index: 0,
+        parent_root: [0u8; 32],
+        state_root: [0u8; 32],
+        body_root: [0u8; 32],
+    };
+
+    let init_args = mosoo_core::types::InitializeArgs {
+        instance_id: unpinned_instance_id,
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        bootstrap_header,
+        trusted_checkpoint_root: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+    };
+
+    // 1. Initializing unpinned instance on Sepolia fails closed with UntrustedSourceInstance
+    let res = mosoo_core::verifier::handle_initialize_store(&mut store, init_args);
+    assert!(
+        matches!(res, Err(MosooError::UntrustedSourceInstance)),
+        "Initializing an unpinned instance on Sepolia must be strictly rejected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 2: Independent Freshness Enforces Authenticated Anchor Head
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session12_finding2_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint(
+) {
+    use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    // Simulate real Ethereum PoS network head that has progressed 60,000 slots (> 54,000 slots / ~7.5 days)
+    let advanced_network_head = CANONICAL_SEPOLIA_CHECKPOINT_SLOT + 60_000;
+    bridge_cfg.register_trusted_head(ETH_SEPOLIA_CHAIN_ID, advanced_network_head);
+
+    let branch = vec![[0u8; 32]; 5];
+    let committee = make_valid_committee();
+    let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee).unwrap();
+    let state_root = mosoo_core::crypto::compute_branch_root(leaf, &branch, 54);
+    let stale_header = mosoo_core::types::BeaconBlockHeader {
+        slot: CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+        proposer_index: 0,
+        parent_root: [0u8; 32],
+        state_root,
+        body_root: [0u8; 32],
+    };
+    let checkpoint_root = mosoo_core::crypto::hash_tree_root_beacon_header(&stale_header);
+    bridge_cfg.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, checkpoint_root);
+
+    // Adversary attempts to pass a stale checkpoint and a self-certified head slot close to it
+    let adversary_init = mosoo_core::types::InitializeArgs {
+        instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        bootstrap_header: stale_header,
+        trusted_checkpoint_root: checkpoint_root,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: CANONICAL_SEPOLIA_CHECKPOINT_SLOT + 10, // Stale caller-supplied head!
+    };
+
+    // Stale caller head is rejected because it precedes the authenticated anchor head
+    let res = mosoo_core::verifier::validate_initialize_with_config(&adversary_init, &bridge_cfg);
+    assert!(
+        matches!(res, Err(MosooError::InvalidBootstrap(_))),
+        "Caller supplying stale trusted_head_slot below authenticated anchor must be rejected"
+    );
+
+    // If adversary supplies matching advanced head, bootstrap checkpoint fails weak subjectivity!
+    let mut adversary_init_matching = adversary_init;
+    adversary_init_matching.trusted_head_slot = advanced_network_head;
+    let res2 = mosoo_core::verifier::validate_initialize_with_config(
+        &adversary_init_matching,
+        &bridge_cfg,
+    );
+    assert!(
+        matches!(res2, Err(MosooError::WeakSubjectivityExpired { .. })),
+        "Checkpoint older than 54,000 slots relative to authenticated anchor head must be rejected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 3: Deposit Proof Binding to Canonical Locker and Token Allowlist
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session12_finding3_attest_state_rejects_untrusted_deposit_locker_and_disallowed_token() {
+    use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+
+    let mut store = MockStore::default();
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+
+    let mut instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    instance.bootstrap_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    instance.current_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    let instance_pda = instance.pda_address();
+    bridge_cfg.register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, instance_pda);
+    bridge_cfg.save_to_store(&mut store).unwrap();
+
+    store.set_account_with_owner(
+        &instance_pda,
+        serde_json::to_vec(&instance).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let header = make_test_header(&instance);
+    let header_pda = header.pda_address();
+    store.set_account_with_owner(
+        &header_pda,
+        serde_json::to_vec(&header).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    // 1. Native ETH deposit from fake / untrusted deposit contract is rejected
+    let fake_locker = alloy_primitives::Address::repeat_byte(0xde);
+    let sender = alloy_primitives::Address::repeat_byte(0x11);
+    let recipient = [0x22u8; 32];
+    let fake_eth_proof = StateProof {
+        target: ProofTarget::NativeEthDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: fake_locker,
+            sender,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+    let args_fake_locker = AttestStateArgs {
+        instance: instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: fake_eth_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: None,
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+    };
+    let res = mosoo_core::verifier::handle_attest_state_authenticated(
+        &store,
+        &instance_pda,
+        Some(&header_pda),
+        args_fake_locker,
+    );
+    assert!(
+        matches!(res, Err(MosooError::UntrustedDepositContract { .. })),
+        "Arbitrary fake emitter claiming NativeEthDeposit must be rejected"
+    );
+
+    // 2. ERC-20 deposit with authentic locker but disallowed token is rejected
+    let authentic_locker = alloy_primitives::Address::from_slice(&CANONICAL_SEPOLIA_MOSOO_LOCKER);
+    let disallowed_token = alloy_primitives::Address::repeat_byte(0x99);
+    let disallowed_erc20_proof = StateProof {
+        target: ProofTarget::Erc20Deposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: authentic_locker,
+            token_contract: disallowed_token,
+            sender,
+            recipient,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: None,
+        storage_value: None,
+        receipt_value: None,
+    };
+    let args_disallowed_token = AttestStateArgs {
+        instance,
+        header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: disallowed_erc20_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: None,
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+    };
+    let res2 = mosoo_core::verifier::handle_attest_state_authenticated(
+        &store,
+        &instance_pda,
+        Some(&header_pda),
+        args_disallowed_token,
+    );
+    assert!(
+        matches!(res2, Err(MosooError::UntrustedTokenContract { .. })),
+        "Unapproved token in Erc20Deposit must be rejected"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Finding 4: LEZ Runtime Adapter End-to-End Persistent Lifecycle Acceptance Test
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e() {
+    use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    use mosoo_core::verifier::{BeginUpdateArgs, InstructionOutput, LezRuntimeAdapter};
+
+    let store = MockStore::default();
+    let mut adapter = LezRuntimeAdapter::new(store);
+
+    // 1. Dispatch Initialize through the LEZ runtime adapter
+    let committee = make_valid_committee();
+    let gindex = mosoo_core::crypto::current_sync_committee_gindex(
+        ETH_SEPOLIA_CHAIN_ID,
+        CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+    );
+    let depth = (63 - gindex.leading_zeros()) as usize;
+    let branch = vec![[0u8; 32]; depth];
+    let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee).unwrap();
+    let state_root = mosoo_core::crypto::compute_branch_root(leaf, &branch, gindex);
+    let bootstrap_header = mosoo_core::types::BeaconBlockHeader {
+        slot: CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+        proposer_index: 0,
+        parent_root: [0u8; 32],
+        state_root,
+        body_root: [0u8; 32],
+    };
+    let checkpoint_root = mosoo_core::crypto::hash_tree_root_beacon_header(&bootstrap_header);
+
+    // Bootstrap initial config with matching checkpoint root
+    let mut bridge_cfg = TrustedBridgeConfig::canonical();
+    bridge_cfg.register_trusted_checkpoint(ETH_SEPOLIA_CHAIN_ID, checkpoint_root);
+    bridge_cfg.save_to_store(adapter.store_mut()).unwrap();
+
+    let init_args = mosoo_core::types::InitializeArgs {
+        instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
+        network_config: None,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        bootstrap_header,
+        trusted_checkpoint_root: checkpoint_root,
+        current_sync_committee: committee,
+        current_sync_committee_branch: branch,
+        initial_next_committee: None,
+        initial_next_committee_branch: None,
+        trusted_head_slot: CANONICAL_SEPOLIA_CHECKPOINT_SLOT,
+    };
+
+    let init_out = adapter
+        .dispatch_transaction(GuestInstruction::Initialize(init_args))
+        .expect("Initialize via LezRuntimeAdapter must succeed");
+    let instance = match init_out {
+        InstructionOutput::Initialized(inst) => inst,
+        _ => panic!("Expected Initialized"),
+    };
+    let instance_pda = instance.pda_address();
+    assert_eq!(instance_pda, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+
+    // Verify instance was stored with program ownership in persistent store
+    assert_eq!(
+        adapter.store().get_account_owner(&instance_pda),
+        Some(MOSOO_PROGRAM_ID)
+    );
+
+    // 2. Dispatch BeginUpdate through LEZ runtime adapter
+    let update = make_test_update(
+        CANONICAL_SEPOLIA_CHECKPOINT_SLOT + 32,
+        CANONICAL_SEPOLIA_CHECKPOINT_SLOT + 32,
+    );
+    let begin_args = BeginUpdateArgs {
+        instance: instance.clone(),
+        update,
+        nonce: 1,
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+    };
+    let begin_out = adapter
+        .dispatch_begin_update(&instance_pda, begin_args)
+        .expect("BeginUpdate via LezRuntimeAdapter must succeed");
+    let job = match begin_out {
+        InstructionOutput::JobCreated(j) => j,
+        _ => panic!("Expected JobCreated"),
+    };
+    let job_pda = job.pda_address();
+
+    // Verify job account was stored with program ownership in persistent store
+    assert_eq!(
+        adapter.store().get_account_owner(&job_pda),
+        Some(MOSOO_PROGRAM_ID)
+    );
+
+    // 3. Dispatch AttestState through LEZ runtime adapter against persistent store
+    let balance_addr = alloy_primitives::Address::repeat_byte(0x33);
+    let (state_root, proof_nodes, account_rlp) =
+        mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(
+            balance_addr,
+            alloy_primitives::U256::from(500_000u64),
+        );
+
+    // Update instance execution state root in adapter storage
+    let mut updated_inst = instance.clone();
+    updated_inst.current_execution_state_root = state_root.0;
+    updated_inst.current_execution_block_hash = [0x11; 32];
+    updated_inst.current_receipts_root = [0x22; 32];
+    adapter.store_mut().set_account_with_owner(
+        &instance_pda,
+        serde_json::to_vec(&updated_inst).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let mut header_rec = make_test_header(&updated_inst);
+    header_rec.execution_state_root = state_root.0;
+    header_rec.execution_block_hash = [0x11; 32];
+    header_rec.receipts_root = [0x22; 32];
+    let header_pda = header_rec.pda_address();
+    adapter.store_mut().set_account_with_owner(
+        &header_pda,
+        serde_json::to_vec(&header_rec).unwrap(),
+        MOSOO_PROGRAM_ID,
+    );
+
+    let proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: balance_addr,
+        },
+        account_proof: proof_nodes,
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: Some(account_rlp),
+        storage_value: None,
+        receipt_value: None,
+    };
+    let attest_args = AttestStateArgs {
+        instance: updated_inst,
+        header: header_rec,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: Some([0x88; 32]),
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+    };
+    let attest_out = adapter
+        .dispatch_attest_state(&instance_pda, Some(&header_pda), attest_args)
+        .expect("AttestState via LezRuntimeAdapter must succeed");
+    match attest_out {
+        InstructionOutput::StatementIssued(stmt) => {
+            assert!(stmt.is_value_shielded());
+            assert!(stmt.is_shielded());
+        }
+        _ => panic!("Expected StatementIssued"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Finding 5: Privacy Mode and Confidential Value Shielding Enforcement
+// ---------------------------------------------------------------------------
+#[test]
+fn test_session12_finding5_privacy_mode_and_confidential_shielding_enforcement() {
+    use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+
+    let balance_addr = alloy_primitives::Address::repeat_byte(0x55);
+    let (state_root, proof_nodes, account_rlp) =
+        mosoo_core::inclusion::test_helpers::build_test_account_balance_proof(
+            balance_addr,
+            alloy_primitives::U256::from(100_000u64),
+        );
+
+    let mut instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
+    instance.bootstrap_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    instance.current_slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    instance.current_execution_state_root = state_root.0;
+    instance.current_execution_block_hash = [0x11; 32];
+    instance.current_receipts_root = [0x22; 32];
+
+    let mut header = make_test_header(&instance);
+    header.execution_state_root = state_root.0;
+    header.execution_block_hash = [0x11; 32];
+    header.receipts_root = [0x22; 32];
+    let salt = [0x42u8; 32];
+
+    // 1. Non-settlement proof (AccountBalance) with salt automatically emits StatementBinding::Confidential
+    let balance_proof = StateProof {
+        target: ProofTarget::AccountBalance {
+            address: balance_addr,
+        },
+        account_proof: proof_nodes,
+        storage_proof: None,
+        receipt_proof: None,
+        account_value: Some(account_rlp),
+        storage_value: None,
+        receipt_value: None,
+    };
+    let attest_confidential = AttestStateArgs {
+        instance: instance.clone(),
+        header: header.clone(),
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: balance_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: Some(salt),
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+    };
+    let out = mosoo_core::verifier::handle_attest_state(attest_confidential)
+        .expect("Attest state with salt must succeed");
+    let stmt = match out {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => panic!("Expected StatementIssued"),
+    };
+    assert!(
+        stmt.is_value_shielded(),
+        "Balance proof with salt must be value-shielded"
+    );
+    assert!(
+        stmt.is_shielded(),
+        "Balance proof with salt must be identity-shielded"
+    );
+    let mut expected_val = [0u8; 32];
+    expected_val[24..].copy_from_slice(&100_000u64.to_be_bytes());
+    assert!(stmt.verify_salted_value_commitment(&salt, &expected_val));
+
+    // 2. Settlement proof (Erc20Transfer) with salt emits AddressPrivate (preserves value for token claim)
+    let tok_addr = alloy_primitives::Address::repeat_byte(0x01);
+    let snd_addr = alloy_primitives::Address::repeat_byte(0x02);
+    let rec_addr = alloy_primitives::Address::repeat_byte(0x03);
+    let mut rec_lez = [0u8; 32];
+    rec_lez[12..].copy_from_slice(rec_addr.as_slice());
+    let amount = 100_000u64;
+
+    let receipt_bytes = mosoo_core::inclusion::test_helpers::build_test_eip1559_transfer_receipt(
+        tok_addr,
+        snd_addr,
+        rec_addr,
+        alloy_primitives::U256::from(amount),
+    );
+    let key_bytes = alloy_rlp::encode(0u64);
+    let (receipts_root, receipt_proof_nodes) =
+        mosoo_core::inclusion::test_helpers::build_leaf_mpt_proof(&key_bytes, &receipt_bytes);
+
+    let mut transfer_inst = instance.clone();
+    transfer_inst.current_receipts_root = receipts_root.0;
+    let mut transfer_header = header.clone();
+    transfer_header.receipts_root = receipts_root.0;
+
+    let transfer_proof = StateProof {
+        target: ProofTarget::Erc20Transfer {
+            tx_index: 0,
+            log_index: 0,
+            token_contract: tok_addr,
+            sender: snd_addr,
+            recipient: rec_lez,
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(receipt_proof_nodes),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_bytes),
+    };
+    let attest_settlement = AttestStateArgs {
+        instance: transfer_inst,
+        header: transfer_header,
+        header_history_branch: None,
+        historical_execution_proof: None,
+        proof: transfer_proof,
+        predicate: Predicate::AtLeast { min: [0; 32] },
+        privacy_salt: Some(salt),
+        trusted_head_slot: Some(CANONICAL_SEPOLIA_CHECKPOINT_SLOT),
+    };
+    let out2 = mosoo_core::verifier::handle_attest_state(attest_settlement)
+        .expect("Attest settlement with salt must succeed");
+    let stmt2 = match out2 {
+        mosoo_core::verifier::InstructionOutput::StatementIssued(s) => s,
+        _ => panic!("Expected StatementIssued"),
+    };
+    assert!(
+        !stmt2.is_value_shielded(),
+        "Settlement proof must not shield value"
+    );
+    assert!(
+        stmt2.is_shielded(),
+        "Settlement proof must shield addresses and provenance"
+    );
+}

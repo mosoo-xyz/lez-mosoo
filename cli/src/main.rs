@@ -1550,6 +1550,11 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     config.register_trusted_instance(args.chain_id, instance_pda);
     config.register_trusted_checkpoint(args.chain_id, beacon_block_root);
     config.register_trusted_head(args.chain_id, bootstrap_slot);
+    if args.demo && args.target == "deposit" {
+        let mut dc = [0u8; 20];
+        dc.copy_from_slice(target_addr.as_slice());
+        config.register_trusted_locker(args.chain_id, dc);
+    }
     config.save_to_store(&mut store)?;
 
     store.insert_program_account(

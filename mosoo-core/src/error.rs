@@ -226,6 +226,12 @@ pub enum MosooError {
     )]
     UntrustedSourceInstance,
 
+    #[error("untrusted deposit locker: contract {contract:?} is not authorized in bridge config for chain {chain_id}")]
+    UntrustedDepositContract { chain_id: u64, contract: [u8; 20] },
+
+    #[error("untrusted token contract: token {token:?} is not in allowlist for chain {chain_id}")]
+    UntrustedTokenContract { chain_id: u64, token: [u8; 20] },
+
     #[error("persistent storage write failed: {0}")]
     StorageWriteFailed(String),
 
