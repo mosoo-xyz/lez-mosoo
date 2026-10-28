@@ -152,7 +152,7 @@ Any mismatch triggers an immediate fail-closed `StatementIdMismatch` error.
 
 ## 3. Automated Adversarial Test Harness
 
-All 42 mutation attack vectors are implemented as automated regression tests in `mosoo-core/tests/adversarial_mutation_tests.rs`:
+The adversarial test harness implements 50 automated test functions covering 42 distinct mutation attack scenarios in `mosoo-core/tests/adversarial_mutation_tests.rs`:
 
 | Test Name | Attack Scenario Tested | Expected Rejection |
 | :--- | :--- | :--- |

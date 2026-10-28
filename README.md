@@ -74,12 +74,29 @@ Detailed testnet parameters, fee state, and verification steps are documented at
   Enforces a canonical operational freshness window of 54,000 slots (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, ~7.5 days at 12s/slot) with a hard protocol safety ceiling of 1,728,000 slots (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS` / 54,000 epochs, ~240 days) on updates and initial bootstrap checkpoints. Per ADR-004, instances are strictly immutable and never rewritten in place. Stalled instances after network partitions are retired and replaced with fresh instances initialized via `bootstrap_instance` with `verify_anchored_checkpoint`.
 
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
-- **Two-Way Bridge & Hardened Rate-Limiting Architecture (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Inbound bridging (Ethereum -> LEZ) is 100% trustless zkVM consensus and MPT state verification; Outbound settlement (LEZ -> Ethereum) is witness-attested via an M-of-N multisig committee protected by a continuous rolling 24-hour rate limit sliding window (immune to midnight boundary attacks) with bounded cleanup (`MAX_CLEANUP_BATCH = 32`) to guarantee O(1) gas, 2-step timelocked governance on all committee & quorum modifications and rate limits (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), mandatory 24h timelock for large withdrawals (>= 10 ETH), and independent Guardian veto protection. Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
+- **Two-Way Cross-Chain Settlement Architecture (`contracts/MosooLocker.sol`, `mosoo-core/tests/two_way_bridge_tests.rs`)**:
+  - **Inbound State Attestation (Ethereum → LEZ)**: Ethereum consensus and state proofs verified inside the RISC Zero zkVM guest. Sync committee BLS12-381 signatures and execution payload MPT inclusion roots are validated mathematically on-chain without trusting intermediate relayers.
+  - **Outbound Witness Settlement (LEZ → Ethereum)**: LEZ burn receipts verified using an M-of-N multi-signer attester committee. Protected on-chain by a continuous rolling 24-hour rate-limiting sliding window with bounded cleanup (`MAX_CLEANUP_BATCH = 32`) to guarantee O(1) gas, 2-step timelocked governance on committee/quorum changes (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), a mandatory 24-hour timelock queue for large withdrawals (>= 10 ETH), and independent Guardian veto protection.
+  - **Trust Model & Boundaries**: Inbound safety is bound to Ethereum's 2/3 honest sync committee quorum and weak-subjectivity freshness (`54,000 slots`). Outbound safety is bound to the M-of-N attester threshold and timelock guardian oversight.
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`) strictly binding to approved light-client instances (`config.is_trusted_instance`) and program-owned persistent accounts (`store.get_account_owner == MOSOO_PROGRAM_ID`), atomic test harness verification, and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
 - **317 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **333 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix**: Authoritative inventory across all subsystems includes 58 audit hardening tests, 42 adversarial mutation tests, 22 two-way bridge tests, 22 light-client tests, 15 daemon tests, 5 privacy tests, 4 sequencer E2E tests, 60 core unit tests, 42 ERC-20 receiver unit tests, 39 Ether receiver unit tests, 5 CLI unit tests, and 3 doc tests; plus 16 Foundry EVM suite tests for MosooLocker.
+- **Complete Test Matrix (333 Total Tests)**:
+  - `mosoo-core/tests/audit_oct26_hardening_tests.rs`: 58 security hardening regression tests.
+  - `mosoo-core/tests/adversarial_mutation_tests.rs`: 50 test functions covering 42 distinct mutation attack scenarios.
+  - `mosoo-core/tests/two_way_bridge_tests.rs`: 22 cross-chain bridge lifecycle, rate-limiting, and timelock governance tests.
+  - `mosoo-core/tests/integration_tests.rs` & `light_client_tests.rs`: 24 consensus, bootstrap, fork, and storage slot tests.
+  - `mosoo-core/tests/privacy_and_correlation_tests.rs`: 5 zero-correlation and state-diff shielding tests.
+  - `mosoo-core/tests/sequencer_e2e_tests.rs`: 4 standalone sequencer lifecycle tests.
+  - `mosoo-core` unit tests: 46 cryptographic and verifier unit tests.
+  - `consumers/erc20-receiver`: 42 unit tests (and 1 doc test).
+  - `consumers/ether-receiver`: 39 unit tests (and 1 doc test).
+  - `daemon/src/main.rs`: 15 operational consensus daemon tests.
+  - `cli/src/main.rs`: 3 local verification and dry-run tests.
+  - Documentation tests: 3 doc tests (erc20, ether, predicate).
+  - `contracts/test/MosooLocker.t.sol`: 16 Foundry EVM unit and fuzz tests.
+  - All verified in fresh execution trace [`evidence/verify_all_output.txt`](evidence/verify_all_output.txt).
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
 - **Public LEZ v0.3.1 Testnet Verification & Two-Way Settlement Evidence (`evidence/public-testnet-v03/`)**: Live on-chain consensus, block state, and fee verification against the active public LEZ testnet sequencer (`https://testnet.lez.logos.co`, block height > 68,399) via `scripts/verify-onchain.py`, paired with live on-chain Sepolia settlement verification of `MosooLocker.sol` (`0x74625D146B8d9413F3c3976B323d94A739be7856`) via `scripts/testnet-two-way-bridge.py --mode live`.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
@@ -109,6 +126,24 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **External Security Audit**: Independent third-party audit engagement and published certification prior to mainnet release.
 
 ---
+### Reproducing All Tests Locally
+
+```bash
+# 1. Run all 314 Rust workspace unit, integration, and adversarial tests
+cargo test --workspace
+
+# 2. Run CLI local verification tests (3 tests)
+cargo test -p mosoo-cli
+
+# 3. Run MosooLocker Solidity EVM tests (16 tests via Foundry)
+forge test -vvv
+
+# 4. Verify committed execution manifest & gas headroom
+python scripts/verify-evidence.py
+```
+
+---
+
 ## Why a 3-Transaction Split? (Gas Feasibility)
 
 Verifying a 512-validator aggregate BLS12-381 signature inside the zkVM takes roughly **13.3M gas** in one shot. LEZ enforces a per-transaction gas limit of approximately **10,000,000 gas**.
