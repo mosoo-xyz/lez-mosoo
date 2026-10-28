@@ -86,6 +86,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Public LEZ v0.3.1 Testnet Verification & Two-Way Settlement Evidence (`evidence/public-testnet-v03/`)**: Live on-chain consensus, block state, and fee verification against the active public LEZ testnet sequencer (`https://testnet.lez.logos.co`, block height > 68,399) via `scripts/verify-onchain.py`, paired with live on-chain Sepolia settlement verification of `MosooLocker.sol` (`0x74625D146B8d9413F3c3976B323d94A739be7856`) via `scripts/testnet-two-way-bridge.py --mode live`.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
 - **Trust Assumptions & Threat Model (`docs/TRUST_ASSUMPTIONS.md`)**: Comprehensive specification of checkpoint provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness boundaries, privacy limitations, and reorganization failure conditions.
+- **Evaluation of Prior Art & Audited Light Clients (`docs/decisions/003-evaluation-of-helios-and-prior-art.md`)**: Architectural assessment of `helios` (a16z), `revm-helios`, `spl-helios`, and `r0vm-helios` (Boundless), delineating reused Altair SSZ primitives versus independent 3-Tx split innovation, and audit surface impact.
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 
@@ -129,6 +130,31 @@ Once a `HeaderRecord` is committed, consuming contracts request state proofs via
 - **Consumer Claim & Settlement**: 98,000 to 118,000 gas (98.8% headroom)
 
 Detailed cycle breakdowns, hardware profiles, and library comparisons (`blst` vs `arkworks` vs `substrate-bls12-381`) are documented in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
+
+---
+
+## Recommended Consumer Pattern
+
+In strict compliance with **Logos RFP-021 Functionality #7**, Mosoo mandates that state inclusion proofs and predicate evaluations execute **inside the consuming transaction** (Atomic Same-Transaction Claim) to eliminate reliance on unauthenticated out-of-band statements:
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                 Recommended Consumer Pattern (Atomic Claim)                 │
+│                                                                             │
+│  1. In-Transaction Verification: Direct MPT proof verification against an   │
+│     authenticated HeaderRecord committed on the instance PDA.               │
+│  2. In-Guest Predicate Evaluation: Evaluates conditions (AtLeast, Equal)   │
+│     directly over verified state in the same zkVM guest execution context.  │
+│  3. Nullifier Replay Guard: Records deterministic 32-byte statement_id into │
+│     the consumer's persistent Nullifier PDA (reverts with AlreadyClaimed).  │
+│  4. Strict Binding: Asserts chain_id, trusted instance PDA provenance,      │
+│     canonical locker address, and token allowlists.                         │
+│  5. Fail-Closed Revert: If ANY step fails (stale header, bad proof, failed │
+│     predicate), the entire transaction aborts atomically.                   │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+Comprehensive integration guides, typed error hierarchies, and reference code examples are documented in [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
 
 ---
 

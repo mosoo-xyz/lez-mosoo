@@ -8,11 +8,14 @@ use crate::types::{Predicate, VerifiedStatement};
 
 /// Evaluate a `Predicate` over a `VerifiedValue` and produce a `VerifiedStatement`.
 ///
-/// The `statement_id` is derived deterministically from:
-/// `sha256(chain_id LE || subject_key_32 || proof_type_tag || value_bytes || predicate_bytes)`.
-/// Binding to the exact on-chain target (account address or contract+storage slot) ensures that
-/// proving the same balance across different block slots still maps to the identical nullifier,
-/// preventing duplicate cross-slot claim attacks.
+/// The `statement_id` is derived deterministically strictly from verified Ethereum state facts (RFP-021 Functionality #6, ADR-006):
+/// `sha256("mosoo_statement_v1" || chain_id_le8 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
+/// or in V2:
+/// `sha256("mosoo_statement_v2" || chain_id_le8 || genesis_validators_root_32 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`.
+///
+/// NOTE: The statement identity represents the underlying verified Ethereum state fact and is strictly
+/// invariant to predicate variations. This mathematically guarantees that an attacker cannot construct
+/// alternative predicates (e.g. `AtLeast(50)` vs `AtLeast(60)`) on the same event to bypass nullifiers.
 ///
 /// # Examples
 ///
@@ -504,6 +507,59 @@ mod tests {
         assert_eq!(
             stmt_2.statement_id, stmt_3.statement_id,
             "Statement ID must be invariant to predicate changes on identical state"
+        );
+    }
+
+    #[test]
+    fn test_legacy_unbound_instance_fallback_semantics_and_v2_isolation() {
+        let chain_id = 1;
+        let gvr = [0x11; 32];
+        let instance_id = [0x22; 32];
+        let instance_pda = [0x33; 32];
+        let subject = [0x44; 32];
+        let proof_type = 4;
+        let val = val(500);
+        let pred = Predicate::AtLeast { min: [0u8; 32] };
+        let binding = crate::types::StatementBinding::Account { address: [0x55; 20] };
+
+        // 1. Authenticated instance evaluates to canonical V2 statement ID
+        let stmt_v2 = evaluate_with_binding_v2(
+            &pred,
+            &val,
+            chain_id,
+            gvr,
+            instance_id,
+            instance_pda,
+            subject,
+            proof_type,
+            binding.clone(),
+        )
+        .unwrap();
+
+        let expected_v2 = derive_statement_id_v2(chain_id, &gvr, &subject, proof_type, &val.as_bytes32());
+        assert_eq!(stmt_v2.statement_id, expected_v2);
+
+        // 2. Unbound zero-PDA instance explicitly falls back to legacy V1 derivation
+        let stmt_v1 = evaluate_with_binding_v2(
+            &pred,
+            &val,
+            chain_id,
+            gvr,
+            instance_id,
+            [0u8; 32], // Zero PDA
+            subject,
+            proof_type,
+            binding,
+        )
+        .unwrap();
+
+        let expected_v1 = derive_statement_id_from_raw(chain_id, &subject, proof_type, &val.as_bytes32());
+        assert_eq!(stmt_v1.statement_id, expected_v1);
+
+        // 3. Invariant: V1 legacy nullifier and V2 canonical nullifier MUST never collide
+        assert_ne!(
+            stmt_v2.statement_id, stmt_v1.statement_id,
+            "V2 authenticated statement ID and V1 legacy ID must be strictly domain separated"
         );
     }
 }

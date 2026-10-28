@@ -49,21 +49,41 @@ Instead of running a full EVM emulator, Mosoo uses direct Merkle-Patricia Trie (
 
 ---
 
+### 4. boundless-xyz/r0vm-helios (RISC Zero Light Client Port)
+**Overview:** A RISC Zero zkVM guest implementation of Helios developed by Boundless to generate zero-knowledge proofs of Ethereum consensus updates off-chain.
+
+**Analysis for LEZ:**
+- **Monolithic Execution Model:** `r0vm-helios` executes the entire sync committee BLS pairing, SSZ Merkle tree validation, and execution payload extraction in a single monolithic zkVM session. While functional for off-chain proof generation (consuming 25M–35M zkVM cycles), it cannot execute directly on-chain within LEZ's strict 10,000,000 gas limit per transaction.
+- **Proof Aggregation Overhead:** Running monolithic `r0vm-helios` on LEZ would require verifying a recursive Groth16/STARK SNARK receipt on-chain, introducing significant host verifier circuit overhead and memory pressure on standard developer hardware.
+- **Missing State Attestation Prover:** `r0vm-helios` focuses strictly on consensus header updates; it lacks in-guest Merkle-Patricia Trie (MPT) receipt log extraction, EIP-2718 typed receipt decoding, and predicate evaluation engines mandated by RFP-021.
+
+**Mosoo Reuse Strategy & Audit Surface Impact:**
+- **What Mosoo Reused:** We adopted proven SSZ committee serialization formats, generalized index math, and `blst` pairing primitives from `helios`/`r0vm-helios`, minimizing novel cryptographic risk for fundamental Altair math.
+- **What Mosoo Independently Implemented:**
+  1. The 3-transaction split pipeline (`Begin`, `Miller`, `Finish`) ensuring all in-guest operations execute strictly under the 10M gas cap without host-level precompiles.
+  2. Multi-fork consensus support: Electra (64-validator committees), Fulu, and Gloas ePBS (gindex 2856).
+  3. In-guest MPT receipt trie traversal, EIP-2718 decoding, and predicate evaluation engine (`mosoo-core/src/predicate.rs`).
+  4. SPEL PDA state machine and deterministic nullifier derivation (`derive_statement_id_v2`).
+- **Audit Surface Impact:**
+  Reusing battle-tested Altair consensus models keeps the core light-client verification surface aligned with audited industry standards. The independent custom surface (3-Tx intermediate state splitting, PDA nullifier registry, and MPT proofs) is strictly isolated and validated through 58 audit hardening tests, 42 adversarial mutation tests, and deterministic sequencer harnesses.
+
+---
+
 ## Architectural Comparison
 
-| Dimension | a16z/helios | revm-helios | spl-helios | Mosoo (RFP-021) |
-| :--- | :--- | :--- | :--- | :--- |
-| **Execution Environment** | Native CLI / Host CPU | Native CLI + EVM | Solana eBPF | RISC0 zkVM (LEZ Guest) |
-| **LEZ Gas Cap Compliance** | N/A (Exceeds 10M in zkVM) | N/A (Exceeds 10M) | N/A (Requires Solana host) | **Strict 3-Tx Split (< 5.4M Gas)** |
-| **Host Precompile Dependency** | No (Native CPU) | No (Native CPU) | **Yes (`sol_bls12381`)** | **Zero host precompiles required** |
-| **Ethereum Fork Support** | Deneb | Deneb | Capella / Deneb | **Deneb, Electra, Fulu, Gloas** |
-| **State Prover** | MPT via RPC | Full EVM Re-execution | MPT Proofs | **alloy-trie MPT (State & Receipts)** |
-| **Logos SPEL Integration** | None | None | None | **Native SPEL IDL & PDA Model** |
-| **Replay Protection** | Client-side only | Client-side only | Account-based | **Deterministic Nullifiers** |
+| Dimension | a16z/helios | revm-helios | spl-helios | r0vm-helios | Mosoo (RFP-021) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Execution Environment** | Native CLI / Host CPU | Native CLI + EVM | Solana eBPF | RISC0 zkVM (Off-chain) | **RISC0 zkVM (LEZ Guest)** |
+| **LEZ Gas Cap Compliance** | N/A (Exceeds 10M) | N/A (Exceeds 10M) | N/A (Solana host) | Exceeds (25M–35M cycles) | **Strict 3-Tx Split (< 5.4M Gas)** |
+| **Host Precompile Dependency** | No (Native CPU) | No (Native CPU) | **Yes (`sol_bls12381`)** | No (Off-chain prover) | **Zero host precompiles required** |
+| **Ethereum Fork Support** | Deneb | Deneb | Capella / Deneb | Deneb | **Deneb, Electra, Fulu, Gloas** |
+| **State & Log Prover** | MPT via RPC | Full EVM Re-execution | MPT Proofs | None (Header only) | **alloy-trie MPT (State & Receipts)** |
+| **Logos SPEL Integration** | None | None | None | None | **Native SPEL IDL & PDA Model** |
+| **Replay Protection** | Client-side only | Client-side only | Account-based | Proof-based | **Deterministic Nullifiers (v2)** |
 
 ---
 
 ## Conclusion
-Direct reuse of `helios`, `revm-helios`, or `spl-helios` as-is is not feasible for LEZ due to gas limits, zkVM constraints, and runtime differences. 
+Direct reuse of `helios`, `revm-helios`, `spl-helios`, or `r0vm-helios` as-is is not feasible for LEZ due to gas limits, zkVM execution constraints, and runtime differences. 
 
-Mosoo incorporates the proven cryptographic formulas of Helios and the MPT traversal patterns of `alloy-trie`, while introducing the novel 3-transaction split and SPEL PDA architecture required for production deployment on the Logos Execution Zone.
+Mosoo incorporates the proven cryptographic formulas of Helios and the MPT traversal patterns of `alloy-trie`, while introducing the novel 3-transaction split, predicate engine, and SPEL PDA architecture required for production deployment on the Logos Execution Zone.
