@@ -102,10 +102,11 @@ The repository test suite consists of **317 automated Rust tests** (314 unit/int
 
 ---
 
-## 5. Development Roadmap & Independent Security Audit
+## 5. Development Roadmap, Security Model & Independent Audit
 
-- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 333 passing tests (317 Rust + 16 Foundry), reproducibility scripts, live testnet pipeline, and empirical benchmarks.
-- **Milestone M1 (Public LEZ v0.4 Devnet Deployment)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
-- **Milestone M2 (Logos Core Module Catalog & SPEL Integration)**: Register module into official Logos Core module catalog; finalize SPEL IDL interface; extend predicate operations.
-- **Milestone M3 (Daemon Production Hardening)**: Multi-RPC failover with weighted endpoints, automated re-org handling, and Prometheus observability metrics.
-- **Milestone M4 (Independent Security Audit)**: Formal security audit engagement with a recognized external security firm (\$10,000 budget / 3-week window), addressing formal verification, side-channel analysis, and final audit publication.
+- **Cryptographic Trust Assumptions & Threat Model**: Formally documented in [`docs/TRUST_ASSUMPTIONS.md`](TRUST_ASSUMPTIONS.md), covering checkpoint bootstrap provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness roles, zero address leakage and privacy limitations, and deep re-org / partition failure modes.
+- **Milestone M0 (Current — Pre-grant Foundation)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract deployed on Sepolia, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 333 passing tests (317 Rust + 16 Foundry), reproducibility scripts, live testnet pipeline (`evidence/public-testnet-v03/`), and empirical benchmarks.
+- **Milestone M1 (Public LEZ v0.4 Devnet Migration)**: Deploy module to Logos Execution Zone public devnet upon v0.4 release and network freeze; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
+- **Milestone M2 (Logos Core Module Catalog, SPEL Release & Logos Ethereum Core Verified Proxy Integration)**: Upstream into the official Logos Core module catalog via `.github/workflows/logos-modules-release.yml` (`logos-modules-release-action`), SPEL IDL compiler integration, and native integration with the canonical Logos Ethereum Core verified consensus proxy (`LOGOS_ETHEREUM_CORE_RPC`).
+- **Milestone M3 (Daemon Production Hardening & Observability)**: Standalone daemon operations, Prometheus telemetry metrics, `/healthz` liveness probes, SIGINT/SIGTERM clean shutdown, automated re-org handling, and multi-RPC weighted failover.
+- **Milestone M4 (Independent Security Audit & Published Report)**: Formal third-party engagement with an external security firm ($10,000 / 3 weeks budgeted upon grant approval), public report publication, and audit findings remediation.

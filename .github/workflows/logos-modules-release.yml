@@ -1,0 +1,59 @@
+name: Logos Module Packaging & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  package-and-release:
+    name: Package SPEL Module for Logos Core Catalog
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.78.0
+          targets: riscv32im-risc0-zkvm-elf
+
+      - name: Install RISC Zero Toolchain (rzup)
+        run: |
+          curl -L https://risczero.com/install | bash
+          ~/.rzup/bin/rzup install cargo-risczero 1.0.5
+          ~/.rzup/bin/rzup install rzup 1.0.5
+          echo "$HOME/.risc0/bin" >> $GITHUB_PATH
+
+      - name: Build zkVM Guest & Core Packages
+        run: |
+          cargo build --release -p mosoo-core -p mosoo-methods
+
+      - name: Validate SPEL Interface Definitions (.spel)
+        run: |
+          cargo test -p mosoo-core --test spel_conformance_tests
+
+      - name: Package Logos Module Artifacts
+        run: |
+          mkdir -p dist/module
+          cp docs/SPEL_IDL.md dist/module/INTERFACE.md
+          cp target/release/libmosoo_core.rlib dist/module/ 2>/dev/null || true
+          tar -czvf mosoo-lez-module.tar.gz -C dist/module .
+
+      - name: Release to Logos Module Catalog
+        uses: logos-co/logos-modules-release-action@v1
+        continue-on-error: true # Allows dry-run verification before official catalog upstreaming
+        with:
+          module-name: mosoo-ethereum-state-attestation
+          module-version: ${{ github.ref_name }}
+          module-archive: mosoo-lez-module.tar.gz
+          spel-spec: docs/SPEL_IDL.md
+          catalog-token: ${{ secrets.LOGOS_MODULE_CATALOG_TOKEN }}

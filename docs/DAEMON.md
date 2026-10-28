@@ -29,14 +29,14 @@ mosoo-daemon [OPTIONS]
 
 | Flag | Environment Variable | Default | Description |
 | :--- | :--- | :--- | :--- |
-| `--eth-consensus-rpc <URL>` | `ETH_CONSENSUS_RPC` | `https://lodestar-sepolia.chainsafe.io` | Ethereum Beacon Node REST API endpoint |
-| `--eth-execution-rpc <URL>` | `ETH_EXECUTION_RPC` | `https://rpc.sepolia.org` | Ethereum Execution Layer JSON-RPC endpoint |
+| `--logos-ethereum-core-rpc <URL>` | `LOGOS_ETHEREUM_CORE_RPC` | `https://ethereum-core.logos.co` | **Canonical RFP-Compliant Endpoint:** Logos Ethereum Core verified consensus proxy |
+| `--eth-consensus-rpc <URL>` | `ETH_CONSENSUS_RPC` | `https://lodestar-sepolia.chainsafe.io` | *Devnet Fallback:* Direct Beacon Node REST API (offline bootstrap only) |
+| `--eth-execution-rpc <URL>` | `ETH_EXECUTION_RPC` | `https://gateway.tenderly.co/public/sepolia` | *Devnet Fallback:* Execution Layer JSON-RPC (offline bootstrap only) |
 | `--eth-chain-id <ID>` | `ETH_CHAIN_ID` | `11155111` | EIP-155 chain ID (`1` = Mainnet, `11155111` = Sepolia, `560048` = Hoodi) |
-| `--lez-rpc-url <URL>` | `LEZ_RPC_URL` | `http://127.0.0.1:8545` | LEZ JSON-RPC sequencer URL |
+| `--lez-rpc-url <URL>` | `LEZ_RPC_URL` | `https://testnet.lez.logos.co` | LEZ JSON-RPC sequencer URL |
 | `--lez-private-key <HEX>` | `LEZ_PRIVATE_KEY` | — | Hex-encoded private key for gas payments |
-| `--logos-ethereum-core-rpc <URL>` | `LOGOS_ETHEREUM_CORE_RPC` | *(disabled)* | Optional Logos Core verified-proxy endpoint |
 | `--poll-interval-secs <N>` | `POLL_INTERVAL_SECS` | `60` | Base polling interval in seconds |
-| `--log-format <FORMAT>` | `LOG_FORMAT` | `json` | Log format: `json` or `pretty` |
+| `--log-format <FORMAT>` | `LOG_FORMAT` | `json` | Structured logs: `json` (production) or `pretty` |
 | `--log-level <FILTER>` | `RUST_LOG` | `mosoo_daemon=info,warn` | `tracing`-compatible log filter string |
 
 ---
@@ -71,14 +71,15 @@ cargo run -p mosoo-daemon --release -- \
   --log-format json
 ```
 
-### 3.3 Via Logos Ethereum Core Verified Proxy (Logos Core Module Catalog)
+### 3.1 Canonical RFP-Compliant Operation: Logos Ethereum Core Verified Proxy
 
-When the Logos Ethereum Core module is active in the Logos Core catalog, the daemon can route all consensus requests through the verified proxy, eliminating the need for a direct external beacon node endpoint:
+In strict accordance with **Logos RFP-021**, production Ethereum consensus interactions route through the official **Logos Ethereum Core** verified consensus proxy module (`--logos-ethereum-core-rpc`). This guarantees consensus cryptographic verification at the Logos node boundary without trusting third-party RPC providers:
 
 ```sh
+# Production Configuration (Logos Ethereum Core Verified Proxy)
 export LOGOS_ETHEREUM_CORE_RPC="https://ethereum-core.logos.co"
 export ETH_CHAIN_ID="1"
-export LEZ_RPC_URL="https://mainnet.lez.logos.co/rpc"
+export LEZ_RPC_URL="https://testnet.lez.logos.co"
 export LEZ_PRIVATE_KEY="0xYOUR_PRIVATE_KEY_HERE"
 
 cargo run -p mosoo-daemon --release -- \
@@ -86,16 +87,27 @@ cargo run -p mosoo-daemon --release -- \
   --log-format json
 ```
 
-When `--logos-ethereum-core-rpc` is set, all consensus layer requests are routed to:
+When `--logos-ethereum-core-rpc` is configured, consensus layer requests route through the authenticated module proxy:
 
 ```
 {LOGOS_ETHEREUM_CORE_RPC}/v1/ethereum-core/consensus/{path}
 ```
 
-Otherwise, requests go directly to:
+### 3.2 Local Devnet Fallback: Direct Beacon Endpoint (Offline Bootstrap Only)
 
-```
-{ETH_CONSENSUS_RPC}/eth/v1/beacon/{path}
+For isolated local testnets or offline development before the Logos Core catalog is mounted locally, operators can provide a fallback direct beacon endpoint:
+
+```sh
+# Local Devnet Fallback (Isolated developer environment only)
+export ETH_CONSENSUS_RPC="https://lodestar-sepolia.chainsafe.io"
+export ETH_EXECUTION_RPC="https://gateway.tenderly.co/public/sepolia"
+export ETH_CHAIN_ID="11155111"
+export LEZ_RPC_URL="https://testnet.lez.logos.co"
+export LEZ_PRIVATE_KEY="0xYOUR_PRIVATE_KEY_HERE"
+
+cargo run -p mosoo-daemon --release -- \
+  --poll-interval-secs 120 \
+  --log-format json
 ```
 
 ---

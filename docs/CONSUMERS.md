@@ -146,16 +146,17 @@ let credited = claim_native_eth_deposit(&deposit_claim, &mut nullifiers)
 
 ### Deterministic Statement ID & Nullifier Derivation
 
-Mosoo derives `statement_id` deterministically from verified consensus and state data:
+Mosoo derives `statement_id` deterministically strictly from verified Ethereum state facts (RFP-021 Functionality #6, ADR-006):
 
 ```text
-statement_id = sha256(chain_id || subject_key || proof_type || value || predicate)
+// V2 Canonical Statement ID (invariant to predicate variations to prevent replay bypass):
+statement_id = sha256("mosoo_statement_v2" || chain_id || genesis_validators_root || subject_key || proof_type_tag || verified_value)
 ```
 
 For event logs, `subject_key` incorporates:
 
 ```text
-subject_key = block_hash || slot || tx_index || log_index || emitter || topic0
+subject_key = sha256("mosoo_receipt_log_v1" || execution_block_hash || slot || tx_index || log_index || emitter || topic0)
 ```
 
 This guarantees that identical deposits in different transactions or blocks never collide and cannot be replayed.

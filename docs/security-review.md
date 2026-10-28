@@ -238,13 +238,13 @@ Tested in `tests/two_way_bridge_tests.rs`:
 
 In accordance with RFP-021 privacy requirements, Mosoo shields claimant identity on LEZ:
 - **Zero Address Leakage:** Claimant Ethereum addresses and signature bytes are not written to consumer contract state diffs.
-- **Unlinkability:** Statement IDs act as one-way cryptographic nullifiers:
+- **Unlinkability:** Statement IDs act as one-way cryptographic nullifiers derived strictly from verified Ethereum state facts (ADR-006, RFP-021 Functionality #6):
   ```text
-  statement_id = sha256(chain_id || subject_key || proof_type || value || predicate)
+  statement_id = sha256("mosoo_statement_v2" || chain_id || genesis_validators_root || subject_key || proof_type_tag || verified_value)
   ```
 - **Caveat:** Network-level traffic analysis (transaction timing, deposit amounts) remains observable on public chains.
 
-Automated in `tests/privacy_and_correlation_tests.rs` (5 tests verifying zero address leakage and memory state diff shielding).
+Automated in [`mosoo-core/tests/privacy_and_correlation_tests.rs`](../mosoo-core/tests/privacy_and_correlation_tests.rs) (5 tests verifying zero address leakage and memory state diff shielding).
 
 ---
 

@@ -85,13 +85,14 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **20 Verified Invariants**: Including single-transaction gas limits, weak-subjectivity freshness, deterministic nullifier derivation, cross-chain domain separation, tamper-evident job stages, zero-address shielding, safe ERC-20 balance queries, secret isolation via local transaction signing, fail-closed period-boundary sync, and persistent PDA nullifier storage across node restarts.
 - **Public LEZ v0.3.1 Testnet Verification & Two-Way Settlement Evidence (`evidence/public-testnet-v03/`)**: Live on-chain consensus, block state, and fee verification against the active public LEZ testnet sequencer (`https://testnet.lez.logos.co`, block height > 68,399) via `scripts/verify-onchain.py`, paired with live on-chain Sepolia settlement verification of `MosooLocker.sol` (`0x74625D146B8d9413F3c3976B323d94A739be7856`) via `scripts/testnet-two-way-bridge.py --mode live`.
 - **Architectural Decision Records (`docs/DECISIONS.md`)**: Formalized ADRs covering 3-Tx intermediate binding, Altair period selection, Gloas ePBS RLP root extraction, instance immutability, HeaderRecord execution root provenance, and dual-nullifiers.
+- **Trust Assumptions & Threat Model (`docs/TRUST_ASSUMPTIONS.md`)**: Comprehensive specification of checkpoint provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness boundaries, privacy limitations, and reorganization failure conditions.
 
 ### What is Not Built Yet (Priced as Remaining Milestone Work)
 
 - **Public LEZ v0.4 Devnet Migration (Milestone M1)**: Upgrade from the currently verified public LEZ v0.3.1 testnet to the upcoming public LEZ v0.4 devnet upon network freeze by the Logos Core team.
-- **Logos Core Module Catalog & SPEL Integration (Milestone M2)**: Upstreaming into the official Logos Core module catalog and SPEL compiler tooling.
-- **Production Daemon Telemetry (Milestone M3)**: Multi-RPC weighted failover, automated re-org detection, and Prometheus metrics.
-- **Independent Security Audit (Milestone M4)**: Formal third-party engagement with an external security firm ($10,000 / 3 weeks budgeted upon grant approval).
+- **Logos Core Module Catalog, SPEL Release & Logos Ethereum Core Verified Proxy Integration (Milestone M2)**: Upstreaming into the official Logos Core module catalog via `.github/workflows/logos-modules-release.yml` (`logos-modules-release-action`), SPEL IDL compiler integration, and native integration with the canonical Logos Ethereum Core verified consensus proxy (`LOGOS_ETHEREUM_CORE_RPC`).
+- **Production Daemon Telemetry & Re-Org Handling (Milestone M3)**: Standalone daemon operations, live Prometheus metrics exporter, `/healthz` liveness probes, SIGINT/SIGTERM graceful shutdown, and automated consensus re-org recovery.
+- **Independent Third-Party Security Audit & Remediation (Milestone M4)**: Formal third-party engagement with an external security firm ($10,000 / 3 weeks budgeted upon grant approval), public publication of the security audit report, and remediation of all audit findings.
 
 ### Lifecycle & Verification Matrix
 
@@ -105,9 +106,10 @@ To ensure absolute transparency regarding what is functioning today versus what 
 | **Adversarial Invariant Hardening** | M0 (Delivered) | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
 | **Execution Manifest & Verification Script** | M0 (Delivered) | Hardened with Strict Exit Codes | Offline Python/Bash runner (`scripts/verify-evidence.py`) |
 | **Public LEZ Testnet Verification & Two-Way Bridge** | M0 (Delivered) | Live on Public LEZ v0.3.1 & Sepolia | Live RPC queries (`scripts/verify-onchain.py`) & bridge pipeline (`scripts/testnet-two-way-bridge.py --mode live`); v0.4 devnet upgrade in M1 |
-| **SPEL IDL Upstreaming & Logos Core Modules** | M2 (Grant) | IDL Specification Defined | Integration with Logos Core module compiler |
-| **Production Consensus Daemon Telemetry** | M3 (Grant) | Prototype Working | Live Prometheus telemetry & automated re-org handler |
-| **Third-Party Security Audit** | M4 (Grant) | Budget Allocated (\$10,000 / 3 wks) | Independent security audit firm certification |
+| **Logos Module Catalog & SPEL Release Pipeline** | M2 (Grant) | Configured (`.github/workflows/logos-modules-release.yml`) | Automated catalog release via `logos-modules-release-action` |
+| **Logos Ethereum Core Verified Proxy Integration** | M2 (Grant) | Prototype Working (`--logos-ethereum-core-rpc`) | Mandatory verified proxy routing (`/v1/ethereum-core/consensus/`) |
+| **Production Consensus Daemon Telemetry** | M3 (Grant) | Prototype Working | Live Prometheus telemetry, `/healthz` probe, & re-org handler |
+| **Independent Security Audit & Published Report** | M4 (Grant) | Budget Allocated (\$10,000 / 3 wks) | External security firm certification & published report |
 
 ---
 
@@ -132,16 +134,17 @@ Detailed cycle breakdowns, hardware profiles, and library comparisons (`blst` vs
 
 ## Replay Protection & Settlement Privacy
 
-When a state attestation succeeds, Mosoo emits a `VerifiedStatement` identified by a deterministic 32-byte nullifier:
+When a state attestation succeeds, Mosoo emits a `VerifiedStatement` identified by a deterministic, collision-resistant 32-byte nullifier derived strictly from the underlying Ethereum state facts (ADR-006, RFP-021 Functionality #6):
 
 ```text
-statement_id = sha256(chain_id || subject_key || proof_type || value || predicate)
+// V2 Canonical Statement ID (invariant to predicate variations to prevent replay bypass):
+statement_id = sha256("mosoo_statement_v2" || chain_id || genesis_validators_root || subject_key || proof_type_tag || verified_value)
 ```
 
-For event logs, `subject_key` binds:
+For event logs, `subject_key` is derived to guarantee uniqueness across blocks and transactions:
 
 ```text
-subject_key = block_hash || slot || tx_index || log_index || emitter || topic0
+subject_key = sha256("mosoo_receipt_log_v1" || execution_block_hash || slot || tx_index || log_index || emitter || topic0)
 ```
 
 - **Replay Resistance**: Consuming contracts record the `statement_id` in a dedicated nullifier set. Attempting to claim the same deposit or balance proof twice fails with `AlreadyClaimed`.
@@ -150,7 +153,7 @@ subject_key = block_hash || slot || tx_index || log_index || emitter || topic0
   - Mosoo provides pseudonymous nullifier tracking, **not** a zero-knowledge mixer or shielded pool.
   - The underlying Ethereum transaction is public on the source chain.
   - External network observers can perform off-chain correlation if deposit amounts and claim timestamps closely match. True unlinkability in production requires relayer batching or third-party relayer aggregation.
-  - These invariants are verified in [`tests/privacy_and_correlation_tests.rs`](tests/privacy_and_correlation_tests.rs), the sequencer harness, and the live two-way bridge settlement pipeline (`evidence/public-testnet-v03/`). Full public v0.4 devnet upgrade validation will occur in Milestone M1.
+  - These invariants are verified in [`mosoo-core/tests/privacy_and_correlation_tests.rs`](mosoo-core/tests/privacy_and_correlation_tests.rs), the sequencer harness, and the live two-way bridge settlement pipeline (`evidence/public-testnet-v03/`). Full public v0.4 devnet upgrade validation will occur in Milestone M1.
 
 ---
 

@@ -62,9 +62,9 @@ This document details the threat model, security assumptions, and mitigation str
 ### 2.7 Double-Spending / Cross-Slot Statement Replay
 * **Attack**: A user re-submits a valid `VerifiedStatement` multiple times or generates proofs at different block slots for the same static balance to mint tokens repeatedly.
 * **Mitigation**:
-  - `statement_id` is derived deterministically:
+  - `statement_id` is derived deterministically from underlying Ethereum state facts (RFP-021 Functionality #6, ADR-006):
     ```text
-    statement_id = sha256(chain_id || subject_key || proof_type || value || predicate)
+    statement_id = sha256("mosoo_statement_v2" || chain_id || genesis_validators_root || subject_key || proof_type_tag || verified_value)
     ```
   - The `subject_key` is bound to the immutable on-chain identity (account address or contract + storage slot) rather than the ephemeral block slot. Proving the same balance across different slots produces the identical nullifier.
   - Any consuming program (such as `erc20-receiver` or `ether-receiver`) records `statement_id` into a dedicated Nullifier PDA.
