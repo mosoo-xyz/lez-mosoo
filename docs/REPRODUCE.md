@@ -86,3 +86,16 @@ pub fn verify_statement_provenance(receipt_image_id: &[u8; 32]) -> bool {
     receipt_image_id == &COMMITTED_MOSOO_IMAGE_ID
 }
 ```
+
+---
+
+## 5. Engineering Notes & Troubleshooting (Gotchas)
+
+During cross-compilation and live RPC verification, the following quirks were documented:
+
+1. **RISC0 Toolchain Path Resolution (`rzup`):**
+   - When building inside minimal CI runners or non-interactive shells, `rzup` installs binaries to `~/.rzup/bin` and `~/.risc0/bin`. Ensure `$HOME/.risc0/bin` is added to `$PATH`, or `cargo-risczero` will fail to resolve the C compiler bundle for `riscv32im-risc0-zkvm-elf`.
+2. **Sepolia Public RPC Receipt Pruning:**
+   - Free community Sepolia nodes (`ethereum-sepolia-rpc.publicnode.com`) aggressively prune non-recent transaction receipts. When verifying older deposit receipts (> 128 blocks), `eth_getTransactionReceipt` may return `null` or `0x0`. The project defaults to Tenderly's public gateway (`https://gateway.tenderly.co/public/sepolia`) which preserves full archival receipts.
+3. **zkVM Memory Bounds (`SEGMENT_PO2 = 18`):**
+   - Proving with default segment power (`SEGMENT_PO2 = 20`) causes host RAM spikes above 20 GB on multi-threaded machines. Setting `SEGMENT_PO2 = 18` restricts resident memory to < 12 GB, avoiding swap thrashing on 16GB developer laptops.

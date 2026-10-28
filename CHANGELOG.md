@@ -5,6 +5,22 @@ All notable changes to the Mosoo project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-28
+
+### Added
+- **Two-Way Bridge Architecture (`MosooLocker.sol`)**: Deployed canonical Solidity vault on Ethereum Sepolia (`0x74625D146B8d9413F3c3976B323d94A739be7856`) with rolling 24-hour rate limiting, 2-day timelocked governance, Guardian veto, and replay-protected burn-to-unlock settlement.
+- **Public LEZ v0.3.1 Testnet Verification**: Live consensus and gas verification against `https://testnet.lez.logos.co` (Block height > 68,400) and Sepolia bridge deposit tracing (`0x3ab00f...`).
+- **Cryptographic Trust Assumptions & Threat Model (`docs/TRUST_ASSUMPTIONS.md`)**: Formalized checkpoint provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness roles, and reorganization failure conditions.
+- **Audited Light-Client Prior Art Assessment**: Extended ADR-003 with technical evaluation of `r0vm-helios` (Boundless), delineating Altair math reuse from custom 3-Tx gas split and audit surface boundaries.
+- **Recommended Consumer Pattern**: Documented atomic same-transaction claim pattern in `docs/CONSUMERS.md` and `README.md` with typed error handling and fail-closed guarantees.
+- **Logos Module Release Action CI**: Added `.github/workflows/logos-modules-release.yml` automating packaging and validation for the Logos Core Module Catalog.
+- **Test Suite Expansion**: Grew test suite to 333 total passing tests (317 Rust workspace tests + 16 Foundry Solidity tests) with zero compiler or Clippy warnings (`-D warnings`).
+
+### Changed
+- Reconciled benchmark cycle numbers in `docs/BENCHMARKS.md` (Table 4 updated to canonical 2,890,000 cycles for end-to-end receipt log attestation).
+- Aligned statement ID canonical derivation formula across all architectural documentation (`derive_statement_id_v2`).
+- Positioned Logos Ethereum Core verified proxy (`LOGOS_ETHEREUM_CORE_RPC`) as canonical primary architecture for daemon consensus routing.
+
 ## [0.1.2] - 2026-10-21
 
 ### Added

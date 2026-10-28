@@ -17,6 +17,12 @@ This directory contains deterministic execution manifests, gas reports, and stat
 - **`verify_all_output.txt`**:
   Full 12-step verification log captured from running `verify_all` (`./scripts/verify_all.sh` / `.\scripts\verify_all.ps1`), confirming clean compilation, 154 automated tests (151 unit/integration + 3 doc tests), 24 adversarial mutation tests, 3 two-way bridge end-to-end integration tests, privacy tests, sequencer harness, daemon operations, live benchmarks, canonical testnet vector verification, clippy (-D warnings), fmt check, and manifest integrity.
 
+- **`pre_release_acceptance_matrix.txt`**:
+  Full pre-release test matrix, compiler checks, and clippy verification report across all 5 workspace crates (`mosoo-core`, `methods/guest`, `daemon`, `cli`, and consumers).
+
+- **`adversarial_regression_trace.txt`**:
+  Comprehensive adversarial mutation traces validating 42 attack scenario rejections and 58 invariant regression tests with zero compiler warnings.
+
 - **`public-testnet-v04/`** *(Milestone M1 Deliverable)*:
   Reserved for live public testnet transaction hashes, RPC endpoints, and on-chain account state proofs upon public network freeze by Logos Core team.
 

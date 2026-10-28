@@ -2480,7 +2480,7 @@ fn test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store() {
 }
 
 // ---------------------------------------------------------------------------
-// Audit Session 7 Findings: Weak-Subjectivity Expiry, Canonical Statement ID,
+// Invariant Hardening: Weak-Subjectivity Expiry, Canonical Statement ID,
 // and zkVM Guest Authenticated Dispatch Hardening
 // ---------------------------------------------------------------------------
 
@@ -2694,7 +2694,7 @@ fn test_finding31_statement_id_cross_instance_consistency() {
 }
 
 // ---------------------------------------------------------------------------
-// Audit Session 8 Hardening Tests (October 27, 2026)
+// Security Invariants: Multi-Instance Isolation & Zero-Leakage Privacy
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2932,7 +2932,7 @@ fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_
 }
 
 // ===========================================================================
-// Session 9 Hardening Verification Tests (Audit Session 9)
+// Consensus Invariants: Boundary Synchronization & Timelock Governance
 // ===========================================================================
 
 // ---------------------------------------------------------------------------

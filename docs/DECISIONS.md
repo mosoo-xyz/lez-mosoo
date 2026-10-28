@@ -328,7 +328,7 @@ A follow-up independent audit (Session 5 - Oct 26, 2026) identified 5 specific f
 ## ADR-013: Host-Enforced Storage Isolation, Production Gating of Deprecated Claim APIs, Native ETH Canonical 12-Zero Sender Padding, and Shielded Statement Consumer Witness Verification
 
 ### Context & Problem Statement
-An exhaustive review (Audit Session 6 - Oct 26, 2026) evaluated the full codebase against Logos RFP-021, identifying key architectural and edge-case requirements:
+An internal architecture review (Oct 26, 2026) evaluated the full codebase against Logos RFP-021, identifying key architectural and edge-case requirements:
 1. **Critical #1 & #2 (P0) In-Memory Store Injection and Caller-Controlled zkVM Storage**:
    In zkVM guest (`methods/guest/src/main.rs`), `GuestInstruction::StoreBacked` allowed callers to supply `ProgramAccountStore` over `env::read()`. An adversary could supply a fabricated in-memory store with forged accounts marked `owner = MOSOO_PROGRAM_ID`. Furthermore, `dispatch_store_instruction` recursively passed `&mut store` (from the enum), discarding the host runtime's persistent store. In direct `Authenticated` guest instruction branches, unpinned chains were permitted to execute if `args.instance.pda_address() == expected_instance_pda`.
 2. **High #3 (P1) Deprecated Public Claim Helpers Lack Production Gating**:
@@ -359,7 +359,7 @@ An exhaustive review (Audit Session 6 - Oct 26, 2026) evaluated the full codebas
 ## ADR-014: Weak-Subjectivity Expiry Enforcement, RFP-021 Canonical Statement ID Derivation, and Persistent Account Dispatch Hardening
 
 ### Context & Problem Statement
-External review (Audit Session 7 - Oct 26, 2026) evaluated the architecture and identified critical edge cases:
+Security boundary review (Oct 26, 2026) evaluated the architecture and identified critical edge cases:
 1. **Critical #1 (P0): Persistent Account Authentication & Dispatch Separation**:
    In zkVM guest (`methods/guest/src/main.rs`), instructions deserialize from `env::read()`. While in-memory `StoreBacked` is rejected in production builds (`UnauthenticatedInstance`), PDA derivation checks (`pda_address = sha256("mosoo_instance" || chain_id || instance_id)`) only bound chain and instance IDs, leaving internal consensus roots susceptible to prover forgery if not strictly validated against authentic storage or pinned anchors.
 2. **High #2 (P1): Incomplete Weak-Subjectivity Expiry Enforcement in `handle_begin_update()`**:
@@ -393,7 +393,7 @@ External review (Audit Session 7 - Oct 26, 2026) evaluated the architecture and 
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 8 static code review raised five critical and high-priority concerns:
+Static code and invariant analysis (Oct 27, 2026) raised five critical and high-priority concerns:
 1. **Critical #1 (P0): Persistent Account Authentication in Production Dispatch**:
    `GuestInstruction::StoreBacked` was gated behind `cfg(test)`, returning `UnauthenticatedInstance` in production. Authenticated instruction variants (`AttestStateAuthenticated`, etc.) compared PDA address without validating that the internal consensus roots, committee, or execution state roots belonged to an authentic persistent account.
 2. **High #2 (P1): Weak-Subjectivity Freshness Guard Bypass & Inverted Calculation Bug**:
@@ -436,7 +436,7 @@ Audit Session 8 static code review raised five critical and high-priority concer
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 9 code review identified five critical and security-relevant vulnerabilities and configuration risks:
+Cryptographic boundary review (Oct 27, 2026) identified five security-relevant vulnerabilities and configuration risks:
 1. **Critical #1 (P0): `StoreBacked` Untrusted Serialized Storage in zkVM Guest Entrypoint**:
    `GuestInstruction::StoreBacked` received `ProgramAccountStore` directly inside the instruction envelope deserialized from `env::read()`. Because `ProgramAccountStore` and `ProgramAccount` are serializable, an untrusted prover could construct an in-memory store with `owner: MOSOO_PROGRAM_ID`, fabricated headers, and forged execution roots, bypassing LEZ blockchain storage backing.
 2. **High #2 (P1): Weak-Subjectivity Freshness Dependency on Caller Input**:
@@ -479,7 +479,7 @@ Audit Session 9 code review identified five critical and security-relevant vulne
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 10 code review identified five security findings and production integration blockers:
+Production readiness review (Oct 27, 2026) identified five security findings and production integration blockers:
 1. **High #1 (P1): Stale Ethereum Light-Client State & Strict Weak-Subjectivity Enforcement**:
    - `TrustedBridgeConfig::canonical()` initialized `trusted_heads` to an empty map.
    - `handle_begin_update_authenticated()` only enforced freshness if `config` contained a trusted head for that chain.
@@ -521,7 +521,7 @@ Audit Session 10 code review identified five security findings and production in
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 11 (`t_6ae08a7e61308191964e5c12f3b83e26`) conducted a comprehensive static security review of the full repository architecture, identifying several trust-boundary gaps and configuration risks:
+Internal Security Review (Sprint 4 — Hardening Review) conducted a static analysis of the full repository architecture, identifying several trust-boundary gaps and configuration risks:
 1. **Critical #1 (P0): Production zkVM Guest Trust Boundary**:
    - While unauthenticated variants (`AttestState`, `BeginUpdate`, etc.) were gated in release builds, `dispatch_guest_instruction()` retained direct handlers for `*Authenticated` variants taking caller-supplied structs from `env::read()`.
    - PDA address checks alone do not verify that internal consensus state (sync committee pubkeys, execution state roots, finalized beacon roots) matches persistent on-chain state.
@@ -575,7 +575,7 @@ Audit Session 11 (`t_6ae08a7e61308191964e5c12f3b83e26`) conducted a comprehensiv
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 12 (`t_6ae0a89707d88191b1048c4ae7d7770f`) reviewed the latest repository hardening and identified 5 key areas for complete production readiness:
+Pre-Submission Security Review (Sprint 5) reviewed the latest repository hardening and identified 5 key areas for complete production readiness:
 1. **Finding 1 (High): Unpinned Instance Global Trusted Head Advancement**:
    - While `validate_initialize_with_config` pinned instances, update steps (`handle_begin_update_authenticated`, `handle_miller_update_authenticated`, `handle_finish_update_authenticated`) and config trusted head tracking permitted unpinned instances on supported chains to advance global `config.trusted_heads`.
    - In addition, per-instance trusted heads were not tracked separately from chain-wide heads in `TrustedBridgeConfig`.
@@ -621,7 +621,7 @@ Audit Session 12 (`t_6ae0a89707d88191b1048c4ae7d7770f`) reviewed the latest repo
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 13 (`t_6ae0badadd2881918bb1eb5361ed685b`) identified 4 critical operational and architectural findings in the consensus verifier and daemon infrastructure:
+Consensus & Daemon Architecture Review (Sprint 5) identified 4 operational and architectural findings in the consensus verifier and daemon infrastructure:
 1. **Finding 1 (High): Cross-Instance Trusted-Head Contamination**:
    - `register_trusted_head_for_instance()` was mutating both `self.instance_trusted_heads` AND global `self.trusted_heads[chain_id]`.
    - In multi-instance or unpinned environments, an advance in Instance A inflated the chain-wide anchor head, shifting the freshness baseline for Instance B and causing unintended DoS or weak-subjectivity isolation failure.
@@ -667,7 +667,7 @@ Audit Session 13 (`t_6ae0badadd2881918bb1eb5361ed685b`) identified 4 critical op
 **Status**: Accepted & Implemented  
 
 ### Context & Problem Statement
-Audit Session 14 (`t_6ae0db284f808191a7b4a6457cf84e54`) analyzed edge-case vulnerabilities and operational integration deliverables across the consensus light client:
+Edge-Case Vulnerability & Integration Review (Sprint 6) analyzed edge-case vulnerabilities and operational integration deliverables across the consensus light client:
 1. **Issue A (High): Weak-Subjectivity Freshness Bypass via `trusted_head_slot: None` or Self-Referential Head**:
    - In `handle_begin_update_authenticated` and `handle_attest_state_authenticated`, when `trusted_head_slot` was `None` or defaulted to `instance.current_slot`, staleness checks evaluated `current_slot.saturating_sub(current_slot) == 0`.
    - A dormant instance stalled for 30+ days (e.g. 216,000 slots) was never detected as expired, allowing attackers to perform stale updates or attestations without fresh bootstrapping.
