@@ -1,15 +1,11 @@
-//! Security regression test suite verifying resolution of all 6 findings
-//! from the MOSOO Security Audit (Oct 26, 2026).
-//!
-//! Findings covered:
-//! - Finding 1 (Critical P0): zkVM guest authenticated instructions & account authenticity
-//! - Finding 2 (High P1): Consumer persistent store-backed minting APIs & rejection of caller state
-//! - Finding 3 (High P1): Statement source-instance PDA binding & cross-instance isolation
-//! - Finding 4 (High P1): Privacy-preserving shielded statement binding (RFP-021 Functionality #8)
-//! - Finding 5 (Medium P2): Solidity legacy withdrawal disablement (verified in Foundry)
+//! Security regression test suite covering protocol hardening:
+//! - Item 1 (P0): zkVM guest authenticated instructions & account authenticity
+//! - Item 2 (P1): Consumer persistent store-backed minting APIs & rejection of caller state
+//! - Item 3 (P1): Statement source-instance PDA binding & cross-instance isolation
+//! - Item 4 (P1): Privacy-preserving shielded statement binding
+//! - Item 5 (P2): Solidity legacy withdrawal disablement
+//! - Item 6 (P2/P3): Canonical Statement ID specification & predicate invariance
 #![allow(deprecated)]
-
-//! - Finding 6 (Low/Med P2/P3): Canonical Statement ID specification & predicate invariance
 
 use ether_receiver::{AtomicEtherClaimArgs, EtherNullifierSet, MethLedger};
 use mosoo_core::{
@@ -752,7 +748,7 @@ fn test_finding10_sync_committee_signature_length_enforcement() {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 11: Account State Authenticity & Runtime Dispatch Wiring (Session 3 P0)
+// Account State Authenticity & Runtime Dispatch Wiring
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -839,7 +835,7 @@ fn test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatche
 }
 
 // ---------------------------------------------------------------------------
-// Finding 12: Holesky & Custom Network Trusted Checkpoints (Session 3 P1)
+// Holesky & Custom Network Trusted Checkpoints
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -849,7 +845,7 @@ fn test_finding12_unconfigured_custom_checkpoint_rejected() {
         CANONICAL_SEPOLIA_MOSOO_INSTANCE,
     };
 
-    // 1. In compliance with Finding 3 / Session 8, Mainnet and Holesky are NOT registered with placeholder constants.
+    // 1. Mainnet and Holesky are registered only with verified roots, not placeholder constants.
     // Sepolia is the sole live network with independently verified weak-subjectivity checkpoint.
     let canonical = TrustedBridgeConfig::canonical();
     assert_eq!(canonical.get_trusted_instance(17000), None);
@@ -933,7 +929,7 @@ fn test_finding12_unconfigured_custom_checkpoint_rejected() {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 13: Arithmetic Overflow Pre-Check Preserves Nullifier (Session 3 P2)
+// Arithmetic Overflow Pre-Check Preserves Nullifier
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -1011,7 +1007,7 @@ fn test_finding13_overflow_pre_check_preserves_nullifier() {
 }
 
 // ---------------------------------------------------------------------------
-// Finding 14: Salted Shielding Blinds Statement Binding (Session 3 P1)
+// Salted Shielding Blinds Statement Binding
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -2698,7 +2694,7 @@ fn test_finding31_statement_id_cross_instance_consistency() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn test_session8_finding3_pda_derivation_invariants_across_all_networks() {
+fn test_pda_derivation_invariants_across_all_networks() {
     use mosoo_core::types::{
         derive_instance_pda, CANONICAL_HOLESKY_INSTANCE_ID, CANONICAL_HOLESKY_MOSOO_INSTANCE,
         CANONICAL_MAINNET_INSTANCE_ID, CANONICAL_MAINNET_MOSOO_INSTANCE,
@@ -2759,8 +2755,7 @@ fn test_session8_finding3_pda_derivation_invariants_across_all_networks() {
 }
 
 #[test]
-fn test_session8_finding1_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed(
-) {
+fn test_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed() {
     use mosoo_core::verifier::{dispatch_store_instruction, AttestStateArgs, GuestInstruction};
 
     let mut store = MockStore::default();
@@ -2847,7 +2842,7 @@ fn test_session8_finding1_fabricated_committee_and_execution_roots_under_canonic
 }
 
 #[test]
-fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_head_slot() {
+fn test_weak_subjectivity_attestation_staleness_direction_and_head_slot() {
     use mosoo_core::verifier::{handle_attest_state, AttestStateArgs};
 
     let instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
@@ -2939,7 +2934,7 @@ fn test_session8_finding2_weak_subjectivity_attestation_staleness_direction_and_
 // Finding 4: Job PDA Derivation Inconsistency Unification (Medium #4)
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session9_finding4_job_pda_derivation_unification() {
+fn test_job_pda_derivation_unification() {
     use mosoo_core::types::{
         derive_instance_pda, JobAccount, JobStage, LightClientUpdate, RuntimeAccount,
         SyncAggregate, CANONICAL_MAINNET_INSTANCE_ID, CANONICAL_SEPOLIA_INSTANCE_ID,
@@ -3038,7 +3033,7 @@ fn test_session9_finding4_job_pda_derivation_unification() {
 // Finding 2: Stale Instance Chained Incremental Update Rejection (High #2)
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session9_finding2_stale_instance_cannot_advance_via_small_incremental_updates() {
+fn test_stale_instance_cannot_advance_via_small_incremental_updates() {
     use mosoo_core::types::{
         LightClientUpdate, SyncAggregate, TrustedBridgeConfig, CANONICAL_SEPOLIA_INSTANCE_ID,
         CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
@@ -3136,7 +3131,7 @@ fn test_session9_finding2_stale_instance_cannot_advance_via_small_incremental_up
 // Finding 3 & 5: Unregistered Networks & Placeholder Trust Anchor Elimination
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session9_finding3_and_5_unregistered_networks_fail_closed_without_config_registration() {
+fn test_unregistered_networks_fail_closed_without_config_registration() {
     use mosoo_core::types::{
         BeaconBlockHeader, InitializeArgs, NetworkConfig, TrustedBridgeConfig,
         ETH_HOLESKY_CHAIN_ID, ETH_MAINNET_CHAIN_ID,
@@ -3251,7 +3246,7 @@ fn test_session9_finding3_and_5_unregistered_networks_fail_closed_without_config
 // Finding 1: Untrusted Serialized Store Rejection in zkVM Guest Path
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session9_finding1_adversarial_forged_store_fails_closed() {
+fn test_adversarial_forged_store_fails_closed() {
     use mosoo_core::types::{AccountStore, HeaderRecord, MOSOO_PROGRAM_ID};
     use mosoo_core::verifier::{handle_attest_state_authenticated, AttestStateArgs};
 
@@ -3314,8 +3309,7 @@ fn test_session9_finding1_adversarial_forged_store_fails_closed() {
 }
 
 #[test]
-fn test_session10_finding1_initialization_rejects_bootstrap_exceeding_canonical_weak_subjectivity()
-{
+fn test_initialization_rejects_bootstrap_exceeding_canonical_weak_subjectivity() {
     use mosoo_core::types::{
         BeaconBlockHeader, InitializeArgs, CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
         ETH_MAINNET_CHAIN_ID,
@@ -3383,7 +3377,7 @@ fn test_session10_finding1_initialization_rejects_bootstrap_exceeding_canonical_
 }
 
 #[test]
-fn test_session10_finding2_finish_update_advances_authenticated_head_slot() {
+fn test_finish_update_advances_authenticated_head_slot() {
     use mosoo_core::types::{
         BeaconBlockHeader, ExecutionPayloadHeader, JobAccount, JobStage, LightClientUpdate,
         MillerOutput, SyncAggregate,
@@ -3527,7 +3521,7 @@ fn test_session10_finding2_finish_update_advances_authenticated_head_slot() {
         Some(new_slot),
         "Authenticated instance head must automatically advance to finalized update slot"
     );
-    // Confirm chain-wide anchor head was NOT altered by this single instance update (Finding 2 / Session 13)
+    // Confirm chain-wide anchor head was NOT altered by this single instance update
     assert_eq!(
         updated_config.get_trusted_head(chain_id),
         Some(5000),
@@ -3536,7 +3530,7 @@ fn test_session10_finding2_finish_update_advances_authenticated_head_slot() {
 }
 
 #[test]
-fn test_session10_finding3_core_loader_enforces_instance_pinning() {
+fn test_core_loader_enforces_instance_pinning() {
     use mosoo_core::types::Predicate;
     use mosoo_core::verifier::{handle_attest_state_authenticated, AttestStateArgs};
 
@@ -3592,7 +3586,7 @@ fn test_session10_finding3_core_loader_enforces_instance_pinning() {
 }
 
 #[test]
-fn test_session10_finding4_salted_privacy_shielding_prevents_dictionary_matching() {
+fn test_salted_privacy_shielding_prevents_dictionary_matching() {
     use mosoo_core::types::{StatementBinding, VerifiedStatement};
 
     let depositor_address = [0x42u8; 20];
@@ -3655,7 +3649,7 @@ fn test_session10_finding4_salted_privacy_shielding_prevents_dictionary_matching
 }
 
 #[test]
-fn test_session10_finding5_lez_runtime_adapter_dispatch_flow() {
+fn test_lez_runtime_adapter_dispatch_flow() {
     use mosoo_core::types::Predicate;
     use mosoo_core::verifier::{AttestStateArgs, LezRuntimeAdapter};
 
@@ -3740,8 +3734,7 @@ fn make_test_update(slot: u64, sig_slot: u64) -> mosoo_core::types::LightClientU
 }
 
 #[test]
-fn test_session11_finding1_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda(
-) {
+fn test_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda() {
     use mosoo_core::types::Predicate;
     use mosoo_core::verifier::{dispatch_guest_instruction, AttestStateArgs, GuestInstruction};
 
@@ -3797,7 +3790,7 @@ fn test_session11_finding1_production_guest_dispatcher_rejects_unauthenticated_s
 }
 
 #[test]
-fn test_session11_finding2_strict_config_loading_fails_closed_when_missing_or_untrusted_owner() {
+fn test_strict_config_loading_fails_closed_when_missing_or_untrusted_owner() {
     use mosoo_core::types::{derive_bridge_config_pda, ConfigError, Predicate};
     use mosoo_core::verifier::{
         handle_attest_state_authenticated, handle_begin_update_authenticated, AttestStateArgs,
@@ -3886,7 +3879,7 @@ fn test_session11_finding2_strict_config_loading_fails_closed_when_missing_or_un
 }
 
 #[test]
-fn test_session11_finding3_freshness_enforces_anchor_rejects_fake_head_and_stale_instance() {
+fn test_freshness_enforces_anchor_rejects_fake_head_and_stale_instance() {
     use mosoo_core::verifier::{handle_begin_update_authenticated, BeginUpdateArgs};
 
     let mut store = MockStore::default();
@@ -3960,7 +3953,7 @@ fn test_session11_finding3_freshness_enforces_anchor_rejects_fake_head_and_stale
 }
 
 #[test]
-fn test_session11_finding4_confidential_value_shielding_commits_value_without_journal_leakage() {
+fn test_confidential_value_shielding_commits_value_without_journal_leakage() {
     use mosoo_core::types::{StatementBinding, VerifiedStatement};
 
     let mut stmt = VerifiedStatement::default();
@@ -4024,7 +4017,7 @@ fn test_session11_finding4_confidential_value_shielding_commits_value_without_jo
 }
 
 #[test]
-fn test_session11_finding6_solidity_locker_guardian_and_quorum_invariants() {
+fn test_solidity_locker_guardian_and_quorum_invariants() {
     // Invariants enforced in contracts/MosooLocker.sol:
     // 1. Zero address guardian is rejected with InvalidGuardian()
     // 2. Guardian matching owner/msg.sender is rejected with GuardianMustNotBeOwner()
@@ -4038,14 +4031,14 @@ fn test_session11_finding6_solidity_locker_guardian_and_quorum_invariants() {
 }
 
 // ===========================================================================
-// AUDIT SESSION 12 HARDENING TESTS (October 27, 2026)
+// PROTOCOL ISOLATION & RUNTIME ADAPTER HARDENING TESTS
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
 // Finding 1: Unpinned Instance Cannot Initialize or Advance Global Trusted Head
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session12_finding1_unpinned_instance_cannot_initialize_or_advance_trusted_head() {
+fn test_unpinned_instance_cannot_initialize_or_advance_trusted_head() {
     use mosoo_core::types::{CANONICAL_SEPOLIA_CHECKPOINT_ROOT, CANONICAL_SEPOLIA_CHECKPOINT_SLOT};
 
     let mut store = MockStore::default();
@@ -4088,8 +4081,7 @@ fn test_session12_finding1_unpinned_instance_cannot_initialize_or_advance_truste
 // Finding 2: Independent Freshness Enforces Authenticated Anchor Head
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session12_finding2_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint(
-) {
+fn test_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint() {
     use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
 
     let mut bridge_cfg = TrustedBridgeConfig::canonical();
@@ -4149,7 +4141,7 @@ fn test_session12_finding2_independent_freshness_enforces_anchor_rejects_fake_he
 // Finding 3: Deposit Proof Binding to Canonical Locker and Token Allowlist
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session12_finding3_attest_state_rejects_untrusted_deposit_locker_and_disallowed_token() {
+fn test_attest_state_rejects_untrusted_deposit_locker_and_disallowed_token() {
     use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
 
     let mut store = MockStore::default();
@@ -4263,7 +4255,7 @@ fn test_session12_finding3_attest_state_rejects_untrusted_deposit_locker_and_dis
 // Finding 4: LEZ Runtime Adapter End-to-End Persistent Lifecycle Acceptance Test
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e() {
+fn test_lez_runtime_adapter_full_persistent_lifecycle_e2e() {
     use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
     use mosoo_core::verifier::{BeginUpdateArgs, InstructionOutput, LezRuntimeAdapter};
 
@@ -4417,7 +4409,7 @@ fn test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e() {
 // Finding 5: Privacy Mode and Confidential Value Shielding Enforcement
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session12_finding5_privacy_mode_and_confidential_shielding_enforcement() {
+fn test_privacy_mode_and_confidential_shielding_enforcement() {
     use mosoo_core::types::CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
 
     let balance_addr = alloy_primitives::Address::repeat_byte(0x55);
@@ -4547,10 +4539,10 @@ fn test_session12_finding5_privacy_mode_and_confidential_shielding_enforcement()
 }
 
 // ---------------------------------------------------------------------------
-// Session 13 Finding 1: Multi-Instance Trusted Head Isolation
+// Multi-Instance Trusted Head Isolation
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session13_finding1_multi_instance_trusted_head_isolation() {
+fn test_multi_instance_trusted_head_isolation() {
     use mosoo_core::types::{
         BeaconBlockHeader, JobAccount, JobStage, LightClientUpdate, MillerOutput, SyncAggregate,
     };
@@ -4726,10 +4718,10 @@ fn test_session13_finding1_multi_instance_trusted_head_isolation() {
 }
 
 // ---------------------------------------------------------------------------
-// Session 13 Finding 3: Confidential Mode Missing Salt Fails Closed
+// Confidential Mode Missing Salt Fails Closed
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session13_finding3_confidential_mode_missing_salt_fails_closed() {
+fn test_confidential_mode_missing_salt_fails_closed() {
     use mosoo_core::types::{PrivacyMode, CANONICAL_SEPOLIA_CHECKPOINT_SLOT};
 
     let mut instance = make_test_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_INSTANCE_ID);
@@ -4785,10 +4777,10 @@ fn test_session13_finding3_confidential_mode_missing_salt_fails_closed() {
 }
 
 // ---------------------------------------------------------------------------
-// Session 13 Finding 2: Chain ID Support Alignment & Hoodi Deprecation Rejection
+// Chain ID Support Alignment & Hoodi Deprecation Rejection
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session13_finding2_chain_id_support_and_hoodi_rejection() {
+fn test_chain_id_support_and_hoodi_rejection() {
     use mosoo_core::types::is_supported_chain_id;
 
     // Supported networks
@@ -4815,10 +4807,10 @@ fn test_session13_finding2_chain_id_support_and_hoodi_rejection() {
 }
 
 // ---------------------------------------------------------------------------
-// Session 13 Finding 4: Confidential Journal Emits No Raw Value
+// Confidential Journal Emits No Raw Value
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session13_finding4_confidential_journal_emits_no_raw_value() {
+fn test_confidential_journal_emits_no_raw_value() {
     use mosoo_core::types::{PrivacyMode, CANONICAL_SEPOLIA_CHECKPOINT_SLOT};
 
     let balance_addr = alloy_primitives::Address::repeat_byte(0x77);
@@ -4895,10 +4887,10 @@ fn test_session13_finding4_confidential_journal_emits_no_raw_value() {
 }
 
 // ---------------------------------------------------------------------------
-// Session 14 Finding 1: Strict Weak-Subjectivity Freshness & Dormant Instance Rejection
+// Strict Weak-Subjectivity Freshness & Dormant Instance Rejection
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session14_finding1_dormant_stale_instance_fails_closed_even_with_none_head() {
+fn test_dormant_stale_instance_fails_closed_even_with_none_head() {
     use mosoo_core::verifier::{
         handle_attest_state_authenticated, handle_begin_update_authenticated, AttestStateArgs,
         BeginUpdateArgs,
@@ -5009,10 +5001,10 @@ fn test_session14_finding1_dormant_stale_instance_fails_closed_even_with_none_he
 }
 
 // ---------------------------------------------------------------------------
-// Session 14 Finding 2: Multi-Instance Coexistence & Registry Isolation
+// Multi-Instance Coexistence & Registry Isolation
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session14_finding2_multi_instance_coexistence_and_isolated_state() {
+fn test_multi_instance_coexistence_and_isolated_state() {
     use mosoo_core::types::{
         BeaconBlockHeader, ExecutionPayloadHeader, InitializeArgs, JobAccount, JobStage,
         LightClientUpdate, MillerOutput, NetworkConfig, SyncAggregate,
@@ -5261,10 +5253,10 @@ fn test_session14_finding2_multi_instance_coexistence_and_isolated_state() {
 }
 
 // ---------------------------------------------------------------------------
-// Session 14 Finding 3: Mainnet/Holesky Activation & On-Chain Admin Registration
+// Mainnet/Holesky Activation & On-Chain Admin Registration
 // ---------------------------------------------------------------------------
 #[test]
-fn test_session14_finding3_mainnet_and_holesky_bootstrap_and_admin_registration() {
+fn test_mainnet_and_holesky_bootstrap_and_admin_registration() {
     use mosoo_core::types::{
         CANONICAL_HOLESKY_CHECKPOINT_ROOT, CANONICAL_HOLESKY_CHECKPOINT_SLOT,
         CANONICAL_MAINNET_CHECKPOINT_ROOT, CANONICAL_MAINNET_CHECKPOINT_SLOT, ETH_HOLESKY_CHAIN_ID,

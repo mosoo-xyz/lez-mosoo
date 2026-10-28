@@ -6,7 +6,7 @@ pragma solidity ^0.8.20;
  * @notice Canonical Ethereum Escrow and Settlement contract for the Mosoo Light Client Bridge
  *         connecting Ethereum (Mainnet / Sepolia / Holesky) and the Logos Execution Zone (LEZ).
  *
- * @dev Comprehensive Trust Model & Security Hardening:
+ * @dev Bridge Trust Model & Security Invariants:
  * 1. Inbound Bridge (Ethereum -> LEZ): 100% Trustless. Verified inside LEZ zkVM/runtime
  *    using Merkle-Patricia Trie proofs against Ethereum consensus sync committee roots (Logos RFP-021).
  * 2. Outbound Bridge (LEZ -> Ethereum): Witness-attested settlement model with multi-layered defense-in-depth:

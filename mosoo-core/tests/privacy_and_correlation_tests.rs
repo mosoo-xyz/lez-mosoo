@@ -230,10 +230,10 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     assert!(!ether_nullifiers.is_used(&[0x78; 32]));
 }
 
-/// Test 5: Exhaustive Byte-Level Memory & Event-Log State Diff Inspection.
+/// Test 5: Byte-level memory & event log state diff inspection.
 ///
 /// Simulates an on-chain LEZ consumer state recording after claiming an Ethereum transfer.
-/// Performs an exhaustive byte-level window search across all serialized consumer state,
+/// Performs a sliding byte-level window search across all serialized consumer state,
 /// nullifier sets, and emitted event payloads to prove zero occurrences of:
 /// 1. 20-byte Ethereum sender account address
 /// 2. 20-byte target contract address

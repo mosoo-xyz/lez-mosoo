@@ -73,7 +73,7 @@ cargo run -p mosoo-daemon --release -- \
 
 ### 3.1 Canonical RFP-Compliant Operation: Logos Ethereum Core Verified Proxy
 
-In strict accordance with **Logos RFP-021**, production Ethereum consensus interactions route through the official **Logos Ethereum Core** verified consensus proxy module (`--logos-ethereum-core-rpc`). This guarantees consensus cryptographic verification at the Logos node boundary without trusting third-party RPC providers:
+In production, Ethereum consensus interactions route through the official **Logos Ethereum Core** verified consensus proxy module (--logos-ethereum-core-rpc). This provides consensus verification directly at the Logos node boundary without trusting third-party RPC providers:
 
 ```sh
 # Production Configuration (Logos Ethereum Core Verified Proxy)

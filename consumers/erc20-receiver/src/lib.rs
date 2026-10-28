@@ -1057,7 +1057,7 @@ pub fn claim_with_store_u128<S: AccountStore>(
 
 /// Detailed parameters for claiming a verified ERC-20 token transfer or vault deposit.
 ///
-/// In accordance with Logos RFP-021 reference consumer specifications, this proves that
+/// Proves that
 /// a specific `sender` transferred a specific `min_amount` of `token_contract` tokens
 /// for the benefit of a `recipient` on LEZ.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1075,7 +1075,7 @@ pub struct Erc20TransferClaim {
 }
 
 /// Process a verified ERC-20 token transfer event, proving token contract,
-/// sender, recipient, and amount in accordance with RFP-021 reference consumer semantics.
+/// verifying token contract, sender, recipient, and amount parameters.
 #[cfg(any(test, feature = "test-harness"))]
 pub fn claim_erc20_transfer(
     claim: &Erc20TransferClaim,

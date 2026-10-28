@@ -165,7 +165,7 @@ pub struct TrustedBridgeConfig {
     /// Authenticated trusted head slot (or consensus checkpoint slot) per chain ID
     #[serde(default)]
     pub trusted_heads: HashMap<u64, u64>,
-    /// Authenticated trusted head slot tracked per light-client instance PDA (Finding 1 / Session 12)
+    /// Authenticated trusted head slot tracked per light-client instance PDA
     #[serde(default)]
     pub instance_trusted_heads: HashMap<String, u64>,
     /// Multi-instance registry supporting multiple coexisting light-client instances per chain (RFP-021 Functionality #15)
@@ -176,7 +176,7 @@ pub struct TrustedBridgeConfig {
     pub trusted_checkpoints_registry: HashMap<u64, HashSet<[u8; 32]>>,
 }
 
-/// Explicit privacy and confidentiality modes for state attestation statements (Finding 5 / Session 12).
+/// Explicit privacy and confidentiality modes for state attestation statements.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum PrivacyMode {
     /// Public verifiable fact with clear statement binding for on-chain consumption
@@ -630,7 +630,7 @@ impl TrustedBridgeConfig {
 
     /// Registers or updates the trusted head slot for a specific instance PDA.
     /// Does NOT mutate the chain-wide trusted_heads map, ensuring complete cross-instance
-    /// isolation and preventing an advance in instance A from altering the freshness baseline for instance B (Finding 2 / Session 13).
+    /// isolation and preventing an advance in instance A from altering the freshness baseline for instance B.
     pub fn register_trusted_head_for_instance(
         &mut self,
         _chain_id: u64,
@@ -1442,8 +1442,7 @@ pub struct InitializeArgs {
     /// Beacon block header of the weak-subjectivity trusted checkpoint.
     pub bootstrap_header: BeaconBlockHeader,
     /// Weak-subjectivity trusted beacon block root anchor.
-    /// In accordance with Ethereum light client specifications and Logos RFP-021,
-    /// when specified, handle_initialize asserts that hash_tree_root(bootstrap_header) == trusted_checkpoint_root.
+    /// When specified, handle_initialize asserts that hash_tree_root(bootstrap_header) == trusted_checkpoint_root.
     #[serde(default)]
     pub trusted_checkpoint_root: [u8; 32],
     /// Sync committee active at the bootstrap slot (512 BLS pubkeys).
@@ -1557,7 +1556,7 @@ pub enum StatementBinding {
     /// Shielded privacy-preserving statement binding (RFP-021 Functionality #8)
     /// Hides Ethereum accounts, contracts, and LEZ recipients behind a cryptographic commitment.
     Shielded { commitment: [u8; 32] },
-    /// Confidential statement binding providing full value and provenance privacy (Finding 4 / Session 11).
+    /// Confidential statement binding providing value and provenance privacy.
     /// Hides addresses, contracts, and commits to verified_value via a secret 256-bit salt commitment.
     Confidential {
         commitment: [u8; 32],
@@ -1844,7 +1843,7 @@ impl VerifiedStatement {
 
     /// Converts this verified statement into a confidential shielded statement with a secret 256-bit blinding salt,
     /// blinding the verbose provenance binding, subject key, statement ID (nullifier), AND verified_value
-    /// to provide full value confidentiality in addition to address and event unlinkability (Finding 4 / Session 11).
+    /// to provide value confidentiality in addition to address and event unlinkability.
     pub fn shield_confidential(&self, salt: &[u8; 32]) -> Self {
         let mut shielded = self.shield_with_salt(salt);
 

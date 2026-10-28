@@ -200,8 +200,8 @@ pub fn derive_statement_id_from_raw(
 /// (chain ID, genesis validators root, subject key, proof type tag, and verified value) per RFP-021 Functionality #6:
 /// `sha256("mosoo_statement_v2" || chain_id_le8 || genesis_validators_root_32 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
 ///
-/// In accordance with RFP-021 Functionality #6, identical verified Ethereum state generates identical deterministic statement IDs.
-/// In accordance with RFP-021 Functionality #15, light client instance isolation is enforced at the consumer boundary
+/// Identical verified Ethereum state generates identical deterministic statement IDs.
+/// Instance isolation is enforced at the consumer boundary via VerifiedStatement.source_instance_pda.
 /// via `VerifiedStatement.source_instance_pda`.
 pub fn derive_statement_id_v2(
     chain_id: u64,
@@ -520,7 +520,9 @@ mod tests {
         let proof_type = 4;
         let val = val(500);
         let pred = Predicate::AtLeast { min: [0u8; 32] };
-        let binding = crate::types::StatementBinding::Account { address: [0x55; 20] };
+        let binding = crate::types::StatementBinding::Account {
+            address: [0x55; 20],
+        };
 
         // 1. Authenticated instance evaluates to canonical V2 statement ID
         let stmt_v2 = evaluate_with_binding_v2(
@@ -536,7 +538,8 @@ mod tests {
         )
         .unwrap();
 
-        let expected_v2 = derive_statement_id_v2(chain_id, &gvr, &subject, proof_type, &val.as_bytes32());
+        let expected_v2 =
+            derive_statement_id_v2(chain_id, &gvr, &subject, proof_type, &val.as_bytes32());
         assert_eq!(stmt_v2.statement_id, expected_v2);
 
         // 2. Unbound zero-PDA instance explicitly falls back to legacy V1 derivation
@@ -553,7 +556,8 @@ mod tests {
         )
         .unwrap();
 
-        let expected_v1 = derive_statement_id_from_raw(chain_id, &subject, proof_type, &val.as_bytes32());
+        let expected_v1 =
+            derive_statement_id_from_raw(chain_id, &subject, proof_type, &val.as_bytes32());
         assert_eq!(stmt_v1.statement_id, expected_v1);
 
         // 3. Invariant: V1 legacy nullifier and V2 canonical nullifier MUST never collide

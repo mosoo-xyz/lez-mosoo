@@ -1011,7 +1011,7 @@ pub fn claim_ether_with_store_u128<S: AccountStore>(
 
 /// Detailed parameters for claiming a verified Native ETH transfer or deposit to a specific contract.
 ///
-/// In accordance with Logos RFP-021 reference consumer specifications, this proves that
+/// Proves that
 /// a specific `sender` transferred a specific `amount` of native ETH to a designated
 /// Ethereum deposit contract for the benefit of a `recipient` on LEZ.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1029,7 +1029,7 @@ pub struct NativeEthDepositClaim {
 }
 
 /// Process a verified native ETH deposit or transfer event to a specific contract,
-/// proving sender, recipient, and amount in accordance with RFP-021 reference consumer semantics.
+/// verifying sender, recipient, and amount parameters.
 #[cfg(any(test, feature = "test-harness"))]
 pub fn claim_native_eth_deposit(
     claim: &NativeEthDepositClaim,

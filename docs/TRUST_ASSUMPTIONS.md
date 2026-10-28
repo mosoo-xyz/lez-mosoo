@@ -1,6 +1,6 @@
 # Mosoo Cryptographic Trust Assumptions & Operational Security Model
 
-This document formally specifies the cryptographic trust assumptions, threat model, participant failure conditions, and privacy boundaries for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ), satisfying the mandatory security criteria of **Logos RFP-021**.
+Cryptographic trust assumptions, threat model, participant failure conditions, and privacy boundaries for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ).
 
 ---
 
@@ -12,7 +12,7 @@ This document formally specifies the cryptographic trust assumptions, threat mod
 - **Cryptographic Immutability:** Once initialized, the instance is immutable. The `genesis_validators_root` and `chain_id` are permanently anchored into the instance PDA. Checkpoint parameters cannot be rewritten or retroactively altered (ADR-004, `test_instance_immutability`).
 
 ### 1.2 Weak Subjectivity Bounds
-- **Epoch Horizon:** In accordance with Ethereum's weak subjectivity specification (EIP-2982 / Altair), light clients must synchronize within the weak subjectivity period (~256 epochs / 27.3 hours).
+- **Epoch Horizon:** Under Ethereum's weak subjectivity specification (EIP-2982 / Altair), light clients must synchronize within the weak subjectivity period (~256 epochs / 27.3 hours).
 - **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods or fail weak-subjectivity freshness checks (`MosooError::WeakSubjectivityViolation`). If a node goes offline for longer than a weak subjectivity period, it must bootstrap a new instance from an authenticated checkpoint rather than accepting unverified historical updates.
 
 ---

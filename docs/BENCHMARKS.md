@@ -1,6 +1,6 @@
 # Mosoo Performance Benchmarks & Cycle Analysis
 
-This document delivers comprehensive empirical and architectural benchmark measurements for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ), satisfying the performance criteria of **Logos RFP-021**.
+Benchmark measurements and cycle analysis for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ). Profiles in-guest zkVM cycles, gas consumption, and memory footprints against LEZ transaction limits.
 
 ---
 
@@ -79,7 +79,7 @@ Measurements for verifying Merkle-Patricia Trie (MPT) inclusion proofs against f
 
 ## 4. zkVM Prover Wall-Clock Latency, Peak Memory & Hardware Sizing (P.2, P.4)
 
-In accordance with Logos RFP-021 requirements **Performance #2** (cost breakdown per action) and **Performance #4** (proving feasibility on standard developer laptop hardware), we profiled proving times and memory footprints across multiple hardware configurations with RISC Zero segment size set to `SEGMENT_PO2 = 18` (2^18 = 262,144 cycles per segment).
+To evaluate proving feasibility on standard developer hardware, we profiled proving times and memory footprints across multiple configurations with RISC Zero segment size set to SEGMENT_PO2 = 18 (2^18 = 262,144 cycles per segment).
 
 > [!NOTE]
 > **Segment Size & Memory Optimization:** Proving with the default 2^20 cycles per segment can drive systems with <= 24 GB RAM into swap. Restricting segment size to `SEGMENT_PO2=18` bounds peak resident memory to < 12 GB, ensuring deterministic execution on standard 16GB developer laptops without OOM or swap thrashing.

@@ -282,7 +282,7 @@ mod tests {
             );
         }
 
-        // Verify JSON serialization works seamlessly
+        // Verify JSON serialization
         let json = serde_json::to_string_pretty(&def).expect("SPEL IDL serializes to JSON");
         assert!(json.contains("mosoo_ethereum_attester"));
         assert!(json.contains("begin_update"));

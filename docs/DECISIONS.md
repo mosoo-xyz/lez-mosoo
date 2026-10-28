@@ -1,6 +1,6 @@
 # Mosoo Architectural Decision Records (ADRs)
 
-This document formalizes the key architectural decisions, threat models, design rationales, and consensus invariants underpinning the **Mosoo** trustless Ethereum state attestation bridge for Logos Execution Zone (LEZ), developed in accordance with **Logos RFP-021**.
+This document records architectural decisions, threat models, and consensus invariants for the **Mosoo** Ethereum state attestation bridge on Logos Execution Zone (LEZ).
 
 ---
 
@@ -292,7 +292,7 @@ An external re-audit of the codebase identified 5 critical and high-priority edg
 ## ADR-012: Store-Backed Guest Entrypoint Authentication, Native ETH Exact Recipient Equality, Unowned Rollback Preservation, and Custom Checkpoint Trust Registration
 
 ### Context & Problem Statement
-A follow-up independent audit (Session 5 - Oct 26, 2026) identified 5 specific findings across guest execution persistence, native ETH deposit event matching, custom network trust verification, statement unlinkability, and rollback edge cases:
+A follow-up security review (Oct 26, 2026) identified 5 specific edge cases across guest execution persistence, native ETH deposit event matching, custom network trust verification, statement unlinkability, and rollback edge cases:
 1. **Critical #1 (P0) Actual Guest Entrypoint Persistent Account Authentication**:
    `methods/guest/src/main.rs` directly called `dispatch_guest_instruction(instruction)`. While `dispatch_store_instruction` existed for LEZ runtime environments, the guest entrypoint lacked a persistent store-backed instruction envelope. `AttestStateAuthenticated` only asserted `args.instance.pda_address() == expected_instance_pda`. Because PDA addresses only bind `(chain_id, instance_id)`, an adversary could supply an altered sync committee or modified consensus state under the canonical PDA without it being loaded from or authenticated by persistent storage accounts.
 2. **High #2 (P1) Native ETH Deposit Recipient-Matching Ambiguity**:
@@ -352,7 +352,7 @@ An internal architecture review (Oct 26, 2026) evaluated the full codebase again
 4. **Privacy-Shielded Statement Consumer Witness Redemption**:
    - Added `ShieldedErc20ClaimWitness` and `claim_shielded_statement_u256` in `consumers/erc20-receiver/src/lib.rs`.
    - Added `ShieldedEtherClaimWitness` and `claim_shielded_ether_statement_u256` in `consumers/ether-receiver/src/lib.rs`.
-   - Consumers verify the commitment and blinded identifiers against the claimant's private witness preimage (unshielded binding + optional salt), maintaining zero on-chain linkability while ensuring robust replay protection and parameter authenticity.
+   - Consumers verify the commitment and blinded identifiers against the claimant's private witness preimage (unshielded binding + optional salt), preventing on-chain linkability while ensuring replay protection and parameter authenticity.
 
 ---
 
@@ -412,7 +412,7 @@ Static code and invariant analysis (Oct 27, 2026) raised five critical and high-
 1. **Production Persistent Account Dispatch (P0)**:
    - Enabled `GuestInstruction::StoreBacked` unconditionally across test and production builds.
    - In production, caller-provided un-backed state accounts without an authentic persistent `AccountStore` are rejected fail-closed with `MosooError::UnauthenticatedInstance`. Production execution strictly uses `dispatch_store_instruction`, loading accounts with `owner == MOSOO_PROGRAM_ID` and replacing caller-supplied instance and header state with verified on-chain state.
-   - Added explicit negative regression test (`test_session8_finding1_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed`) verifying that fabricated committee and execution roots under a canonical instance ID are strictly rejected.
+   - Added explicit negative regression test (`test_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed`) verifying that fabricated committee and execution roots under a canonical instance ID are strictly rejected.
 2. **Weak-Subjectivity Freshness Direction & Mandatory Head Validation (P1)**:
    - In `handle_begin_update()`, if `trusted_head_slot` is omitted, fallback to checking `update.signature_slot` freshness. The effective head slot is asserted to not precede `instance.current_slot`, and staleness past 54,000 slots fails closed.
    - In `handle_attest_state()`, historical freshness is corrected to: `instance.current_slot.saturating_sub(header.slot) > CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS` fails closed. If `trusted_head_slot` is supplied, `trusted_head_slot < instance.current_slot` and `is_stale_canonical(trusted_head_slot)` are strictly enforced.
@@ -420,7 +420,7 @@ Static code and invariant analysis (Oct 27, 2026) raised five critical and high-
    - Unified `InstanceAccount::pda_address(&self)` to delegate directly to `derive_instance_pda(self.chain_id, &self.instance_id)`.
    - Updated `CANONICAL_SEPOLIA_MOSOO_INSTANCE` to the canonical program-ID-inclusive derivation: `[0x98, 0x4a, 0x6b, 0x2e, 0x81, 0xc3, 0x18, 0x49, 0x2c, 0x2c, 0x0a, 0xbd, 0x21, 0x1d, 0xfb, 0xbb, 0x64, 0x1a, 0x3e, 0x71, 0xa5, 0xb2, 0x7f, 0xcf, 0x80, 0x67, 0x32, 0xad, 0x55, 0x86, 0x19, 0x12]`.
    - Cleaned `TrustedBridgeConfig::canonical()` to pre-register only Sepolia (the live network with verified checkpoint). Mainnet and Holesky require explicit authorized checkpoint registration prior to activation.
-   - Added automated invariant test (`test_session8_finding3_pda_derivation_invariants_across_all_networks`) asserting `derive_instance_pda(chain_id, &instance_id) == expected_instance_pda == instance.pda_address()` across all networks.
+   - Added automated invariant test (`test_pda_derivation_invariants_across_all_networks`) asserting `derive_instance_pda(chain_id, &instance_id) == expected_instance_pda == instance.pda_address()` across all networks.
 4. **Irreversible Permanent Retirement of Legacy Withdrawal Routes (P2)**:
    - Added `bool public legacyRoutesPermanentlyDisabled;`, `error LegacyRoutesArePermanentlyRetired();`, and `event LegacyRoutesPermanentlyRetired();` in `MosooLocker.sol`.
    - Added `permanentlyRetireLegacyRoutes()` external function (owner only).
@@ -455,19 +455,19 @@ Cryptographic boundary review (Oct 27, 2026) identified five security-relevant v
 1. **zkVM Guest Store-Backed Isolation (P0)**:
    - Gated `GuestInstruction::StoreBacked` behind `#[cfg(any(test, feature = "test-harness"))]` in `dispatch_guest_instruction`. In production zkVM guest builds, caller-supplied serialized `ProgramAccountStore` instructions are strictly rejected fail-closed with `MosooError::UnauthenticatedInstance`.
    - In LEZ runtime, host executions strictly call `dispatch_store_instruction(&mut host_store, instruction)` with genuine RocksDB/host-owned accounts, never accepting caller-provided serialized stores.
-   - Added adversarial test (`test_session9_finding1_adversarial_forged_store_fails_closed`) asserting that fabricated stores with forged accounts and fake headers fail closed.
+   - Added adversarial test (`test_adversarial_forged_store_fails_closed`) asserting that fabricated stores with forged accounts and fake headers fail closed.
 2. **Authenticated Freshness Anchor & Incremental Update Shielding (P1)**:
    - Added `trusted_heads: HashMap<u64, u64>` and administrative registration methods (`register_trusted_head`, `register_trusted_head_authorized`, `get_trusted_head`) to `TrustedBridgeConfig`.
    - In `handle_begin_update_authenticated` and `handle_attest_state_authenticated`, instances must not be stale relative to the authenticated network head (`anchor_head`). Caller attempts to provide fake low heads or pass `None` cannot bypass the authenticated anchor.
-   - Added automated test (`test_session9_finding2_stale_instance_cannot_advance_via_small_incremental_updates`) proving that an expired instance cannot be revived or kept alive via chained small incremental updates (e.g. 100-slot jumps).
+   - Added automated test (`test_stale_instance_cannot_advance_via_small_incremental_updates`) proving that an expired instance cannot be revived or kept alive via chained small incremental updates (e.g. 100-slot jumps).
 3. **Independent Checkpoint Authorization Enforcement (P1)**:
    - Updated `validate_initialize_with_config` and `validate_initialize` so that checkpoint trust roots MUST be independently registered in `TrustedBridgeConfig`. Caller-supplied `NetworkConfig` is never self-certifying. Unregistered networks fail closed with `UnconfiguredTrustedCheckpoint`.
-   - Added regression test (`test_session9_finding3_and_5_unregistered_networks_fail_closed_without_config_registration`) verifying that unconfigured networks (Mainnet, Holesky, custom chains) fail closed without independent authorization.
+   - Added regression test (`test_unregistered_networks_fail_closed_without_config_registration`) verifying that unconfigured networks (Mainnet, Holesky, custom chains) fail closed without independent authorization.
 4. **Unified Canonical JobAccount PDA Derivation (P2)**:
    - Unified `JobAccount::instance_pda(&self)` to delegate directly to `derive_instance_pda(self.instance_chain_id, &self.instance_id)` (incorporating `MOSOO_PROGRAM_ID`).
    - Unified `JobAccount::pda_address(&self)` to delegate directly to `Self::derive_pda(&self.instance_pda(), self.nonce)`.
    - Standardized `verify_job_account_authenticity` to check `job.pda_address() == *expected_pda`.
-   - Added invariant unit test (`test_session9_finding4_job_pda_derivation_unification`) across multiple networks and nonces.
+   - Added invariant unit test (`test_job_pda_derivation_unification`) across multiple networks and nonces.
 5. **Elimination of Placeholder Constants (P2)**:
    - Completely deleted placeholder constants `CANONICAL_MAINNET_CHECKPOINT_ROOT`, `CANONICAL_MAINNET_MOSOO_LOCKER`, `CANONICAL_HOLESKY_CHECKPOINT_ROOT`, and `CANONICAL_HOLESKY_MOSOO_LOCKER` from `mosoo-core/src/types.rs`.
    - Added test asserting that canonical configuration contains zero placeholder checkpoints for Mainnet and Holesky.
@@ -586,7 +586,7 @@ Pre-Submission Security Review (Sprint 5) reviewed the latest repository hardeni
    - `handle_attest_state_authenticated` and `handle_attest_state` did not validate `deposit_contract` and `token_contract` against `TrustedBridgeConfig` allowlists, permitting claims against arbitrary contracts.
 4. **Finding 4 (Production Blocker): Real LEZ Runtime Integration & E2E Acceptance Test**:
    - Clarified that LEZ smart contracts execute natively on the host via `LezRuntimeAdapter<S>` and `dispatch_store_instruction` against persistent storage.
-   - Required a full end-to-end acceptance test: `test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e` proving initialize -> 3-Tx update pipeline -> state attestation runs against persistent storage.
+   - Required a full end-to-end acceptance test: `test_lez_runtime_adapter_full_persistent_lifecycle_e2e` proving initialize -> 3-Tx update pipeline -> state attestation runs against persistent storage.
 5. **Finding 5 (Medium): Default-Deny Privacy Shielding & Value Confidentiality**:
    - Added `PrivacyMode { Public, AddressPrivate, Confidential }` in `mosoo-core/src/types.rs`.
    - In `methods/guest/src/main.rs`: enforced default-deny privacy: private statement types (`AccountBalance`, `StorageSlot`, `ReceiptLog`) in zkVM public journal require value confidentiality (`stmt.is_value_shielded()`), rejecting unshielded value leakage.
@@ -608,7 +608,7 @@ Pre-Submission Security Review (Sprint 5) reviewed the latest repository hardeni
    - Non-compliant targets immediately fail closed with `MosooError::UntrustedDepositContract` and `MosooError::UntrustedTokenContract`.
 4. **Real LEZ Runtime Integration & E2E Acceptance Test (Finding 4)**:
    - Documented and verified that LEZ smart contracts execute natively on the host via `LezRuntimeAdapter<S>` and `dispatch_store_instruction` against persistent storage.
-   - Implemented `test_session12_finding4_lez_runtime_adapter_full_persistent_lifecycle_e2e` verifying the complete persistent lifecycle: initialization, update creation, and state attestation using genuine MPT inclusion proofs against persistent storage.
+   - Implemented `test_lez_runtime_adapter_full_persistent_lifecycle_e2e` verifying the complete persistent lifecycle: initialization, update creation, and state attestation using genuine MPT inclusion proofs against persistent storage.
 5. **Default-Deny Privacy Shielding & Value Confidentiality (Finding 5)**:
    - Added `PrivacyMode` enum (`Public`, `AddressPrivate`, `Confidential`) in `mosoo-core/src/types.rs`.
    - Enforced in `methods/guest/src/main.rs` that private statement types (`AccountBalance`, `StorageSlot`, `ReceiptLog`) require value confidentiality (`stmt.is_value_shielded()`) in the public zkVM journal, rejecting unshielded value leakage.
@@ -657,7 +657,7 @@ Consensus & Daemon Architecture Review (Sprint 5) identified 4 operational and a
 3. **Fail-Closed Confidential Privacy Mode (Finding 3)**:
    - Added first-class `pub privacy_mode: Option<PrivacyMode>` to `AttestStateArgs`.
    - Implemented Step 0 guard in `handle_attest_state`: when `privacy_mode` is `Some(PrivacyMode::Confidential)` or `Some(PrivacyMode::AddressPrivate)`, a secret 256-bit `privacy_salt` is strictly required. If omitted, execution immediately fails closed with `MosooError::InvalidBootstrap`.
-4. **Comprehensive Operations & Governance Guide (Finding 4)**:
+4. **Operations & Governance Guide (Finding 4)**:
    - Created `docs/OPERATIONS.md` detailing trusted head provisioning, stalled instance retirement and fresh checkpoint replacement (ADR-004), 2-step timelock workflows (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), Guardian veto procedures, and multi-network registration standards.
 
 ---

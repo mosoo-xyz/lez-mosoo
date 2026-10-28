@@ -42,7 +42,7 @@ python3 scripts/verify-evidence.py
 
 ## 3. Gas Consumption & Headroom Under 10M Cap
 
-RFP-021 strictly mandates that all light client operations execute within a single-transaction gas limit of 10,000,000 gas. Mosoo splits BLS aggregate verification across three chained transactions to guarantee robust safety margins:
+LEZ enforces a per-transaction gas limit of 10,000,000 gas. Mosoo splits BLS aggregate verification across three chained transactions to operate safely within this limit:
 
 | Instruction | Operation | Gas Consumed | Headroom Under 10M Cap | Status |
 | :--- | :--- | :--- | :--- | :--- |
@@ -60,4 +60,4 @@ RFP-021 strictly mandates that all light client operations execute within a sing
 
 - **LEZ v0.3.1 Live Testnet (Delivered in M0)**: Currently running live on `testnet.lez.logos.co` with block heights exceeding 68,390. Mosoo's live verification suite (`scripts/verify-onchain.py` and `scripts/testnet-two-way-bridge.py --mode live`) actively connects to this endpoint and verifies consensus state, block progression, single-tx gas caps (< 10M), and Ethereum Sepolia bridge settlement (`MosooLocker.sol` at `0x74625D...`). Full execution logs are committed in `evidence/public-testnet-v03/`.
 - **LEZ v0.4 Architecture (Delivered in M0)**: Specified in RFP-021 with strict 10M gas cap per transaction and SPEL module standards. Mosoo's deterministic sequencer harness (`tests/sequencer_e2e_tests.rs`) executes the exact RISC Zero zkVM guest binaries under this specification.
-- **Milestone M1**: Seamless migration and continuous deployment to the public LEZ v0.4 devnet once Logos Core completes the v0.4 network freeze and public devnet release.
+- **Milestone M1**: Deployment and continuous testing on the public LEZ v0.4 devnet once Logos Core completes the v0.4 network freeze and release.

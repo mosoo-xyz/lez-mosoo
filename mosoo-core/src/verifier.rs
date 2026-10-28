@@ -147,12 +147,12 @@ pub enum GuestInstruction {
     },
     /// Store-backed execution: runs an instruction with an authentic persistent AccountStore.
     /// Loaded accounts (committee, headers, instance state) are strictly retrieved from
-    /// the store with MOSOO_PROGRAM_ID ownership, preventing any caller fabrication (Finding 1 / P0).
+    /// the store with MOSOO_PROGRAM_ID ownership, preventing caller fabrication.
     StoreBacked {
         store: ProgramAccountStore,
         instruction: Box<GuestInstruction>,
     },
-    /// Authorized instruction: Register or update an authorized checkpoint and initial anchor head for a network (Finding 3 / Session 14).
+    /// Authorized instruction: Register or update an authorized checkpoint and initial anchor head for a network.
     /// Strictly requires authorization by the configured admin authority.
     RegisterNetworkCheckpoint {
         caller: [u8; 32],
@@ -160,7 +160,7 @@ pub enum GuestInstruction {
         checkpoint_root: [u8; 32],
         initial_head_slot: u64,
     },
-    /// Authorized instruction: Register an approved light-client instance PDA into the multi-instance registry for a network (Finding 3 / Session 14).
+    /// Authorized instruction: Register an approved light-client instance PDA into the multi-instance registry for a network.
     /// Strictly requires authorization by the configured admin authority.
     RegisterTrustedInstance {
         caller: [u8; 32],
@@ -388,7 +388,7 @@ pub fn validate_initialize_with_config(
     args: &InitializeArgs,
     config: &TrustedBridgeConfig,
 ) -> Result<(), MosooError> {
-    // 0. Instance Authentication & Pinning (Finding 1 / Session 12 & Issue B / Session 14):
+    // 0. Instance Authentication & Pinning:
     // Verifies that the instance derived from args.chain_id and args.instance_id is an approved instance
     // in the multi-instance registry, matches the pinned instance, or the chain is unpinned.
     let actual_pda = crate::types::derive_instance_pda(args.chain_id, &args.instance_id);
@@ -415,7 +415,7 @@ pub fn validate_initialize_with_config(
 
     // 3. Verify bootstrap checkpoint root against independently authorized TrustedBridgeConfig.
     // Self-certifying caller NetworkConfig is STRICTLY REJECTED:
-    // Unregistered networks MUST be independently registered in TrustedBridgeConfig (Finding 3 / High #3 & Issue B / Session 14).
+    // Unregistered networks MUST be independently registered in TrustedBridgeConfig.
     let has_any_checkpoint = config.get_trusted_checkpoint(args.chain_id).is_some()
         || config
             .trusted_checkpoints_registry
@@ -462,7 +462,7 @@ pub fn validate_initialize_with_config(
         ));
     }
 
-    // 5. Independent Weak-Subjectivity Freshness Verification (Finding 2 / Session 12):
+    // 5. Independent Weak-Subjectivity Freshness Verification:
     // For supported Ethereum networks or any network with a configured anchor head,
     // an instance cannot be initialized without binding to an authentic anchor head in TrustedBridgeConfig.
     // Callers cannot self-certify freshness by supplying arbitrary head slots.
@@ -993,7 +993,7 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
 }
 
 pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, MosooError> {
-    // 0a. Guard: Confidential and AddressPrivate privacy modes strictly require a secret 256-bit privacy_salt (Finding 3 / Session 13)
+    // 0a. Guard: Confidential and AddressPrivate privacy modes strictly require a secret 256-bit privacy_salt
     if let Some(mode) = args.privacy_mode {
         match mode {
             crate::types::PrivacyMode::Confidential => {
@@ -1370,7 +1370,7 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         return Err(MosooError::PredicateFailed);
     }
 
-    // Deposit Locker and Token Allowlist Authorization Guard (Finding 3 / Session 12):
+    // Deposit Locker and Token Allowlist Authorization Guard:
     // Inbound deposit statements are ONLY issued for verified, authentic deposit lockers and allowed tokens.
     match &args.proof.target {
         inclusion::ProofTarget::NativeEthDeposit {
@@ -1421,7 +1421,7 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         _ => {}
     }
 
-    // Privacy-preserving statement shielding (Finding 4 / Session 11, Finding 5 / Session 12, & Finding 4 / Session 13):
+    // Privacy-preserving statement shielding:
     // Explicit Privacy Modes:
     // - Confidential: Full confidentiality, blinds subject key, statement id, and verified value commitment.
     //                 STRICTLY REQUIRES privacy_salt; missing salt FAILS CLOSED to prevent raw value leakage.
@@ -1549,9 +1549,9 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let mut args = args;
     args.instance = authentic_instance;
 
-    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig (Finding 2 & 3 / Session 11, Finding 1 / Session 13 & Issue A / Session 14)
+    // Freshness enforcement against authenticated anchor in TrustedBridgeConfig
     let config = TrustedBridgeConfig::load_strict(store)?;
-    // Instance Pinning Guard (Finding 1 / Session 12 & Issue B / Session 14):
+    // Instance Pinning Guard:
     // Only approved trusted instances can execute updates and advance consensus state.
     if !config.is_trusted_or_unpinned(args.instance.chain_id, instance_pda) {
         return Err(MosooError::UntrustedSourceInstance);
@@ -1565,7 +1565,7 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
         ))
     })?;
 
-    // Guard against dormant / stale instances (Issue A / Session 14):
+    // Guard against dormant / stale instances:
     // If the network anchor has advanced beyond the instance by more than CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
     // the instance has stalled past the weak-subjectivity threshold and cannot be updated without a fresh bootstrap.
     if network_anchor.saturating_sub(args.instance.current_slot)
@@ -1647,7 +1647,7 @@ pub fn handle_miller_update_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     let authentic_job = verify_job_account_authenticity(store, job_pda)?;
 
-    // Instance Pinning Guard (Finding 1 / Session 12):
+    // Instance Pinning Guard:
     // Only the approved trusted instance can execute updates.
     let config = TrustedBridgeConfig::load_strict(store)?;
     if !config.is_trusted_or_unpinned(authentic_instance.chain_id, instance_pda) {
@@ -1683,7 +1683,7 @@ pub fn handle_finish_update_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     let authentic_job = verify_job_account_authenticity(store, job_pda)?;
 
-    // Instance Pinning Guard (Finding 1 / Session 12):
+    // Instance Pinning Guard:
     // Only the approved trusted instance can execute updates and advance consensus state.
     let mut config = TrustedBridgeConfig::load_strict(store)?;
     if !config.is_trusted_or_unpinned(authentic_instance.chain_id, instance_pda) {
@@ -1710,7 +1710,7 @@ pub fn handle_finish_update_authenticated<S: AccountStore>(
             MosooError::Internal(format!("Failed to serialize Closed JobAccount: {e}"))
         })?;
 
-        // Automatic consensus head advancement (Finding 1 / Session 10 & Finding 2 / Session 11 & Finding 1 / Session 12):
+        // Automatic consensus head advancement:
         // When a light-client update is verified and finalized on-chain, automatically advance
         // the authenticated trusted head slot for this chain and instance PDA and commit it atomically to persistent storage.
         config.register_trusted_head_for_instance(
@@ -1753,9 +1753,9 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     let authentic_instance = verify_instance_account_authenticity(store, instance_pda)?;
     args.instance = authentic_instance;
 
-    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor (Finding 2 & 3 / Session 11, Finding 1 / Session 13 & Issue A / Session 14)
+    // Security-critical freshness check: enforce trusted_head_slot against authenticated anchor
     let config = TrustedBridgeConfig::load_strict(store)?;
-    // Instance Pinning (Finding 4 / Medium #3 & Issue B / Session 14):
+    // Instance Pinning:
     // In authenticated attestation paths, enforce that if trusted instances
     // are configured for this chain, the attesting instance matches an approved instance.
     if !config.is_trusted_or_unpinned(args.instance.chain_id, instance_pda) {
@@ -1770,7 +1770,7 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
         ))
     })?;
 
-    // Guard against dormant / stale instances (Issue A / Session 14):
+    // Guard against dormant / stale instances:
     // If the network anchor has advanced beyond the instance by more than CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS,
     // the instance has stalled past the weak-subjectivity threshold and cannot issue state attestations without fresh bootstrap.
     if network_anchor.saturating_sub(args.instance.current_slot)
@@ -1838,7 +1838,7 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
         args.header = stored_header;
     }
 
-    // 3. Verify Deposit Contract and Token Allowlist against TrustedBridgeConfig (Finding 3 / Session 12)
+    // 3. Verify Deposit Contract and Token Allowlist against TrustedBridgeConfig
     match &args.proof.target {
         inclusion::ProofTarget::NativeEthDeposit {
             deposit_contract, ..

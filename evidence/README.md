@@ -21,7 +21,7 @@ This directory contains deterministic execution manifests, gas reports, and stat
   Full pre-release test matrix, compiler checks, and clippy verification report across all 5 workspace crates (`mosoo-core`, `methods/guest`, `daemon`, `cli`, and consumers).
 
 - **`adversarial_regression_trace.txt`**:
-  Comprehensive adversarial mutation traces validating 42 attack scenario rejections and 58 invariant regression tests with zero compiler warnings.
+  Adversarial mutation traces validating 42 attack scenario rejections and 58 invariant regression tests with zero compiler warnings.
 
 - **`public-testnet-v04/`** *(Milestone M1 Deliverable)*:
   Reserved for live public testnet transaction hashes, RPC endpoints, and on-chain account state proofs upon public network freeze by Logos Core team.

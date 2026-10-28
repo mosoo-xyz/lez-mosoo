@@ -84,7 +84,7 @@ pub struct Cli {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
-    // Guard: Validate chain ID alignment against core supported networks (Finding 3 / Session 13)
+    // Guard: Validate chain ID alignment against supported networks
     if !mosoo_core::types::is_supported_chain_id(cli.eth_chain_id) {
         anyhow::bail!(
             "Chain ID {} is not supported by mosoo-core. Supported networks: Ethereum Mainnet (1), Sepolia (11155111), Holesky (17000)",
@@ -550,7 +550,7 @@ pub async fn fetch_eth_finalized_slot(cli: &Cli, client: &reqwest::Client) -> an
 }
 
 /// Fetch real LightClientUpdate from Ethereum Beacon API or Logos Ethereum Core proxy.
-/// In accordance with Ethereum light client specifications:
+/// Following Ethereum light client specifications:
 /// - When staying within the current sync committee period (`to_period == from_period`), queries `/light_client/finality_update`.
 /// - When crossing a sync committee period boundary (`to_period > from_period`), queries `/light_client/updates?start_period={from_period}&count=1`
 ///   to obtain `next_sync_committee` and its Merkle authentication branch.
