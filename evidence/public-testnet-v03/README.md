@@ -12,7 +12,10 @@ This directory contains live on-chain execution logs, sequencer consensus traces
 - **Protocol Base Execution Fee:** `8` gas units
 - **Ethereum Network:** Sepolia Testnet (Chain ID: `11155111`)
 - **Deployed Locker Vault:** [`0x74625D146B8d9413F3c3976B323d94A739be7856`](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856) (Block 11989329)
-- **Verified Vault Deposit:** [`0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882`](https://sepolia.etherscan.io/tx/0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882) (0.005 ETH, Block 11990019)
+- **Verified Vault Deposits:**
+  - **Deposit 1:** [`0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882`](https://sepolia.etherscan.io/tx/0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882) (0.005 ETH, Block 11990019, Nonce 1)
+  - **Deposit 2:** [`0x3ab00f69885de9df25408eeeb1dbe1df0c8a20558a5de11337e297cfc80eeef2`](https://sepolia.etherscan.io/tx/0x3ab00f69885de9df25408eeeb1dbe1df0c8a20558a5de11337e297cfc80eeef2) (0.010 ETH, Block 12012373, Nonce 2)
+- **Current Total Locked ETH in Vault:** `0.0150 ETH`
 
 ---
 

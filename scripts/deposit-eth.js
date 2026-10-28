@@ -14,8 +14,6 @@ const path = require('path');
 
 const SEPOLIA_RPCS = [
   'https://ethereum-sepolia-rpc.publicnode.com',
-  'https://rpc.sepolia.org',
-  'https://rpc2.sepolia.org',
   'https://1rpc.io/sepolia'
 ];
 
