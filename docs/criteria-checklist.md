@@ -40,7 +40,7 @@ This document provides a technical mapping between the requirements in the [Logo
 
 ## 3. Adversarial Security & Edge Cases Remediated
 
-All 38 adversarial attack scenarios across 18 primary attack classes are covered by automated integration tests (`tests/adversarial_mutation_tests.rs`):
+All 42 adversarial attack scenarios across primary attack classes are covered by automated integration tests (mosoo-core/tests/adversarial_mutation_tests.rs):
 
 1. **Fabricated Beacon Header**: Rejection of unsigned or forged beacon headers (`MosooError::InvalidSignature`).
 2. **Sub-Threshold Participation**: Rejection of updates with < 342/512 validator quorum (`MosooError::InsufficientParticipation`).
@@ -69,6 +69,10 @@ All 38 adversarial attack scenarios across 18 primary attack classes are covered
 36. **Unbacked Ethereum Balance Bridge Minting Strict Rejection**: Economic isolation ensuring read-only balance attestations cannot be exploited to mint synthetic `mETH` bridge tokens without verified escrow deposit backing (`EtherReceiverError::DepositBackingRequired`).
 37. **Tampered Statement ID Nullifier Bypass Rejection**: Strict runtime recomputation of canonical statement ID by both ERC-20 and Ether consumers, rejecting any altered or decoupled statement IDs (`StatementIdMismatch`).
 38. **Fabricated Instance Account Rejection**: Strict validation of `instance.initialized == true`, non-zero bootstrap slot, non-zero bootstrap header hash, 512-validator sync committee size, and monotonic slot progression in `handle_attest_state`, strictly rejecting uninitialized or forged instance accounts (`NotInitialized`, `InvalidBootstrap`).
+39. **Unpinned Instance Account Rejection**: Rejection of consumer claims referencing instance accounts not explicitly pinned in program configuration (MosooError::UnpinnedInstanceAccount).
+40. **Unowned Store Account Rejection**: Strict rejection of instance accounts loaded from AccountStore where owner != MOSOO_PROGRAM_ID (MosooError::InvalidAccountOwner).
+41. **Caller Struct Spoofing Prevention**: Consensus checkpoints verified strictly on canonical store-loaded instances rather than caller-supplied memory structs (MosooError::CheckpointInstanceMismatch).
+42. **Atomic Nullifier Rollback Invariant**: Verification that partial store failures roll back both nullifier commitment and token state atomically with zero state corruption.
 
 Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.rs` and `contracts/MosooLocker.sol`) hardens against:
 - **EIP-712 Cross-Contract Replay Protection (Invariant 13)**: Cryptographic binding of `verifyingContract: address(this)` and `chainId: block.chainid` in EIP-712 structured data hashes for all burn authorizations, guaranteeing signatures cannot be replayed across distinct locker deployments. Legacy `eth_sign` fallback has been completely removed.

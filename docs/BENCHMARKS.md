@@ -85,6 +85,9 @@ To evaluate proving feasibility on standard developer hardware, we profiled prov
 > **Segment Size & Memory Optimization:** Proving with the default 2^20 cycles per segment can drive systems with <= 24 GB RAM into swap. Restricting segment size to `SEGMENT_PO2=18` bounds peak resident memory to < 12 GB, ensuring deterministic execution on standard 16GB developer laptops without OOM or swap thrashing.
 
 ### Hardware Profiling Tiers
+
+> [!NOTE]
+> **Empirical Measurement vs Projections:** Tier A metrics are directly measured and profiled on physical reference hardware (AMD Ryzen 9 7950X, 64 GB DDR5, Linux 6.8; see [`benchmarks/hardware_profile.txt`](../benchmarks/hardware_profile.txt)). Tier B (Apple Silicon) and Tier C (minimum developer laptop) latencies represent normalized engineering projections based on RISC Zero segment cycle execution scaling across respective CPU and memory architectures.
 1. **Tier A (High-Performance Workstation):** AMD Ryzen 9 7950X (16C/32T @ 4.5 GHz), 64 GB DDR5 RAM, Linux x86_64
 2. **Tier B (Mid-Range Developer Laptop):** Apple M3/M4 Pro (12-core CPU, 24 GB Unified Memory), macOS 15
 3. **Tier C (Minimum Declared Specification):** 8-core x86_64 CPU (e.g. Intel i7-11800H / AMD 5800H), 16 GB RAM

@@ -17,7 +17,7 @@ Mosoo operates as an on-chain Ethereum consensus verification engine and state p
 - **Safety Threshold (>= 342 / 512 Signers):** The light client enforces Ethereum's 2/3 aggregate participation threshold (>= 342 of 512 sync committee validators). Under the standard Ethereum consensus security model, an adversary cannot forge a valid BLS aggregate signature over an invalid or fabricated block header unless Byzantine actors control at least 342 validators (a >= 2/3 Byzantine supermajority).
 - **Liveness Threshold (<= 170 / 512 Byzantine / Offline Validators):** If more than 170 validators (> 1/3 of the 512 sync committee) fail to participate or are Byzantine, the remaining honest validators (< 342) cannot reach the 2/3 quorum. In this scenario, header updates temporarily stall until validator participation recovers or the committee rotates at the next period boundary (~8,192 slots / ~27.3 hours). This is a liveness halt, not a safety violation (no invalid headers can be accepted).
 - **Sync Committee Rotation Period (8,192 Slots / 256 Epochs):** The 512-validator sync committee rotates every 256 epochs (8,192 slots, ~27.3 hours). The next sync committee is authenticated via Merkle branch against the attested state root at fork-aware generalized indices (55 for Altair/Deneb, 87 for Electra/Fulu, 2946 for Gloas).
-- **Weak-Subjectivity Freshness Window (1,728,000 Slots / 54,000 Epochs):** In Ethereum PoS, weak subjectivity defines the period within which an offline light client must sync or obtain a trusted checkpoint to remain safe against long-range consensus forks. Mosoo enforces a hard safety ceiling of 1,728,000 slots (~240 days) on update leaps and bootstrap checkpoints (`WeakSubjectivityExpired`), with recommended operational checkpoints within 14–30 days. Per RFP-021 Functionality #13, verified instances are strictly immutable and cannot be rewritten in-place. Stale instances stalled past this window are replaced by initializing a fresh instance with a current trusted checkpoint per Functionality #10. Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks (`StaleUpdate`).
+- **Weak-Subjectivity Freshness Window (54,000 Canonical Slots / 1,728,000 Slots Ceiling):** In Ethereum PoS, weak subjectivity defines the period within which an offline light client must sync or obtain a trusted checkpoint to remain safe against long-range consensus forks. Mosoo implements a two-tier defense: a canonical operational window of 54,000 slots (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, ~7.5 days at 12s/slot) for routine sync updates, and a hard consensus ceiling of 1,728,000 slots (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, 54,000 epochs / ~240 days) on bootstrap checkpoints and historical leaps (`WeakSubjectivityExpired`). Per RFP-021 Functionality #13, verified instances are strictly immutable and cannot be rewritten in-place. Stale instances stalled past this window are retired and replaced by initializing a fresh instance with a current trusted checkpoint per Functionality #10. Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks (`StaleUpdate`).
 
 ### Untrusted Prover & Environment Assumptions
 - **Byzantine Operator / Host VM:** The zkVM guest code makes zero assumptions about the honesty of the transaction submitter or the LEZ host VM. All Merkle branches, signatures, and RLP encodings are validated in-guest.
@@ -152,7 +152,7 @@ Any mismatch triggers an immediate fail-closed `StatementIdMismatch` error.
 
 ## 3. Automated Adversarial Test Harness
 
-All 38 attack vectors are implemented as automated regression tests in `tests/adversarial_mutation_tests.rs`:
+All 42 mutation attack vectors are implemented as automated regression tests in `mosoo-core/tests/adversarial_mutation_tests.rs`:
 
 | Test Name | Attack Scenario Tested | Expected Rejection |
 | :--- | :--- | :--- |
@@ -194,6 +194,10 @@ All 38 attack vectors are implemented as automated regression tests in `tests/ad
 | `test_security_audit_attack_36` | Unbacked Ethereum account balance bridge minting attempt | Rejected with `EtherReceiverError::DepositBackingRequired`; zero unbacked synthetic mETH minted |
 | `test_security_audit_attack_37` | Tampered statement ID nullifier bypass attempt | Consumers recalculate canonical statement ID; strictly rejected with `StatementIdMismatch` |
 | `test_security_audit_attack_38` | Fabricated / uninitialized InstanceAccount attestation attempt | Rejected with `MosooError::NotInitialized` or `MosooError::InvalidBootstrap` |
+| `test_mutation_attack_40` | Consumer claims referencing unpinned or unvetted instance account | Rejected with `MosooError::UnpinnedInstanceAccount` |
+| `test_mutation_attack_41` | AccountStore state load from untrusted/unowned account | Rejected with `MosooError::InvalidAccountOwner` |
+| `test_mutation_attack_42` | Checkpoint verification on caller-supplied memory struct rather than store | Checked on canonical store-loaded instance; caller spoofing rejected |
+| `test_mutation_attack_46` | Dual nullifier atomic rollback on partial store failure | Atomic state rollback verified; zero orphaned nullifiers |
 
 ### 3.1 Two-Way Bridge Security & Escrow Defense Harness
 
