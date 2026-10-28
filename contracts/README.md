@@ -31,7 +31,7 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
       5. Mandatory 24-hour timelock queue for large withdrawals ($\ge 10$ ETH).
       6. Permanent Guardian & Owner cancellation veto (`cancelledBurns[burnId]`), strictly preventing re-queueing of vetoed withdrawals.
       7. Inviolable 24-hour timelock on updating `attesterAuthority` or modifying committee quorum.
-    - **Trust Boundary Note**: Outbound withdrawals rely on the threshold attester committee ($M$-of-$N$ quorum). Verifying LEZ consensus and zk-state proofs directly on Ethereum L1 without attesters is slated for Milestone M2 (which requires deploying an on-chain zk-SNARK / Groth16 verifier contract on Ethereum).
+    - **Trust Boundary Note**: Outbound withdrawals rely on the threshold attester committee ($M$-of-$N$ quorum). Verifying LEZ consensus and zk-state proofs directly on Ethereum L1 without attesters is slated for future protocol phases (which requires deploying an on-chain zk-SNARK / Groth16 verifier contract on Ethereum).
   - `ReentrancyGuard` protection against recursive calls across deposit and unlock flows.
   - Safe token transfer checks: strict contract existence checks (`token.code.length > 0`) preventing phantom transfers on EOAs.
   - Fee-on-transfer protection via before/after balance differentials on `depositERC20`.

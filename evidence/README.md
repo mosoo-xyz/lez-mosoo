@@ -23,7 +23,7 @@ This directory contains deterministic execution manifests, gas reports, and stat
 - **`adversarial_regression_trace.txt`**:
   Adversarial mutation traces validating 42 attack scenario rejections and 58 invariant regression tests with zero compiler warnings.
 
-- **`public-testnet-v04/`** *(Milestone M1 Deliverable)*:
+- **`public-testnet-v04/`** *(Target Public Devnet)*:
   Reserved for live public testnet transaction hashes, RPC endpoints, and on-chain account state proofs upon public network freeze by Logos Core team.
 
 ## Reproducing Verification Locally

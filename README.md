@@ -52,9 +52,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 
 ---
 
-## Current Status: What is Built vs Future Milestones
-
-### Built and Tested Today (Milestone M0 Foundation)
+## Technical Architecture & Implemented Components
 
 - **Fork-Aware Consensus Verifier (`mosoo-core/src/verifier.rs`, `crypto.rs`)**:
   Dynamic SSZ generalized indices matching official Ethereum consensus specifications:
@@ -76,7 +74,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
   Enforces 1,728,000 slot (~240 days bound, 14–30 days operational) weak-subjectivity threshold on updates and initial bootstrap checkpoints. Per ADR-004, instances are strictly immutable and never rewritten in place. Stalled instances after network partitions are retired and replaced with fresh instances initialized via `bootstrap_instance` with `verify_anchored_checkpoint`.
 
 - **The 3-Transaction BLS Split**: In-guest verification split into `begin_update` (5.38M gas), `miller_update` (4.18M gas), and `finish_update` (3.74M gas). All transactions operate under LEZ's 10M gas cap with 46% to 62% safety headroom. An on-chain `JobAccount` PDA coordinates the pipeline with cross-stage hash binding (`update_digest`).
-- **Two-Way Bridge & Hardened Rate-Limiting Architecture (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Inbound bridging (Ethereum -> LEZ) is 100% trustless zkVM consensus and MPT state verification (RFP-021 target); Outbound settlement (LEZ -> Ethereum) is witness-attested via an M-of-N multisig committee protected by a true continuous rolling 24-hour rate limit sliding window (immune to midnight boundary attacks) with bounded cleanup (`MAX_CLEANUP_BATCH = 32`) to guarantee O(1) gas, 2-step timelocked governance on all committee & quorum modifications and rate limits (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), mandatory 24h timelock for large withdrawals (>= 10 ETH), and independent Guardian veto protection. Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
+- **Two-Way Bridge & Hardened Rate-Limiting Architecture (`contracts/MosooLocker.sol`, `tests/two_way_bridge_tests.rs`)**: Canonical Solidity smart contract for Ethereum with full deposit escrow and replay-protected burn unlock. Inbound bridging (Ethereum -> LEZ) is 100% trustless zkVM consensus and MPT state verification; Outbound settlement (LEZ -> Ethereum) is witness-attested via an M-of-N multisig committee protected by a continuous rolling 24-hour rate limit sliding window (immune to midnight boundary attacks) with bounded cleanup (`MAX_CLEANUP_BATCH = 32`) to guarantee O(1) gas, 2-step timelocked governance on all committee & quorum modifications and rate limits (`GOVERNANCE_TIMELOCK_DELAY = 2 days`), mandatory 24h timelock for large withdrawals (>= 10 ETH), and independent Guardian veto protection. Pairs with `MethLedger` on LEZ for 1:1 synthetic `mETH` minting, peer-to-peer transfers, and cryptographic `BurnReceipt` emission.
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`) strictly binding to approved light-client instances (`config.is_trusted_instance`) and program-owned persistent accounts (`store.get_account_owner == MOSOO_PROGRAM_ID`), atomic test harness verification, and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
@@ -88,32 +86,29 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Trust Assumptions & Threat Model (`docs/TRUST_ASSUMPTIONS.md`)**: Specification of checkpoint provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness boundaries, privacy limitations, and reorganization failure conditions.
 - **Evaluation of Prior Art & Audited Light Clients (`docs/decisions/003-evaluation-of-helios-and-prior-art.md`)**: Architectural assessment of `helios` (a16z), `revm-helios`, `spl-helios`, and `r0vm-helios` (Boundless), delineating reused Altair SSZ primitives versus independent 3-Tx split innovation, and audit surface impact.
 
-### What is Not Built Yet (Priced as Remaining Milestone Work)
+### Subsystem Verification Status
 
-- **Public LEZ v0.4 Devnet Migration (Milestone M1)**: Upgrade from the currently verified public LEZ v0.3.1 testnet to the upcoming public LEZ v0.4 devnet upon network freeze by the Logos Core team.
-- **Logos Core Module Catalog, SPEL Release & Logos Ethereum Core Verified Proxy Integration (Milestone M2)**: Upstreaming into the official Logos Core module catalog via `.github/workflows/logos-modules-release.yml` (`logos-modules-release-action`), SPEL IDL compiler integration, and native integration with the canonical Logos Ethereum Core verified consensus proxy (`LOGOS_ETHEREUM_CORE_RPC`).
-- **Production Daemon Telemetry & Re-Org Handling (Milestone M3)**: Standalone daemon operations, live Prometheus metrics exporter, `/healthz` liveness probes, SIGINT/SIGTERM graceful shutdown, and automated consensus re-org recovery.
-- **Independent Third-Party Security Audit & Remediation (Milestone M4)**: Formal third-party engagement with an external security firm ($10,000 / 3 weeks budgeted upon grant approval), public publication of the security audit report, and remediation of all audit findings.
+| Component / Subsystem | Status | Verification Mode |
+| :--- | :---: | :--- |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | Verified (333/333 pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **3-Transaction BLS Update Pipeline** | Verified (< 10M gas/tx) | Standalone LEZ v0.4 Sequencer Harness |
+| **Dual Reference Consumers (ERC-20 & Native ETH)** | Implemented & Hardened | In-memory CPI invocation & nullifier sets |
+| **Adversarial Invariant Hardening** | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
+| **Security Hardening Regression Suite** | 58 Regression Tests Passing | Test suite (`tests/audit_oct26_hardening_tests.rs`) |
+| **Execution Manifest & Verification Script** | Verified | Offline verification runner (`scripts/verify-evidence.py`) |
+| **Public LEZ Testnet & Two-Way Settlement** | Live on Testnet & Sepolia | Live RPC queries (`scripts/verify-onchain.py`) & bridge pipeline (`scripts/testnet-two-way-bridge.py --mode live`) |
+| **Logos Module Packaging & SPEL Pipeline** | Configured | CI automation (`.github/workflows/logos-modules-release.yml`) |
+| **Logos Ethereum Core Proxy Integration** | Functional Prototype | Verified proxy routing (`--logos-ethereum-core-rpc`) |
+| **Consensus Daemon Service** | Functional Prototype | Daemon runner with randomized jitter and RPC failover |
 
-### Lifecycle & Verification Matrix
+### Roadmap
 
-To ensure absolute transparency regarding what is functioning today versus what depends on future Logos infrastructure releases, the matrix below maps each component's verification tier:
-
-| Component / Subsystem | Target Milestone | Current Lifecycle Stage | Verification Mode |
-| :--- | :---: | :--- | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | M0 (Delivered) | Spec-Compliant (333/333 tests pass) | Offline Rust unit, integration & Criterion benchmarks |
-| **3-Transaction BLS Update Pipeline** | M0 (Delivered) | Spec-Compliant (< 10M gas per tx) | Standalone LEZ v0.4 Sequencer Harness |
-| **Dual Reference Consumers (ERC-20 & Native ETH)** | M0 (Delivered) | Implemented & Replay-Hardened | In-memory CPI invocation & nullifier sets |
-| **Adversarial Invariant Hardening** | M0 (Delivered) | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`tests/adversarial_mutation_tests.rs`) |
-| **Execution Manifest & Verification Script** | M0 (Delivered) | Hardened with Strict Exit Codes | Offline Python/Bash runner (`scripts/verify-evidence.py`) |
-| **Public LEZ Testnet Verification & Two-Way Bridge** | M0 (Delivered) | Live on Public LEZ v0.3.1 & Sepolia | Live RPC queries (`scripts/verify-onchain.py`) & bridge pipeline (`scripts/testnet-two-way-bridge.py --mode live`); v0.4 devnet upgrade in M1 |
-| **Logos Module Catalog & SPEL Release Pipeline** | M2 (Grant) | Configured (`.github/workflows/logos-modules-release.yml`) | Automated catalog release via `logos-modules-release-action` |
-| **Logos Ethereum Core Verified Proxy Integration** | M2 (Grant) | Prototype Working (`--logos-ethereum-core-rpc`) | Mandatory verified proxy routing (`/v1/ethereum-core/consensus/`) |
-| **Production Consensus Daemon Telemetry** | M3 (Grant) | Prototype Working | Live Prometheus telemetry, `/healthz` probe, & re-org handler |
-| **Independent Security Audit & Published Report** | M4 (Grant) | Budget Allocated (\$10,000 / 3 wks) | External security firm certification & published report |
+- **Public LEZ v0.4 Devnet Migration**: Deployment and verification on the public LEZ v0.4 devnet once Logos Core completes the v0.4 network freeze and release.
+- **Logos Module Catalog & SPEL Release**: Upstream publication to the official Logos Core module catalog.
+- **Production Daemon Observability**: Prometheus telemetry exporter, `/healthz` liveness probes, and automated consensus re-org recovery.
+- **External Security Audit**: Independent third-party audit engagement and published certification prior to mainnet release.
 
 ---
-
 ## Why a 3-Transaction Split? (Gas Feasibility)
 
 Verifying a 512-validator aggregate BLS12-381 signature inside the zkVM takes roughly **13.3M gas** in one shot. LEZ enforces a per-transaction gas limit of approximately **10,000,000 gas**.
@@ -179,7 +174,7 @@ subject_key = sha256("mosoo_receipt_log_v1" || execution_block_hash || slot || t
   - Mosoo provides pseudonymous nullifier tracking, **not** a zero-knowledge mixer or shielded pool.
   - The underlying Ethereum transaction is public on the source chain.
   - External network observers can perform off-chain correlation if deposit amounts and claim timestamps closely match. True unlinkability in production requires relayer batching or third-party relayer aggregation.
-  - These invariants are verified in [`mosoo-core/tests/privacy_and_correlation_tests.rs`](mosoo-core/tests/privacy_and_correlation_tests.rs), the sequencer harness, and the live two-way bridge settlement pipeline (`evidence/public-testnet-v03/`). Full public v0.4 devnet upgrade validation will occur in Milestone M1.
+  - These invariants are verified in [`mosoo-core/tests/privacy_and_correlation_tests.rs`](mosoo-core/tests/privacy_and_correlation_tests.rs), the sequencer harness, and the live two-way bridge settlement pipeline (`evidence/public-testnet-v03/`). Full public v0.4 devnet upgrade validation will occur upon devnet release.
 
 ---
 

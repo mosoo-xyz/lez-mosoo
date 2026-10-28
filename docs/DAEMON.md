@@ -178,7 +178,7 @@ The `mosoo-daemon` is designed to integrate into the **Logos Core module catalog
 2. **Verified Ethereum Proxy:** The `--logos-ethereum-core-rpc` flag connects to the Logos Ethereum Core module's verified consensus proxy, eliminating external beacon node dependencies for operators who run a full Logos Core node.
 3. **SPEL IDL Registration:** Mosoo's `docs/SPEL_IDL.md` canonical interface definitions map directly to Logos Core module catalog schemas.
 
-**Catalog registration path:** Milestone M2 (Logos Module Catalog & SPEL Integration).
+**Catalog registration path:** Logos Core Module Catalog & SPEL Integration.
 
 ---
 

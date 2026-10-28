@@ -12,7 +12,7 @@ A key distinction in zkVM architecture on LEZ is the relationship between **RISC
 LEZ Transaction Gas = Base/Calldata Gas + In-VM Compute Gas + PDA/Storage Write Gas
 ```
 
-| Transaction / Pipeline Step | Prover zkVM Cycles | Base & Calldata | In-VM Compute | PDA Storage Write | Total LEZ Gas Units | LEZ Budget | Headroom |
+| Transaction / Pipeline Step | Prover zkVM Cycles | Base & Calldata | In-VM Compute | PDA Storage Write | Total LEZ Gas Units | LEZ Gas Cap | Headroom |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Tx 1: BeginUpdate** | `5,232,000` | `21,000` | `5,211,000` | `150,140` | **`5,382,140` Gas** | `10,000,000` / Tx | **46.2% Headroom** |
 | **Tx 2: MillerUpdate** | `2,822,000` | `21,000` | `2,801,000` | `1,358,000` | **`4,180,000` Gas** | `10,000,000` / Tx | **58.2% Headroom** |

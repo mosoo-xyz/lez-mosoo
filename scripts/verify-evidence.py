@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Mosoo Verification Evidence Runner (Milestone M0)
+Mosoo Verification Evidence Runner
 
 Deterministically verifies execution manifests and sequencer harness state transitions of the
 Mosoo Ethereum Consensus & State Attestation module against the LEZ v0.4 specification.
@@ -13,7 +13,7 @@ Scope & Audit Boundaries:
       (testnet.lez.logos.co, v0.3.1) and Ethereum Sepolia (MosooLocker.sol) is provided in
       `scripts/verify-onchain.py` and `scripts/testnet-two-way-bridge.py --mode live` with traces
       committed in `evidence/public-testnet-v03/`.
-    - Public testnet deployment migration to the LEZ v0.4 devnet will occur in Milestone M1 upon
+    - Public testnet deployment migration to the LEZ v0.4 devnet will occur upon
       official release of the v0.4 devnet by Logos Core.
     - All checks are STRICT: Any missing transaction hash or unreproduced safety rejection
       results in an immediate failure and non-zero exit code (sys.exit(1)).
@@ -52,7 +52,7 @@ def main():
             sys.exit(1)
 
     print("=" * 80)
-    print("Mosoo RFP-021 Sequencer Harness Verifier (Milestone M0)")
+    print("Mosoo Sequencer Harness Verifier")
     print("Specification: LEZ v0.4 Conformance | Execution Mode: Deterministic Verification")
     print("Live Testnet: For active LEZ v0.3.1 & Sepolia traces, see scripts/verify-onchain.py")
     print("=" * 80)

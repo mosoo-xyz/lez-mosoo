@@ -3,9 +3,9 @@
 This document specifies the cryptographic threat model, core protocol invariants, adversarial test suite, and independent audit plan for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ).
 
 > [!NOTE]
-> **Audit Boundary & Milestones:**
-> - **Milestone M0 (Current / Delivered):** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 333 tests (317 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
-> - **Milestone M4 (Future / Grant Deliverable):** Formal third-party security audit engagement with an independent external firm (\$10,000 / 3 weeks budgeted upon grant approval).
+> **Security & Verification Status:**
+> - **Internal Hardening & Test Suite:** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 333 tests (317 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
+> - **Independent External Audit:** Planned formal third-party security audit engagement prior to mainnet release.
 
 ---
 
@@ -248,10 +248,9 @@ Automated in [`mosoo-core/tests/privacy_and_correlation_tests.rs`](../mosoo-core
 
 ---
 
-## 5. Independent Security Audit Plan (Milestone M4)
+## 5. Independent Security Audit Plan
 
-A formal third-party audit is budgeted and scheduled as Milestone M4 in the RFP-021 roadmap:
-- **Earmarked Budget:** \$10,000 (pre-allocated from grant funds)
-- **Target Timeline:** 3 weeks following public devnet deployment (Milestone M1–M3)
+A formal third-party audit is planned prior to mainnet deployment:
+- **Target Timeline:** Following public devnet deployment
 - **Candidate Audit Firms:** Veridise, Trail of Bits, or Least Authority
 - **Audit Scope:** In-guest `blst` pairing split, MPT trie verification logic, SPEL IDL deserialization safety, and consumer nullifier persistence.
