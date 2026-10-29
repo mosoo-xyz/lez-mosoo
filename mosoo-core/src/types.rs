@@ -2029,6 +2029,7 @@ pub use crate::verifier::{AttestStateArgs, GuestInstruction, InstructionOutput};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MosooError;
 
     #[test]
     fn test_trusted_bridge_config_fail_closed_authorization() {
@@ -2102,5 +2103,44 @@ mod tests {
         instance.current_slot = 50;
         instance.bootstrap_slot = 100;
         assert!(instance.validate_authenticity().is_err());
+    }
+
+    #[test]
+    fn test_bootstrap_admin_authority_one_time_and_registration() {
+        let mut store = ProgramAccountStore::new();
+        let admin = [0xabu8; 32];
+        let attacker = [0x66u8; 32];
+
+        // 1. Zero address rejected
+        let res_zero = crate::verifier::handle_bootstrap_admin_authority(&mut store, [0u8; 32]);
+        assert!(matches!(res_zero, Err(MosooError::InvalidBootstrap(_))));
+
+        // 2. Initial bootstrap succeeds
+        let res_ok = crate::verifier::handle_bootstrap_admin_authority(&mut store, admin);
+        assert!(matches!(res_ok, Ok(crate::verifier::InstructionOutput::ConfigUpdated)));
+
+        // 3. Second bootstrap fails with AlreadyInitialized (strictly one-time)
+        let res_replay = crate::verifier::handle_bootstrap_admin_authority(&mut store, attacker);
+        assert!(matches!(res_replay, Err(MosooError::AlreadyInitialized { .. })));
+
+        // 4. Authorized checkpoint registration with newly bootstrapped admin succeeds
+        let reg_ok = crate::verifier::handle_register_network_checkpoint_authenticated(
+            &mut store,
+            &admin,
+            1,
+            [0x11u8; 32],
+            100,
+        );
+        assert!(reg_ok.is_ok());
+
+        // 5. Unauthorized caller rejected
+        let reg_unauth = crate::verifier::handle_register_network_checkpoint_authenticated(
+            &mut store,
+            &attacker,
+            1,
+            [0x22u8; 32],
+            200,
+        );
+        assert!(matches!(reg_unauth, Err(MosooError::DomainSeparationFailed)));
     }
 }

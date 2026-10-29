@@ -11,9 +11,14 @@ Cryptographic trust assumptions, threat model, participant failure conditions, a
 - **Checkpoint Source:** Initializing operators acquire the trusted checkpoint from an authenticated Ethereum consensus node or canonical beacon state archive (e.g. Period 1884, slot 15,433,728).
 - **Cryptographic Immutability:** Once initialized, the instance is immutable. The `genesis_validators_root` and `chain_id` are permanently anchored into the instance PDA. Checkpoint parameters cannot be rewritten or retroactively altered (ADR-004, `test_instance_immutability`).
 
-### 1.2 Weak Subjectivity Bounds
-- **Epoch Horizon:** Under Ethereum's weak subjectivity specification (EIP-2982 / Altair), light clients must synchronize within the weak subjectivity period (~256 epochs / 27.3 hours).
-- **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods or fail weak-subjectivity freshness checks (`MosooError::WeakSubjectivityViolation`). If a node goes offline for longer than a weak subjectivity period, it must bootstrap a new instance from an authenticated checkpoint rather than accepting unverified historical updates.
+### 1.2 Weak Subjectivity & Committee Rotation Bounds
+- **Sync Committee Period vs Weak Subjectivity:**
+  - **Sync Committee Rotation Period:** Every 256 epochs (8,192 slots, ~27.3 hours at 12s/slot). The light client must observe committee handoffs sequentially ($P_{sig} \le P_{store} + 1$) to authenticate rotated public keys.
+  - **Ethereum PoS Weak Subjectivity:** A dynamic consensus parameter calculated under Ethereum specification based on active validator deposit balances and churn limits (typically 14 to 30 days). Light clients that remain offline longer than this window cannot trust historical validator signatures due to potential long-range slashing evasion.
+  - **Mosoo Protocol Freshness Enforcement:** Mosoo enforces a two-tier defense:
+    1. **Canonical Operational Window:** 54,000 slots (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, ~7.5 days at 12s/slot) for routine sync progression against trusted network anchors.
+    2. **Maximum Protocol Safety Ceiling:** 1,728,000 slots (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS` / 54,000 epochs, ~240 days) on historical leaps and bootstrap checkpoints.
+- **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods (`MosooError::SyncCommitteePeriodSkip`) or fail weak-subjectivity freshness bounds (`MosooError::WeakSubjectivityExpired`). If an instance stalls past this window after a network partition, it cannot be rewritten in-place; operators retire the instance and initialize a fresh instance via `bootstrap_instance` with `verify_anchored_checkpoint`.
 
 ---
 
@@ -35,14 +40,14 @@ Mosoo implements the standard Ethereum Altair/Electra Sync Committee light clien
 
 ## 3. Off-Chain Participants: Safety vs. Liveness Separation
 
-Mosoo strictly decouples **Safety** (which is guaranteed 100% cryptographically on-chain and in-guest) from **Liveness** (which depends on off-chain operators):
+Mosoo strictly decouples **Safety** (enforced mathematically in-guest under cryptographic hardness assumptions and zkVM proof soundness) from **Liveness** (which depends on off-chain operators):
 
 | Participant | Role | Safety Impact | Liveness Impact | Trust Level Required |
 | :--- | :--- | :---: | :---: | :--- |
-| **Consensus Daemon (`mosoo-daemon`)** | Fetches headers, coordinates 3-Tx pipeline, submits transactions | **ZERO** (Cannot forge BLS signatures or falsify state) | Affects update latency (if all daemons crash, updates halt) | **Untrusted / Permissionless** |
-| **zkVM Prover (Host Prover)** | Generates RISC0 SNARK execution receipts | **ZERO** (zkVM soundness guarantees invalid execution cannot produce a valid receipt) | Affects proof latency | **Untrusted / Permissionless** |
-| **Logos Ethereum Core Proxy** | Verified consensus RPC gateway on Logos Core | **ZERO** (All payload roots are checked against beacon Merkle trees in-guest) | High-availability endpoint | **Semi-trusted transport; verified in-guest** |
-| **Consuming dApp / Contract** | Mints tokens or settles transfers based on `VerifiedStatement` | **ZERO** (Only accepts verified nullifiers from authenticated instances) | Dependent on consumer logic | **Contract-governed** |
+| **Consensus Daemon (`mosoo-daemon`)** | Fetches headers, coordinates 3-Tx pipeline, submits transactions | **Negligible** (Cannot forge BLS aggregate signatures or falsify state) | Affects update latency (if all daemons crash, updates halt) | **Untrusted / Permissionless** |
+| **zkVM Prover (Host Prover)** | Generates RISC0 SNARK execution receipts | **Negligible** (zkVM proof soundness guarantees invalid execution cannot produce a valid receipt) | Affects proof latency | **Untrusted / Permissionless** |
+| **Logos Ethereum Core Proxy** | Verified consensus RPC gateway on Logos Core | **Negligible** (All payload roots are verified against authenticated beacon Merkle branches in-guest) | High-availability endpoint | **Semi-trusted transport; verified in-guest** |
+| **Consuming dApp / Contract** | Mints tokens or settles transfers based on `VerifiedStatement` | **Negligible** (Only accepts verified nullifiers from authenticated instances) | Dependent on consumer logic | **Contract-governed** |
 
 ### 3.1 Permissionless Daemon Redundancy & Anti-Griefing
 - Anyone can run `mosoo-daemon` without registration, staking, or API keys.

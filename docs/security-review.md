@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Security & Verification Status:**
-> - **Internal Hardening & Test Suite:** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 333 tests (317 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
+> - **Internal Hardening & Test Suite:** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 334 tests (318 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
 > - **Independent External Audit:** Planned formal third-party security audit engagement prior to mainnet release.
 
 ---

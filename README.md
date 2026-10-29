@@ -21,10 +21,10 @@ cargo test --workspace
 # 2. Run the full Two-Way Bridge integration test suite (22 passing tests)
 cargo test --test two_way_bridge_tests
 
-# 3. Run the adversarial mutation attack tests (42 passing tests)
+# 3. Run the adversarial mutation attack tests (42 attack scenarios in 50 tests)
 cargo test --test adversarial_mutation_tests
 
-# 4. Run the LEZ v0.4 sequencer harness (Mainnet + Sepolia Gloas lifecycle)
+# 4. Run the LEZ v0.4 sequencer harness (Canonical Mainnet Period 1884 + simulated Sepolia Gloas ePBS lifecycle)
 cargo test --test sequencer_e2e_tests
 
 # 5. Run the Two-Way Bridge pipeline (simulated demo or live testnet mode)
@@ -81,15 +81,15 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`) strictly binding to approved light-client instances (`config.is_trusted_instance`) and program-owned persistent accounts (`store.get_account_owner == MOSOO_PROGRAM_ID`), atomic test harness verification, and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **317 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **333 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix (333 Total Tests)**:
+- **318 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **334 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix (334 Total Tests)**:
   - `mosoo-core/tests/audit_oct26_hardening_tests.rs`: 58 security hardening regression tests.
   - `mosoo-core/tests/adversarial_mutation_tests.rs`: 50 test functions covering 42 distinct mutation attack scenarios.
   - `mosoo-core/tests/two_way_bridge_tests.rs`: 22 cross-chain bridge lifecycle, rate-limiting, and timelock governance tests.
   - `mosoo-core/tests/integration_tests.rs` & `light_client_tests.rs`: 24 consensus, bootstrap, fork, and storage slot tests.
   - `mosoo-core/tests/privacy_and_correlation_tests.rs`: 5 zero-correlation and state-diff shielding tests.
   - `mosoo-core/tests/sequencer_e2e_tests.rs`: 4 standalone sequencer lifecycle tests.
-  - `mosoo-core` unit tests: 46 cryptographic and verifier unit tests.
+  - `mosoo-core` unit tests: 47 cryptographic, verifier, and admin bootstrap unit tests.
   - `consumers/erc20-receiver`: 42 unit tests (and 1 doc test).
   - `consumers/ether-receiver`: 39 unit tests (and 1 doc test).
   - `daemon/src/main.rs`: 15 operational consensus daemon tests.
@@ -107,7 +107,8 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 
 | Component / Subsystem | Status | Verification Mode |
 | :--- | :---: | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | Verified (333/333 pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | Spec-Compliant (188 mosoo-core tests pass) | Offline Rust unit, integration & Criterion benchmarks |
+| **Full Protocol Test Suite** | 334 / 334 Tests Passing | Full workspace test suite (318 Rust + 16 Foundry EVM) |
 | **3-Transaction BLS Update Pipeline** | Verified (< 10M gas/tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | Implemented & Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`mosoo-core/tests/adversarial_mutation_tests.rs`) |
@@ -129,14 +130,16 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 ### Reproducing All Tests Locally
 
 ```bash
-# 1. Run all 314 Rust workspace unit, integration, and adversarial tests
+# 1. Run all Rust workspace unit, integration, and adversarial tests (315 tests)
 cargo test --workspace
 
-# 2. Run CLI local verification tests (3 tests)
+# 2. Run CLI local verification & dry-run tests (3 tests)
 cargo test -p mosoo-cli
+# Total Rust Tests: 315 + 3 = 318 tests
 
 # 3. Run MosooLocker Solidity EVM tests (16 tests via Foundry)
 forge test -vvv
+# GRAND TOTAL: 318 Rust + 16 Foundry = 334 tests
 
 # 4. Verify committed execution manifest & gas headroom
 python scripts/verify-evidence.py

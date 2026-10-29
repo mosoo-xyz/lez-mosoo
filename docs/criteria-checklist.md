@@ -84,11 +84,11 @@ Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **317 automated Rust tests** (314 unit/integration + 3 doc tests) plus **16 Foundry EVM tests** = **333 total passing tests** with 0 warnings:
+The repository test suite consists of **318 automated Rust tests** (315 unit/integration + 3 doc tests) plus **16 Foundry EVM tests** = **333 total passing tests** with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
-| **Core Verification & Crypto** | `mosoo-core/src/` | 61 (60 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety, storage slot, deposit proofs, and weak-subjectivity independent verification |
+| **Core Verification & Crypto** | `mosoo-core/src/` | 62 (61 unit + 1 doc) | BLS pairing, fork domains, branch verification, MPT account & receipt decoding, multi-instance isolation, RLP safety, storage slot, deposit proofs, and weak-subjectivity independent verification |
 | **Audit Hardening Suite** | `mosoo-core/tests/audit_oct26_hardening_tests.rs` | 58 | Regression and security hardening suite covering multi-instance co-existence, weak-subjectivity freshness bypass prevention, mainnet/holesky admin registration, confidentiality shielding, and persistent state verification |
 | **Adversarial Mutation Suite** | `mosoo-core/tests/adversarial_mutation_tests.rs` | 50 (42 scenarios) | 50 automated test functions validating 42 explicit attack scenarios tested against guest handlers |
 | **Two-Way Bridge Suite** | `mosoo-core/tests/two_way_bridge_tests.rs` | 22 | End-to-end Ethereum MosooLocker deposit, mETH & ERC-20 mint, transfer, burn, unlock, EIP-712 cross-contract replay protection, default-enabled token allowlist, inviolable authority timelock, rolling daily withdrawal limits, large-withdrawal queue with guardian veto, permanent BurnCancelled enforcement, and M-of-N multi-signer committee threshold verification |
@@ -110,7 +110,7 @@ The repository test suite consists of **317 automated Rust tests** (314 unit/int
 ## 5. Development Roadmap, Security Model & Independent Audit
 
 - **Cryptographic Trust Assumptions & Threat Model**: Formally documented in [`docs/TRUST_ASSUMPTIONS.md`](TRUST_ASSUMPTIONS.md), covering checkpoint bootstrap provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness roles, zero address leakage and privacy limitations, and deep re-org / partition failure modes.
-- **Core Architecture & Engine (Implemented)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract deployed on Sepolia, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 333 passing tests (317 Rust + 16 Foundry), reproducibility scripts, live testnet pipeline (`evidence/public-testnet-v03/`), and empirical benchmarks.
+- **Core Architecture & Engine (Implemented)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract deployed on Sepolia, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 334 passing tests (318 Rust + 16 Foundry), reproducibility scripts, live testnet pipeline (`evidence/public-testnet-v03/`), and empirical benchmarks.
 - **Public LEZ v0.4 Devnet Migration**: Deploy module to Logos Execution Zone public devnet upon v0.4 release and network freeze; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Logos Core Module Catalog, SPEL Release & Verified Proxy Integration**: Upstream into the official Logos Core module catalog via `.github/workflows/logos-modules-release.yml` (`logos-modules-release-action`), SPEL IDL compiler integration, and native integration with the canonical Logos Ethereum Core verified consensus proxy (`LOGOS_ETHEREUM_CORE_RPC`).
 - **Daemon Production Hardening & Observability**: Standalone daemon operations, Prometheus telemetry metrics, `/healthz` liveness probes, SIGINT/SIGTERM clean shutdown, automated re-org handling, and multi-RPC weighted failover.

@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*.*.*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run verification mode (do not fail if upstream module catalog is unreleased)"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -50,7 +55,7 @@ jobs:
 
       - name: Release to Logos Module Catalog
         uses: logos-co/logos-modules-release-action@v1
-        continue-on-error: true # Allows dry-run verification before official catalog upstreaming
+        continue-on-error: ${{ github.event.inputs.dry_run == 'true' }}
         with:
           module-name: mosoo-ethereum-state-attestation
           module-version: ${{ github.ref_name }}

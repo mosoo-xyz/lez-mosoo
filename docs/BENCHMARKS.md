@@ -190,7 +190,7 @@ To evaluate whether native precompiles should be considered for future LEZ upgra
 | **Prover Cycles** | **`9,352,000` cycles** | **0 cycles** (externalized to host) | In-program requires 3-tx pipeline; precompile fits in 1 tx |
 | **Total Gas Units** | **`13,302,140` Gas** | **~85,000 Gas** | 156x gas reduction with host precompile |
 | **Transaction Structure** | 3 coordinated Txs (`JobAccount` PDA) | 1 atomic transaction | In-program handles LEZ 10M gas cap via stateful staging |
-| **Host VM Dependencies** | **None** (100% pure standard smart contract) | Requires core LEZ host protocol fork | Mosoo deploys immediately on any unmodified LEZ runtime |
+| **Host VM Dependencies** | **None** (Standard smart contract deployment without host-level modifications) | Requires core LEZ host protocol fork | Mosoo deploys immediately on any unmodified LEZ runtime |
 | **Hardware Compatibility** | RISC-V 32IM bare-metal portable C/assembly | Host C++ / Rust node runtime binding | In-program proofs are mathematically verifiable by any party |
 | **Audit Boundary** | Fully encompassed within guest binary & types | Extends into LEZ validator client software | In-program verification leaves 0 unverified host trust assumptions |
 

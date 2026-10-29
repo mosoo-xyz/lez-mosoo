@@ -167,6 +167,11 @@ pub enum GuestInstruction {
         chain_id: u64,
         instance_pda: [u8; 32],
     },
+    /// Authorized instruction: One-time bootstrap of the admin authority on a fresh store.
+    /// Fails with `MosooError::AlreadyInitialized` if admin_authority is already configured.
+    BootstrapAdminAuthority {
+        initial_admin: [u8; 32],
+    },
 }
 
 /// Dispatches a guest instruction inside zkVM, enforcing persistent PDA authentication invariants.
@@ -361,7 +366,8 @@ pub fn dispatch_guest_instruction(
         GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
 
         GuestInstruction::RegisterNetworkCheckpoint { .. }
-        | GuestInstruction::RegisterTrustedInstance { .. } => {
+        | GuestInstruction::RegisterTrustedInstance { .. }
+        | GuestInstruction::BootstrapAdminAuthority { .. } => {
             Err(MosooError::UnauthenticatedInstance)
         }
     }
@@ -1558,7 +1564,7 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     }
     // Network anchor head resolution:
     // Requires an authenticated anchor head configured in TrustedBridgeConfig for the chain.
-    let network_anchor = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
+    let network_anchor = config.get_effective_instance_head(args.instance.chain_id, &instance_pda).ok_or_else(|| {
         MosooError::InvalidBootstrap(format!(
             "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
             args.instance.chain_id
@@ -1763,7 +1769,7 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     }
     // Network anchor head resolution:
     // Requires an authenticated anchor head configured in TrustedBridgeConfig for the chain.
-    let network_anchor = config.get_trusted_head(args.instance.chain_id).ok_or_else(|| {
+    let network_anchor = config.get_effective_instance_head(args.instance.chain_id, &instance_pda).ok_or_else(|| {
         MosooError::InvalidBootstrap(format!(
             "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
             args.instance.chain_id
@@ -1999,6 +2005,9 @@ pub fn dispatch_store_instruction<S: AccountStore>(
             chain_id,
             instance_pda,
         } => handle_register_trusted_instance_authenticated(store, &caller, chain_id, instance_pda),
+        GuestInstruction::BootstrapAdminAuthority { initial_admin } => {
+            handle_bootstrap_admin_authority(store, initial_admin)
+        },
 
         GuestInstruction::StoreBacked { instruction, .. } => {
             dispatch_store_instruction(store, *instruction)
@@ -2064,6 +2073,38 @@ pub fn handle_register_trusted_instance_authenticated<S: AccountStore>(
     config
         .save_to_store(store)
         .map_err(|e| MosooError::Internal(e.to_string()))?;
+    Ok(InstructionOutput::ConfigUpdated)
+}
+
+/// Authenticated instruction: Initializes the admin authority on a fresh TrustedBridgeConfig.
+///
+/// Strictly one-time: If an `admin_authority` is already configured in the stored configuration,
+/// this instruction fails closed with `MosooError::AlreadyInitialized`.
+/// Fails with `MosooError::InvalidBootstrap` if `initial_admin` is the zero address.
+pub fn handle_bootstrap_admin_authority<S: AccountStore>(
+    store: &mut S,
+    initial_admin: [u8; 32],
+) -> Result<InstructionOutput, MosooError> {
+    if initial_admin == [0u8; 32] {
+        return Err(MosooError::InvalidBootstrap(
+            "initial admin authority cannot be zero address".into(),
+        ));
+    }
+    let mut config = if store.has_account(&crate::types::derive_bridge_config_pda()) {
+        TrustedBridgeConfig::load_strict(store)?
+    } else {
+        TrustedBridgeConfig::canonical()
+    };
+
+    if config.admin_authority.is_some() {
+        return Err(MosooError::AlreadyInitialized { chain_id: 0 });
+    }
+
+    config.set_admin_authority(initial_admin);
+    config
+        .save_to_store(store)
+        .map_err(|e| MosooError::Internal(e.to_string()))?;
+
     Ok(InstructionOutput::ConfigUpdated)
 }
 
@@ -2170,6 +2211,14 @@ impl<S: AccountStore> LezRuntimeAdapter<S> {
             chain_id,
             instance_pda,
         })
+    }
+
+    /// Convenience runner for one-time bootstrap of the bridge admin authority.
+    pub fn dispatch_bootstrap_admin_authority(
+        &mut self,
+        initial_admin: [u8; 32],
+    ) -> Result<InstructionOutput, MosooError> {
+        self.dispatch_transaction(GuestInstruction::BootstrapAdminAuthority { initial_admin })
     }
 }
 
