@@ -40,11 +40,11 @@ jobs:
 
       - name: Build zkVM Guest & Core Packages
         run: |
-          cargo build --release -p mosoo-core -p mosoo-methods
+          cargo build --release -p mosoo-core -p mosoo-guest -p mosoo-cli
 
       - name: Validate SPEL Interface Definitions (.spel)
         run: |
-          cargo test -p mosoo-core --test spel_conformance_tests
+          cargo test -p mosoo-core --test lez_v04_acceptance_tests
 
       - name: Package Logos Module Artifacts
         run: |
@@ -52,8 +52,34 @@ jobs:
           cp docs/SPEL_IDL.md dist/module/INTERFACE.md
           cp target/release/libmosoo_core.rlib dist/module/ 2>/dev/null || true
           tar -czvf mosoo-lez-module.tar.gz -C dist/module .
+          tar -czvf mosoo-cli-linux-x86_64.tar.gz -C target/release mosoo
 
-      - name: Release to Logos Module Catalog
+      - name: Check Catalog Secret Availability
+        run: |
+          if [ -n "${{ secrets.LOGOS_MODULE_CATALOG_TOKEN }}" ]; then
+            echo "HAS_TOKEN=true" >> $GITHUB_ENV
+          else
+            echo "HAS_TOKEN=false" >> $GITHUB_ENV
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          name: "Mosoo v0.4.0 — LEZ v0.4 Conformance & zkVM Attestation Release"
+          body_path: docs/releases/v0.4.0.md
+          draft: false
+          prerelease: false
+          files: |
+            mosoo-lez-module.tar.gz
+            mosoo-cli-linux-x86_64.tar.gz
+            evidence/sequencer-harness-v04/run.tsv
+            evidence/verify_all_output.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Release to Logos Module Catalog (Milestone M2)
+        if: env.HAS_TOKEN == 'true' || github.event.inputs.dry_run == 'true'
         uses: logos-co/logos-modules-release-action@v1
         continue-on-error: ${{ github.event.inputs.dry_run == 'true' }}
         with:

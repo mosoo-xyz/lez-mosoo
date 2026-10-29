@@ -5,6 +5,21 @@ All notable changes to the Mosoo project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-29
+
+### Added
+- **LEZ v0.4 Conformance & Acceptance Gate**: Hardened 18/18 deterministic acceptance tests validating isolated state transition boundaries and strict gas ceilings.
+- **Admin Authority One-Time Bootstrap**: Added `handle_bootstrap_admin_authority` to `TrustedBridgeConfig` allowing initial governance bootstrapping while rejecting replay attempts with `AlreadyInitialized`.
+- **Effective Instance Head Freshness**: Integrated `get_effective_instance_head` into authenticated update and state attestation handlers with fail-closed fallback to chain-wide anchor heads.
+- **Adversarial Mutation Test Suite**: 50 test functions rejecting 42 distinct mutation attack vectors covering consensus forks (Altair through Gloas), replay, and immutability invariants.
+- **Security Hardening Regression Suite**: 58 regression tests covering state transitions, boundaries, and overflow limits.
+- **Two-Way Bridge Hardening**: 16 Foundry tests for `MosooLocker.sol` on Sepolia verifying rolling 24h withdrawal limits, timelock governance, and independent guardian veto.
+
+### Changed
+- Refactored consensus trust assumptions (`docs/TRUST_ASSUMPTIONS.md`), cleanly delineating 256-epoch sync committee rotation from dynamic PoS weak-subjectivity and Mosoo dual operational/safety windows.
+- Synchronized authoritative test suite counts across documentation and execution traces: 334 total tests passing (318 Rust workspace tests + 16 Foundry EVM tests).
+- Replaced absolute security terminology with rigorous cryptographic hardness and zkVM soundness statements.
+
 ## [0.2.0] - 2026-10-28
 
 ### Added
