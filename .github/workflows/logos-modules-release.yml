@@ -28,14 +28,7 @@ jobs:
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Install RISC Zero Toolchain (rzup)
-        run: |
-          curl -L https://risczero.com/install | bash
-          ~/.rzup/bin/rzup install cargo-risczero 1.0.5
-          ~/.rzup/bin/rzup install rzup 1.0.5
-          echo "$HOME/.risc0/bin" >> $GITHUB_PATH
-
-      - name: Build zkVM Guest & Core Packages
+      - name: Build zkVM Guest, Core & CLI Packages
         run: |
           cargo build --release -p mosoo-core -p mosoo-guest -p mosoo-cli
 
