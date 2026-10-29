@@ -1564,7 +1564,7 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     }
     // Network anchor head resolution:
     // Requires an authenticated anchor head configured in TrustedBridgeConfig for the chain.
-    let network_anchor = config.get_effective_instance_head(args.instance.chain_id, &instance_pda).ok_or_else(|| {
+    let network_anchor = config.get_effective_instance_head(args.instance.chain_id, instance_pda).ok_or_else(|| {
         MosooError::InvalidBootstrap(format!(
             "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
             args.instance.chain_id
@@ -1769,7 +1769,7 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
     }
     // Network anchor head resolution:
     // Requires an authenticated anchor head configured in TrustedBridgeConfig for the chain.
-    let network_anchor = config.get_effective_instance_head(args.instance.chain_id, &instance_pda).ok_or_else(|| {
+    let network_anchor = config.get_effective_instance_head(args.instance.chain_id, instance_pda).ok_or_else(|| {
         MosooError::InvalidBootstrap(format!(
             "trusted freshness verification requires an authenticated anchor head configured in TrustedBridgeConfig for chain_id {}",
             args.instance.chain_id
@@ -2007,7 +2007,7 @@ pub fn dispatch_store_instruction<S: AccountStore>(
         } => handle_register_trusted_instance_authenticated(store, &caller, chain_id, instance_pda),
         GuestInstruction::BootstrapAdminAuthority { initial_admin } => {
             handle_bootstrap_admin_authority(store, initial_admin)
-        },
+        }
 
         GuestInstruction::StoreBacked { instruction, .. } => {
             dispatch_store_instruction(store, *instruction)

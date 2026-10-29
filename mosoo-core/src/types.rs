@@ -2117,11 +2117,17 @@ mod tests {
 
         // 2. Initial bootstrap succeeds
         let res_ok = crate::verifier::handle_bootstrap_admin_authority(&mut store, admin);
-        assert!(matches!(res_ok, Ok(crate::verifier::InstructionOutput::ConfigUpdated)));
+        assert!(matches!(
+            res_ok,
+            Ok(crate::verifier::InstructionOutput::ConfigUpdated)
+        ));
 
         // 3. Second bootstrap fails with AlreadyInitialized (strictly one-time)
         let res_replay = crate::verifier::handle_bootstrap_admin_authority(&mut store, attacker);
-        assert!(matches!(res_replay, Err(MosooError::AlreadyInitialized { .. })));
+        assert!(matches!(
+            res_replay,
+            Err(MosooError::AlreadyInitialized { .. })
+        ));
 
         // 4. Authorized checkpoint registration with newly bootstrapped admin succeeds
         let reg_ok = crate::verifier::handle_register_network_checkpoint_authenticated(
@@ -2141,6 +2147,9 @@ mod tests {
             [0x22u8; 32],
             200,
         );
-        assert!(matches!(reg_unauth, Err(MosooError::DomainSeparationFailed)));
+        assert!(matches!(
+            reg_unauth,
+            Err(MosooError::DomainSeparationFailed)
+        ));
     }
 }
