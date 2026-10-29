@@ -25,11 +25,8 @@ jobs:
         with:
           submodules: recursive
 
-      - name: Install Rust toolchain
+      - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: 1.78.0
-          targets: riscv32im-risc0-zkvm-elf
 
       - name: Install RISC Zero Toolchain (rzup)
         run: |
