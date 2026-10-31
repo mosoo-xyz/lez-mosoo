@@ -32,9 +32,14 @@ In this pattern, the consuming transaction directly executes state verification 
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Pattern B: Decoupled Relayer Flow (Secondary — Asynchronous Pipeline)
+### Pattern B: Decoupled Relayer Flow (Experimental — Non-Normative)
 
-For architectures where a relayer submits state attestations prior to user claims, Mosoo's attestation module emits a deterministic `VerifiedStatement`. The consumer verifies the statement's provenance, matches parameters against `StatementBinding`, checks the nullifier, and mints tokens.
+> [!WARNING]
+> **Experimental Decoupled Workflow (Non-Normative):**
+> Pattern B is provided strictly as an experimental decoupled / caching workflow. It must **not** be used for application actions that require RFP-021 atomic compliance.
+> Under RFP-021 Functionality #7, all protected consumer actions **must** execute inclusion proof verification and dynamic predicate evaluation directly inside the consuming transaction (Pattern A). Any protected consumer action must independently verify the authenticated inclusion proof and evaluate the predicate inside the consuming transaction rather than blindly relying on previously recorded state.
+
+For architectures where an off-chain relayer prepares intermediate state attestations, Mosoo defines a decoupled `VerifiedStatement` representation. However, production contracts must independently re-verify proofs within their own transaction boundary.
 
 ---
 
@@ -42,29 +47,33 @@ For architectures where a relayer submits state attestations prior to user claim
 
 For all production LEZ smart contracts consuming Mosoo attestations, the **Recommended Consumer Pattern** requires adherence to six mandatory security rules:
 
-### 1. Verify the expected chain identity
+### 1. Expected Chain ID Validation
 The consumer contract must explicitly assert that `statement.chain_id == EXPECTED_CHAIN_ID` (RFP-021 Functionality #5). This prevents cross-chain replay between Ethereum Mainnet, Sepolia, and other consensus networks.
 
-### 2. Verify the authenticated light-client instance
-The consumer must verify that the attesting `InstanceAccount` PDA matches the authorized Mosoo light client deployment (`account.address == expected_instance_pda`), preventing rogue or spoofed light-client instances from injecting unanchored state.
+### 2. Authenticated Instance Validation
+The consumer must verify that the attesting `InstanceAccount` PDA matches the authorized Mosoo light client deployment (`account.address == expected_instance_pda`), preventing rogue or spoofed light-client instances from injecting unanchored state. The legacy zero-instance PDA path is strictly an offline compatibility fallback (V1) and must be rejected in production.
 
-### 3. Enforce nullifier uniqueness
+### 3. Canonical Statement ID and Nullifier
 Consumers must derive replay nullifiers as deterministic PDAs using the Functionality #6 Statement ID:
 `PDA([b"nullifier", statement.statement_id])`
 Because the Statement ID binds `chain_id`, `genesis_validators_root`, `subject_key`, `proof_type_tag`, and `verified_value`, duplicate claims within the same transaction or across blocks are deterministically rejected.
 
-### 4. Handle every typed error explicitly
+### 4. Explicit Typed Error Handling
 The consumer must map and handle every `MosooError` variant cleanly:
 - `HeaderNotFinalized`: Defer execution until consensus finalization.
 - `InvalidMerkleProof`: Reject malicious or corrupted proof calldata.
 - `StaleSlot`: Reject headers older than the consumer's maximum allowed latency.
 - `SubthresholdQuorum`: Reject headers without 2/3 sync committee approval (>= 342 signatures).
+- `InvalidSignature`: Reject invalid BLS consensus signatures.
+- `EventLogNotFound`: Reject execution if expected receipt log is absent.
+- `PredicateFailed`: Reject state transitions if dynamic condition evaluates to false.
+No error may be silently ignored.
 
-### 5. Fail closed when attestation is unavailable
-If consensus updates stall, network partitions occur, or proof data is missing, the consuming transaction must revert immediately.
+### 5. Atomic Same-Transaction Verification
+In accordance with RFP-021 Functionality #7 and Performance #1, proof verification and state change must execute within the same LEZ transaction boundary. If the proof is invalid or attestation fails, the entire transaction reverts, ensuring atomic execution without orphan state.
 
-### 6. Never accept an unverified fallback statement
-Under no circumstances may a consumer fall back to unverified off-chain feeds, optimistic multi-sig assertions, or unauthenticated default values. Execution must fail closed.
+### 6. Fail-Closed Behaviour
+Under no circumstances may a consumer fall back to unverified off-chain feeds, optimistic multi-sig assertions, or unauthenticated default values. If consensus state is missing, stale, or verification fails, the consuming transaction must unconditionally revert. Contracts must never fall back to default, unauthenticated, or optimistic assumptions when verified state is absent.
 
 ```rust
 // Recommended Consumer Verification Pattern for LEZ dApps

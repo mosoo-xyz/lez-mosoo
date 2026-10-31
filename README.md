@@ -15,10 +15,10 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 318 Rust unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 316 Rust workspace tests across 16 test binaries (0 failing, 0 warnings)
 cargo test --workspace
 
-# 2. Run the Foundry Solidity test suite (16 passing tests, 334 total tests)
+# 2. Run the Foundry Solidity test suite (16 passing tests, 332 total automated tests)
 forge test -vvv
 
 # 2. Run the full Two-Way Bridge integration test suite (22 passing tests)
@@ -84,8 +84,8 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`) strictly binding to approved light-client instances (`config.is_trusted_instance`) and program-owned persistent accounts (`store.get_account_owner == MOSOO_PROGRAM_ID`), atomic test harness verification, and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **318 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **334 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix (334 Total Tests)**:
+- **316 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **332 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix (332 Total Tests)**:
   - `mosoo-core/tests/audit_oct26_hardening_tests.rs`: 58 security hardening regression tests.
   - `mosoo-core/tests/adversarial_mutation_tests.rs`: 50 test functions covering 42 distinct mutation attack scenarios.
   - `mosoo-core/tests/two_way_bridge_tests.rs`: 22 cross-chain bridge lifecycle, rate-limiting, and timelock governance tests.
@@ -111,7 +111,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 | Component / Subsystem | Status | Verification Mode |
 | :--- | :---: | :--- |
 | **Core Light Client (BLS12-381 / SSZ / MPT)** | Spec-Compliant (188 mosoo-core tests pass) | Offline Rust unit, integration & Criterion benchmarks |
-| **Full Protocol Test Suite** | 334 / 334 Tests Passing | Full workspace test suite (318 Rust + 16 Foundry EVM) |
+| **Full Protocol Test Suite** | 332 / 332 Tests Passing | Full workspace test suite (316 Rust + 16 Foundry EVM) |
 | **3-Transaction BLS Update Pipeline** | Verified (< 10M gas/tx) | Standalone LEZ v0.4 Sequencer Harness |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | Implemented & Hardened | In-memory CPI invocation & nullifier sets |
 | **Adversarial Invariant Hardening** | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`mosoo-core/tests/adversarial_mutation_tests.rs`) |
@@ -133,16 +133,13 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 ### Reproducing All Tests Locally
 
 ```bash
-# 1. Run all Rust workspace unit, integration, and adversarial tests (315 tests)
+# 1. Run all Rust workspace tests (316 tests across 16 test binaries)
 cargo test --workspace
 
-# 2. Run CLI local verification & dry-run tests (3 tests)
-cargo test -p mosoo-cli
-# Total Rust Tests: 315 + 3 = 318 tests
-
-# 3. Run MosooLocker Solidity EVM tests (16 tests via Foundry)
+# 2. Run MosooLocker Solidity EVM tests (16 tests via Foundry)
 forge test -vvv
-# GRAND TOTAL: 318 Rust + 16 Foundry = 334 tests
+
+# GRAND TOTAL: 316 Rust + 16 Foundry = 332 tests (+ 12 sequencer harness evidence checks)
 
 # 4. Verify committed execution manifest & gas headroom
 python scripts/verify-evidence.py
