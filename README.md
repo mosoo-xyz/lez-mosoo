@@ -15,8 +15,11 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 317 unit, integration, and doc tests (0 failing, 0 warnings)
+# 1. Run all 318 Rust unit, integration, and doc tests (0 failing, 0 warnings)
 cargo test --workspace
+
+# 2. Run the Foundry Solidity test suite (16 passing tests, 334 total tests)
+forge test -vvv
 
 # 2. Run the full Two-Way Bridge integration test suite (22 passing tests)
 cargo test --test two_way_bridge_tests

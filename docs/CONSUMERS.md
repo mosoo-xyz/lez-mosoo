@@ -38,7 +38,93 @@ For architectures where a relayer submits state attestations prior to user claim
 
 ---
 
-## 2. Consumer 1: ERC-20 Receiver (`consumers/erc20-receiver`)
+## 2. Recommended Consumer Pattern (RFP-021 Mandatory Standard)
+
+For all production LEZ smart contracts consuming Mosoo attestations, the **Recommended Consumer Pattern** requires adherence to six mandatory security rules:
+
+### 1. Verify the expected chain identity
+The consumer contract must explicitly assert that `statement.chain_id == EXPECTED_CHAIN_ID` (RFP-021 Functionality #5). This prevents cross-chain replay between Ethereum Mainnet, Sepolia, and other consensus networks.
+
+### 2. Verify the authenticated light-client instance
+The consumer must verify that the attesting `InstanceAccount` PDA matches the authorized Mosoo light client deployment (`account.address == expected_instance_pda`), preventing rogue or spoofed light-client instances from injecting unanchored state.
+
+### 3. Enforce nullifier uniqueness
+Consumers must derive replay nullifiers as deterministic PDAs using the Functionality #6 Statement ID:
+`PDA([b"nullifier", statement.statement_id])`
+Because the Statement ID binds `chain_id`, `genesis_validators_root`, `subject_key`, `proof_type_tag`, and `verified_value`, duplicate claims within the same transaction or across blocks are deterministically rejected.
+
+### 4. Handle every typed error explicitly
+The consumer must map and handle every `MosooError` variant cleanly:
+- `HeaderNotFinalized`: Defer execution until consensus finalization.
+- `InvalidMerkleProof`: Reject malicious or corrupted proof calldata.
+- `StaleSlot`: Reject headers older than the consumer's maximum allowed latency.
+- `SubthresholdQuorum`: Reject headers without 2/3 sync committee approval (>= 342 signatures).
+
+### 5. Fail closed when attestation is unavailable
+If consensus updates stall, network partitions occur, or proof data is missing, the consuming transaction must revert immediately.
+
+### 6. Never accept an unverified fallback statement
+Under no circumstances may a consumer fall back to unverified off-chain feeds, optimistic multi-sig assertions, or unauthenticated default values. Execution must fail closed.
+
+```rust
+// Recommended Consumer Verification Pattern for LEZ dApps
+pub fn verify_and_consume(
+    ctx: Context<ConsumeAttestation>,
+    proof: StateInclusionProof,
+    predicate: Predicate,
+) -> Result<()> {
+    // 1. Verify the expected chain identity
+    require_eq!(
+        proof.chain_id,
+        EXPECTED_CHAIN_ID,
+        MosooConsumerError::MismatchedChainId
+    );
+
+    // 2. Verify the authenticated light-client instance
+    require_eq!(
+        ctx.accounts.mosoo_instance.key(),
+        EXPECTED_MOSOO_INSTANCE,
+        MosooConsumerError::UnauthorizedInstance
+    );
+
+    // 3. Execute atomic same-transaction CPI into Mosoo verifier (In-guest verification)
+    let statement: VerifiedStatement = mosoo_cpi::verify_statement(
+        ctx.accounts.mosoo_program.to_account_info(),
+        &proof,
+        &predicate,
+    )?;
+
+    // 4. Never accept an unverified fallback statement & fail closed if predicate fails
+    require!(
+        statement.predicate_holds,
+        MosooConsumerError::PredicateEvaluationFailed
+    );
+
+    // 5. Enforce nullifier uniqueness via Statement ID
+    let nullifier_seeds = &[
+        b"nullifier",
+        statement.statement_id.as_ref(),
+    ];
+    let (nullifier_pda, _bump) = Pubkey::find_program_address(nullifier_seeds, ctx.program_id);
+    require!(
+        ctx.accounts.nullifier_account.key() == nullifier_pda,
+        MosooConsumerError::InvalidNullifierAddress
+    );
+    require!(
+        !ctx.accounts.nullifier_account.is_spent,
+        MosooConsumerError::NullifierAlreadySpent
+    );
+    ctx.accounts.nullifier_account.is_spent = true;
+
+    // 6. Execute authorized consumer action
+    ctx.accounts.execute_authorized_action(&statement)?;
+    Ok(())
+}
+```
+
+---
+
+## 3. Consumer 1: ERC-20 Receiver (`consumers/erc20-receiver`)
 
 ### Pattern A: Atomic Same-Transaction Claim (`claim_atomic`)
 
@@ -92,7 +178,7 @@ let minted = claim_erc20_transfer(&claim, &mut nullifiers)
 
 ---
 
-## 3. Consumer 2: Native Ether Receiver (`consumers/ether-receiver`)
+## 4. Consumer 2: Native Ether Receiver (`consumers/ether-receiver`)
 
 ### Pattern A: Atomic Same-Transaction Claim (`claim_ether_atomic`)
 
@@ -142,7 +228,7 @@ let credited = claim_native_eth_deposit(&deposit_claim, &mut nullifiers)
 
 ---
 
-## 4. Replay Protection & On-Chain State Model
+## 5. Replay Protection & On-Chain State Model
 
 ### Deterministic Statement ID & Nullifier Derivation
 
@@ -183,9 +269,11 @@ To prevent attackers from passing caller-spoofed `StatementAccount` structs in d
 
 ---
 
-## 5. Two-Way Token Bridge & Burn Ledgers (LEZ ↔ Ethereum)
+## Appendix: Experimental Two-Way Settlement Prototype (Out of Scope for RFP-021)
 
-In addition to one-way state attestations, Mosoo implements a complete **Two-Way Cross-Chain Token Bridge** maintaining strict cross-chain supply invariance:
+> **RFP-021 Grant Scope Notice:** Logos RFP-021 strictly covers inbound trustless Ethereum state attestation into LEZ. Application-specific minting, escrow, settlement, and reverse LEZ-to-Ethereum token bridging are explicitly outside the funded grant scope. The prototype below is provided solely as an experimental architectural appendix demonstrating how external applications can build on top of Mosoo's attestation primitive.
+
+In addition to one-way state attestations, Mosoo provides an experimental **Two-Way Cross-Chain Token Bridge** maintaining strict cross-chain supply invariance:
 
 $$\text{Locked on Ethereum Escrow} \equiv \text{Active Supply on LEZ}$$
 

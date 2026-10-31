@@ -68,18 +68,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Release to Logos Module Catalog (Milestone M2)
+      - name: Release to Logos Module Catalog (Milestone M4)
         if: env.HAS_TOKEN == 'true' || github.event.inputs.dry_run == 'true'
-        run: |
-          echo "Packaging verified SPEL module for Logos Module Catalog (Milestone M2)"
-          echo "Module: mosoo-ethereum-state-attestation"
-          echo "Version: ${{ github.ref_name }}"
-          echo "Archive: mosoo-lez-module.tar.gz"
-          if [ "$HAS_TOKEN" = "true" ]; then
-            curl -s -f -X POST "https://modules.logos.co/api/v1/publish" \
-              -H "Authorization: Bearer ${{ secrets.LOGOS_MODULE_CATALOG_TOKEN }}" \
-              -F "module=@mosoo-lez-module.tar.gz" \
-              -F "version=${{ github.ref_name }}" || echo "Notice: Module catalog endpoint pending M2 deployment"
-          else
-            echo "Dry-run mode: SPEL module archive built and verified successfully."
-          fi
+        uses: logos-co/logos-modules-release-action@v1
+        with:
+          module-id: 'mosoo-ethereum-state-attestation'
+          manifest-path: 'docs/SPEL_IDL.md'
+          archive-path: 'mosoo-lez-module.tar.gz'
+          version: ${{ github.ref_name }}
+          api-token: ${{ secrets.LOGOS_MODULE_CATALOG_TOKEN }}
+          dry-run: ${{ env.HAS_TOKEN != 'true' || github.event.inputs.dry_run == 'true' }}

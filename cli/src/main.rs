@@ -836,7 +836,23 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     println!("Proof Target:       {}", args.target);
     println!("Min Predicate Value:{}", args.min_value);
 
-    let active_rpc = args.rpc_url.or(args.logos_core_rpc);
+    let env_rpc_var = std::env::var("LOGOS_ETHEREUM_CORE_RPC").ok();
+    let active_rpc: Option<&str> = if let Some(logos_rpc) = args.logos_core_rpc {
+        println!("  - Routing mode: Logos Ethereum Core Verified Proxy [PRODUCTION]");
+        println!("  - Endpoint: {}", logos_rpc);
+        Some(logos_rpc)
+    } else if let Some(ref env_rpc) = env_rpc_var {
+        println!("  - Routing mode: Logos Ethereum Core Verified Proxy (from ENV) [PRODUCTION]");
+        println!("  - Endpoint: {}", env_rpc);
+        Some(env_rpc.as_str())
+    } else if let Some(direct_rpc) = args.rpc_url {
+        println!("  - \x1b[33m[Development Mode]\x1b[0m Using direct unverified Ethereum RPC fallback.");
+        println!("  - Note: Production mode requires Logos Ethereum Core verified proxy.");
+        println!("  - Endpoint: {}", direct_rpc);
+        Some(direct_rpc)
+    } else {
+        None
+    };
 
     if args.target.to_lowercase() == "erc20" && active_rpc.is_some() && args.owner_str.is_none() {
         anyhow::bail!(
@@ -2222,33 +2238,49 @@ fn run_verify_checkpoint(
         hex::encode(report.current_sync_committee_root)
     );
     println!("  - Slot Delta:                {} slots", report.slot_delta);
+
+    let weak_pass = report.within_weak_subjectivity_window;
+    let oper_pass = report.within_operational_window;
+    let branch_pass = report.current_committee_branch_valid;
+
     println!(
-        "  - Weak Subjectivity Window:  {} (<= 1,728,000 slots) \x1b[32m[PASS]\x1b[0m",
-        report.within_weak_subjectivity_window
+        "  - Weak Subjectivity Window:  {} (<= 1,728,000 slots) {}",
+        weak_pass,
+        if weak_pass { "\x1b[32m[PASS]\x1b[0m" } else { "\x1b[31m[FAIL]\x1b[0m" }
     );
     println!(
-        "  - Operational Freshness:     {} (<= 200,000 slots) \x1b[32m[PASS]\x1b[0m",
-        report.within_operational_window
+        "  - Operational Freshness:     {} (<= 200,000 slots) {}",
+        oper_pass,
+        if oper_pass { "\x1b[32m[PASS]\x1b[0m" } else { "\x1b[31m[FAIL]\x1b[0m" }
     );
     println!(
-        "  - Sync Committee SSZ Branch: {} \x1b[32m[CRYPTOGRAPHICALLY AUTHENTIC]\x1b[0m",
-        report.current_committee_branch_valid
+        "  - Sync Committee SSZ Branch: {} {}",
+        branch_pass,
+        if branch_pass { "\x1b[32m[CRYPTOGRAPHICALLY AUTHENTIC]\x1b[0m" } else { "\x1b[31m[INVALID]\x1b[0m" }
     );
     if let Some(matched) = report.matches_trusted_block_root {
         println!(
-            "  - Public Beacon Root Check:  {} \x1b[32m[100% MATCH]\x1b[0m",
-            matched
+            "  - Public Beacon Root Check:  {} {}",
+            matched,
+            if matched { "\x1b[32m[100% MATCH]\x1b[0m" } else { "\x1b[31m[MISMATCH]\x1b[0m" }
         );
     }
     println!(
-        "  - Header Anchored to Root:   {} \x1b[32m[{}]\x1b[0m",
+        "  - Header Anchored to Root:   {} [{}]",
         report.header_anchored_to_trusted_root,
         if report.header_anchored_to_trusted_root {
-            "100% CRYPTOGRAPHICALLY ANCHORED"
+            "\x1b[32m100% CRYPTOGRAPHICALLY ANCHORED\x1b[0m"
         } else {
-            "UNANCHORED / SELF-CONSISTENT ONLY"
+            "\x1b[33mUNANCHORED / SELF-CONSISTENT ONLY\x1b[0m"
         }
     );
+
+    // Strict Fail-Closed Security Enforcement
+    if !weak_pass || !oper_pass || !branch_pass {
+        println!("\n  \x1b[1;31m[FAILED] Checkpoint verification failed security thresholds.\x1b[0m\n");
+        anyhow::bail!("Weak-subjectivity checkpoint verification failed (operational freshness or committee branch invalid)");
+    }
+
     println!("\n  \x1b[1;32m[SUCCESS] Checkpoint is independently authentic, fresh, and cryptographically verified.\x1b[0m\n");
 
     Ok(())

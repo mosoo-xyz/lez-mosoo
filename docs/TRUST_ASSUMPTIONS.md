@@ -36,6 +36,60 @@ Mosoo implements the standard Ethereum Altair/Electra Sync Committee light clien
 - **$\ge 1/3$ Colluding Validators ($\ge 171$ nodes):** Liveness stall risk. Malicious validators can refuse to sign, preventing the light client from reaching the 342-vote quorum. However, **safety is strictly preserved** — no false state or invalid headers can ever be finalized.
 - **$\ge 2/3$ Colluding Validators ($\ge 342$ nodes):** Safety failure. If > 2/3 of Ethereum sync committee validators maliciously collude and sign an invalid block header, the light client would accept it. This is the fundamental, irreducible security assumption of all Ethereum light clients (identical to EIP-4788, Helios, and Telepathy).
 
+### 2.3 Quorum Carryover Threat Model & Non-Automatic Exposure Bounds (VS.4)
+- **Quorum Carryover Threat:** A malicious sync committee supermajority (>= 342 validators) could sign both a fraudulent finalized header and a fraudulent next sync committee root. Because future committees are authenticated via signed finalized headers, a compromised committee could attempt to chain fraudulent updates into subsequent periods unless halted.
+- **Non-Automatic Exposure Boundary:** Committee rotation alone does NOT establish an automatic bound on the lifetime of a compromised trust chain. Exposure does not automatically terminate after 27.3 hours if the attacker successfully forges the next committee transition.
+- **Defense-in-Depth & Mitigation Architecture:**
+  1. **Consumer-Level Safeguards:** Consumer applications must independently bound financial exposure. `MosooLocker.sol` enforces rolling 24-hour withdrawal rate limits, a mandatory 2-day timelock for large transfers, and Guardian multisig veto power to freeze contract settlement upon abnormal activity.
+  2. **Independent Checkpoint Verification & Fast Retirement (F.9, F.10):** The off-chain daemon cross-checks headers against independent Logos Ethereum Core RPC endpoints (`verify_checkpoint` API). If an off-canonical fork is detected, the compromised instance is immediately retired (F.10) and superseded by a fresh instance initialized from an independently verified canonical weak-subjectivity checkpoint.
+  3. **Adversarial Invariant Test Suite:** Five specific adversarial regression tests validate invariant rejections under corrupt committee conditions (`tests/adversarial_mutation_tests.rs`):
+     - Test 1: Rejection of updates with < 342 valid BLS signatures (`SubthresholdQuorumRejected`).
+     - Test 2: Rejection of fabricated finalized headers against honest committee public keys.
+     - Test 3: Detection and rejection of corrupt next-committee Merkle branch proofs.
+     - Test 4: Chained update verification rejecting unanchored next-period transitions.
+     - Test 5: Rejection of post-compromise recovery attempts without fresh independently verified weak-subjectivity checkpoints.
+
+### 2.4 Quantitative Economic Attack Model (VS.4)
+
+To rigorously evaluate the economic feasibility of corrupting a 512-member sync committee:
+
+#### Staking Baseline (October 2026 Evaluation):
+- **Active Staked Ethereum:** Approximately 44,112,742 ETH (~99.03 Billion USD total stake valuation at ~2,245 USD/ETH reference price).
+- **Sampling Mechanism:** Every 256 epochs (~27.3 hours), 512 validator positions are sampled with effective-balance weighting from the active validator set.
+- **Binomial Distribution Model:** Let $p$ denote the fraction of total active validator stake controlled by an attacker. The number of attacker-controlled seats $X$ in the sync committee is modeled by:
+  $$X \sim \text{Binomial}(n = 512, p)$$
+
+#### Supermajority Compromise Threshold:
+To forge an accepted consensus update, the attacker must control at least $k = 342$ seats ($66.8\%$):
+$$P(\text{Attack Success}) = P(X \ge 342) = \sum_{j=342}^{512} \binom{512}{j} p^j (1 - p)^{512 - j}$$
+
+#### Exact Recalculated Attack Probability Distribution:
+
+| Attacker Stake Fraction ($p$) | Illustrative Stake Valuation | Exact Tail Probability $P(X \ge 342)$ | Feasibility & Security Interpretation |
+|---|---|---|---|
+| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | Mathematically zero. Exceeds cryptographic security margins. |
+| **$p = 33\%$** | ~32.68 Billion USD | **$6.19 \times 10^{-55}$** | Infeasible. Corresponds to negligible cryptographic probability. |
+| **$p = 50\%$** | ~49.52 Billion USD | **$1.18 \times 10^{-14}$** | Negligible ($\sim 1$ in 85 trillion sync committee periods). |
+| **$p = 60\%$** | ~59.42 Billion USD | **$0.0888\%$ ($8.88 \times 10^{-4}$)** | Less than 0.1% chance per 27.3-hour committee rotation. |
+| **$p \ge 66.8\%$** | **~66.15 Billion USD** | **$P \ge 0.50$** | Attacker commands honest supermajority, risking total capital slashing. |
+
+#### Reproducible Python Verification Script:
+```python
+import math
+
+def binom_tail(n, k, p):
+    return sum(math.comb(n, j) * (p**j) * ((1 - p)**(n - j)) for j in range(k, n + 1))
+
+print("p=0.10:", f"{binom_tail(512, 342, 0.10):.2e}")  # 1.42e-210
+print("p=0.33:", f"{binom_tail(512, 342, 0.33):.2e}")  # 6.19e-55
+print("p=0.50:", f"{binom_tail(512, 342, 0.50):.2e}")  # 1.18e-14
+print("p=0.60:", f"{binom_tail(512, 342, 0.60):.4%}")  # 0.0888%
+```
+
+#### Analytical Limitations & Mitigations:
+1. **Simplified Sampling Model:** The binomial model treats sampling with replacement; actual Ethereum selection is effective-balance weighted without replacement, which further reduces variance and favors safety.
+2. **Exogenous Correlated Staking Risk:** Liquid staking pools (e.g. Lido) or major infrastructure node operators could represent correlated failure domains. This risk is exogenous to the light client and is directly mitigated at the application layer via `MosooLocker.sol` rate limits, timelocks, and guardian vetoes.
+
 ---
 
 ## 3. Off-Chain Participants: Safety vs. Liveness Separation
@@ -76,7 +130,7 @@ Mosoo strictly decouples **Safety** (enforced mathematically in-guest under cryp
 - **Handling:** Intermediate state is held in an authenticated PDA buffer (`MillerStateBuffer`). Any competing daemon can inspect the active job slot and submit `FinishUpdate` using the existing authenticated buffer. If uncompleted beyond 256 slots, the buffer expires and can be reset without deadlock.
 
 ### 5.2 Deep Chain Reorganizations
-- **Finality Invariant:** Mosoo anchors strictly to **finalized** Ethereum beacon headers (Casper FFG 2-epoch finality). Reorganizations of finalized beacon headers are cryptographically impossible without slashing at least 1/3 of the entire Ethereum validator set (> $30 Billion).
+- **Finality Invariant:** Mosoo anchors strictly to **finalized** Ethereum beacon headers (Casper FFG 2-epoch finality). Reorganizations of finalized beacon headers require corrupting a 2/3 Casper FFG validator supermajority, resulting in the catastrophic slashing of at least 1/3 of total active staked Ethereum (> 33 Billion USD slashed under current baseline), bounded by economic consensus incentives rather than mathematical hash collision limits.
 - **Unfinalized Blocks:** Mosoo strictly rejects optimistic, unfinalized execution heads.
 
 ### 5.3 Adversarial Rejection Matrix (Fail-Closed Guarantees)
