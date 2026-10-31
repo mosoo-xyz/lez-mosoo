@@ -73,7 +73,7 @@ Measurements for verifying Merkle-Patricia Trie (MPT) inclusion proofs against f
 | **ERC-20 Storage Slot** | Account proof (7 nodes) + Storage proof (5 nodes) | 3,920,000 | 78 ms | ~4.8 KB |
 | **Receipt-Log (Transfer)**| Receipts trie proof (6 nodes) + EIP-2718 decode | 2,890,000 | 54 ms | ~3.6 KB |
 | **Predicate Evaluation** | Equal, AtLeast, Compound All/Any | 12,500 | < 1 ms | 64 B |
-| **Deterministic Nullifier**| `sha256(chain || subject || type || val || pred)` | 4,200 | < 1 ms | 32 B |
+| **Deterministic Nullifier (V2)** | sha256(chain, genesis_root, subject, type, val) | 4,200 | < 1 ms | 32 B |
 
 ---
 

@@ -8,15 +8,19 @@ Quantitative security analysis, binomial tail probability calculations, and econ
 
 Mosoo relies on Ethereum Altair/Electra Sync Committees for lightweight consensus state tracking. A valid consensus update requires signatures from at least **342 out of 512 validators** ($66.8\%$, or a $2/3$ supermajority).
 
-| Attacker Stake Fraction ($p$) | Illustrative Stake Valuation (Oct 2026) | Exact Tail Probability $P(X \ge 342)$ | Security Interpretation |
-|:---:|:---:|:---:|---|
-| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | Mathematically zero. Exceeds standard cryptographic safety bounds ($2^{-128}$). |
-| **$p = 33\%$** | ~32.68 Billion USD | **$6.19 \times 10^{-55}$** | Negligible. Far below any physical or economic feasibility threshold. |
-| **$p = 50\%$** | ~49.52 Billion USD | **$1.18 \times 10^{-14}$** | Negligible ($\sim 1$ in 85 trillion sync committee periods, or $> 2.6 \times 10^8$ years). |
-| **$p = 60\%$** | ~59.42 Billion USD | **$0.0888\%$ ($8.88 \times 10^{-4}$)** | Less than 0.1% chance per 27.3-hour committee rotation. |
-| **$p \ge 66.8\%$** | **~66.15 Billion USD** | **$P \ge 0.50$** | Attacker commands honest supermajority, risking catastrophic slashing of total stake. |
+| Attacker Stake Fraction ($p$) | Illustrative Stake Valuation (Oct 2026) | Binomial Approx. $P(X \ge 342)$ (Per Period: ~27.3h) | Illustrative Cumulative Annual Risk ($1 - (1 - P)^{321}$) | Security Interpretation |
+|:---:|:---:|:---:|:---:|---|
+| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | $\approx 4.56 \times 10^{-208}$ | Mathematically zero. Exceeds standard cryptographic safety bounds ($2^{-128}$). |
+| **$p = 33\%$** | ~32.68 Billion USD | **$6.19 \times 10^{-55}$** | $\approx 1.99 \times 10^{-52}$ | Negligible. Far below any physical or economic feasibility threshold. |
+| **$p = 50\%$** | ~49.52 Billion USD | **$1.18 \times 10^{-14}$** | $\approx 3.79 \times 10^{-12}$ | Negligible (~1 in 260 billion operating years). |
+| **$p = 60\%$** | ~59.42 Billion USD | **$0.0888\%$ ($8.88 \times 10^{-4}$)** | **$\approx 24.8\%$** | Non-negligible over full operating year (~321 rotations). Demands consumer defense-in-depth! |
+| **$p \ge 66.8\%$** | **~66.15 Billion USD** | **$P \ge 0.50$** | **$P \approx 1.00$** | Attacker commands deterministic supermajority; stake-equivalent market valuation ~$66.15B. |
 
-**Primary Conclusion:** The economic cost required to corrupt a sync committee with non-negligible probability ($> 66\text{ Billion USD}$) exceeds the total value locked (TVL) of any anticipated LEZ cross-chain consumer application by multiple orders of magnitude.
+**Key Finding & Cumulative Risk Interpretation:**
+1. **Per-Period vs Cumulative Exposure:** While a 60% adversary has only an 0.0888% probability in any single 27.3-hour committee period, under an independent binomial approximation the cumulative annual exposure over 321 rotations reaches $\approx 24.8\%$. Therefore, committee rotation alone is insufficient long-term protection against a high-stake adversary.
+2. **Economic Stake-Equivalent Valuation:** The ~$66.15 Billion USD figure represents illustrative stake-equivalent market valuation (not literal cash acquisition cost, which would be substantially higher due to liquidity slippage and staking entry queues).
+3. **Casper FFG Slashing Dynamics:** Under Ethereum PoS consensus assumptions, double-signing consensus headers incurs catastrophic slashing (>33% of validator stake burned). However, because a malicious supermajority could attempt to forge light-client handoffs without dual-signing on Mainnet, slashing is an economic deterrence rather than an on-LEZ cryptographic guarantee.
+4. **Mandatory Defense-in-Depth:** The existence of non-zero cumulative risk at $p=60\%$ mathematically mandates consumer-level safeguards: `MosooLocker.sol` rolling 24-hour rate limits, 2-day timelocks, guardian veto, and independent Logos Core checkpoint cross-verification.
 
 ---
 

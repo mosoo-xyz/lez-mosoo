@@ -17,9 +17,7 @@ Cryptographic trust assumptions, threat model, participant failure conditions, a
   - **Ethereum PoS Weak Subjectivity:** A dynamic consensus parameter calculated under Ethereum specification based on active validator deposit balances and churn limits (typically 14 to 30 days). Light clients that remain offline longer than this window cannot trust historical validator signatures due to potential long-range slashing evasion.
   - **Mosoo Protocol Freshness Enforcement:** Mosoo enforces a two-tier defense:
     1. **Canonical Operational Window:** 54,000 slots (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, ~7.5 days at 12s/slot) for routine sync progression against trusted network anchors.
-    2. **Maximum Protocol Safety Ceiling:** 1,728,000 slots (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS` / 54,000 epochs, ~240 days) on historical leaps and bootstrap checkpoints.
-- **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods (`MosooError::SyncCommitteePeriodSkip`) or fail weak-subjectivity freshness bounds (`MosooError::WeakSubjectivityExpired`). If an instance stalls past this window after a network partition, it cannot be rewritten in-place; operators retire the instance and initialize a fresh instance via `bootstrap_instance` with `verify_anchored_checkpoint`.
-
+    2. **Hard Protocol Kill Switch (Dormancy Ceiling):** 1,728,000 slots (MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS / 54,000 epochs, ~240 days) acts as an absolute protocol kill switch. It is **not** a validity guarantee for ancient checkpoints; actual Ethereum weak-subjectivity windows are dynamic (~14–21 days on Mainnet). Instead, 1.728M slots enforces hard fail-closed invalidation: dormant instances exceeding this boundary are permanently bricked and cannot be updated.\n- **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods (MosooError::SyncCommitteePeriodSkip) or fail weak-subjectivity freshness bounds (MosooError::WeakSubjectivityExpired). Any bootstrap or reinitialization must be anchored to an independently verified, currently acceptable checkpoint within the canonical weak-subjectivity window (~14–21 days). If an instance stalls past 1.728M slots, it cannot be rewritten in place; it must be retired and superseded by a fresh instance.\n
 ---
 
 ## 2. Cryptographic Quorum Trust: 2/3 Sync-Committee Assumption
@@ -65,14 +63,7 @@ $$P(\text{Attack Success}) = P(X \ge 342) = \sum_{j=342}^{512} \binom{512}{j} p^
 
 #### Exact Recalculated Attack Probability Distribution:
 
-| Attacker Stake Fraction ($p$) | Illustrative Stake Valuation | Exact Tail Probability $P(X \ge 342)$ | Feasibility & Security Interpretation |
-|---|---|---|---|
-| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | Mathematically zero. Exceeds cryptographic security margins. |
-| **$p = 33\%$** | ~32.68 Billion USD | **$6.19 \times 10^{-55}$** | Infeasible. Corresponds to negligible cryptographic probability. |
-| **$p = 50\%$** | ~49.52 Billion USD | **$1.18 \times 10^{-14}$** | Negligible ($\sim 1$ in 85 trillion sync committee periods). |
-| **$p = 60\%$** | ~59.42 Billion USD | **$0.0888\%$ ($8.88 \times 10^{-4}$)** | Less than 0.1% chance per 27.3-hour committee rotation. |
-| **$p \ge 66.8\%$** | **~66.15 Billion USD** | **$P \ge 0.50$** | Attacker commands honest supermajority, risking total capital slashing. |
-
+| Attacker Stake Fraction ($) | Illustrative Stake Valuation | Binomial Approx. (X \ge 342)$ (Per Period: ~27.3h) | Cumulative Annual Risk ( - (1 - P)^{321}$) | Feasibility & Security Interpretation |\n|---|---|---|---|---|\n| ** = 10\%$** | ~9.90 Billion USD | **.42 \times 10^{-210}$** | $\approx 4.56 \times 10^{-208}$ | Mathematically zero. Exceeds cryptographic security margins. |\n| ** = 33\%$** | ~32.68 Billion USD | **.19 \times 10^{-55}$** | $\approx 1.99 \times 10^{-52}$ | Infeasible. Corresponds to negligible cryptographic probability. |\n| ** = 50\%$** | ~49.52 Billion USD | **.18 \times 10^{-14}$** | $\approx 3.79 \times 10^{-12}$ | Negligible (~1 in 260 billion operating years). |\n| ** = 60\%$** | ~59.42 Billion USD | **.0888\%$ (.88 \times 10^{-4}$)** | **$\approx 24.8\%$** | Non-negligible over full operating year (~321 rotations). Demands consumer defense-in-depth! |\n| ** \ge 66.8\%$** | **~66.15 Billion USD** | ** \ge 0.50$** | ** \approx 1.00$** | Deterministic supermajority; stake-equivalent market valuation ~.15B. |\n
 #### Reproducible Python Verification Script:
 ```python
 import math
