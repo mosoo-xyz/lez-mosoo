@@ -10,7 +10,7 @@ Mosoo relies on Ethereum Altair/Electra Sync Committees for lightweight consensu
 
 | Attacker Stake Fraction ($p$) | Illustrative Stake Valuation (Oct 2026) | Binomial Approx. $P(X \ge 342)$ (Per Period: ~27.3h) | Illustrative Cumulative Annual Risk ($1 - (1 - P)^{321}$) | Security Interpretation |
 |:---:|:---:|:---:|:---:|---|
-| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | $\approx 4.56 \times 10^{-208}$ | Negligibly small under the stated independent binomial approximation. Exceeds standard cryptographic safety bounds ($2^{-128}$). |
+| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | $\approx 4.56 \times 10^{-208}$ | Negligibly small under the stated independent binomial approximation. Far below 2^-128 under the simplified independent binomial approximation. This is not a formal cryptographic security bound, nor equivalent to actual Ethereum attacker acquisition cost. |
 | **$p = 33\%$** | ~32.68 Billion USD | **$6.19 \times 10^{-55}$** | $\approx 1.99 \times 10^{-52}$ | Negligible. Far below any physical or economic feasibility threshold. |
 | **$p = 50\%$** | ~49.52 Billion USD | **$1.18 \times 10^{-14}$** | $\approx 3.79 \times 10^{-12}$ | Negligible (~1 in 260 billion operating years). |
 | **$p = 60\%$** | ~59.42 Billion USD | **$0.0888\%$ ($8.88 \times 10^{-4}$)** | **$\approx 24.8\%$** | Non-negligible over full operating year (~321 rotations). Demands consumer defense-in-depth! |

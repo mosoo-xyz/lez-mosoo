@@ -1,8 +1,8 @@
 === MOSOO PROTOCOL VERIFICATION & TEST SUITE EXECUTION TRACE ===
 Specification: Ethereum Consensus & State Prover for LEZ
 CI Gate: GitHub Actions (ubuntu-latest & local reference workstation)
-Total Test Suite: 334 Tests (318 Rust Unit, Integration & Doc Tests + 16 Foundry EVM Tests)
-Overall Verdict: ALL 334 TESTS PASSING (0 errors, 0 failures, 0 ignored)
+Total Test Suite: 332 Tests (316 Rust Unit, Integration & Doc Tests + 16 Foundry EVM Tests)
+Overall Verdict: ALL 332 TESTS PASSING (0 errors, 0 failures, 0 ignored)
 
 ================================================================================
 PART 1: RUST WORKSPACE UNIT, INTEGRATION, ADVERSARIAL & REGRESSION TESTS (315 Tests)
@@ -459,7 +459,7 @@ TEST EXECUTION SUMMARY:
   - mosoo_daemon operational suite: 15 passed
   - Rust doc-tests: 3 passed
   - mosoo_cli operational suite: 3 passed
-  --> Total Rust Tests: 318 passed
+  --> Total Rust Tests: 316 passed
   - contracts/test/MosooLocker.t.sol EVM tests: 16 passed
-  --> GRAND TOTAL: 334 / 334 PASSED (0 failed, 0 skipped)
+  --> GRAND TOTAL: 332 / 332 PASSED (0 failed, 0 skipped)
 ================================================================================
