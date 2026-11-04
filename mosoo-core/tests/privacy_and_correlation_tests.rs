@@ -251,8 +251,11 @@ fn test_privacy_unlinkable_consumer_identities_across_claims() {
 
 /// Test 4: Adversary Cannot Correlate Statements to Ethereum Accounts from On-Chain Events.
 ///
-/// Asserts that given only the VerifiedStatement emitted in LEZ events,
-/// an observer cannot correlate or invert the Ethereum account without solving SHA-256 preimage.
+/// RFP-021 F#8 Consumer Privacy & Unlinkability Audit:
+/// Asserts that when a VerifiedStatement is shielded for public on-chain emission in LEZ events:
+/// 1. The verbose provenance binding is converted into a 32-byte cryptographic commitment.
+/// 2. Raw Ethereum address bytes, hex encodings, and serialized byte arrays do NOT appear in the emitted JSON/event log.
+/// 3. Observers of LEZ on-chain state cannot correlate or invert the Ethereum account without solving SHA-256 preimage.
 #[test]
 fn test_privacy_adversary_cannot_correlate_statements() {
     let mut ether_nullifiers = EtherNullifierSet::new();
@@ -278,16 +281,38 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     };
     stmt.statement_id = stmt.derive_canonical_id();
 
+    // 1. Unshielded private internal statement retains provenance for consumer verification
+    assert_eq!(stmt.binding, StatementBinding::Account { address: user_addr });
+
+    // 2. Shield statement for public event emission (RFP-021 F#8 privacy gate)
+    let public_statement = stmt.shield();
+    assert!(public_statement.is_shielded());
+
     // Emitted public statement event (as serialized for LEZ logs)
-    let public_statement_bytes = serde_json::to_vec(&stmt).expect("serializes");
+    let public_statement_bytes = serde_json::to_vec(&public_statement).expect("serializes");
+    let public_statement_str = serde_json::to_string(&public_statement).expect("serializes to str");
 
     // An observer seeing public_statement_bytes CANNOT find the 20-byte user address
     assert!(
         !public_statement_bytes.windows(20).any(|w| w == user_addr),
-        "Raw Ethereum address MUST NOT appear in serialized public statement event"
+        "Raw 20-byte Ethereum address MUST NOT appear in serialized public statement event"
     );
 
-    // Consume statement
+    // Verify structured string representation does NOT leak hex or decimal array encodings
+    let user_hex = hex::encode(user_addr);
+    assert!(
+        !public_statement_str.to_lowercase().contains(&user_hex.to_lowercase()),
+        "Hex Ethereum address MUST NOT appear in public statement JSON string"
+    );
+    assert!(
+        !public_statement_str.contains(&format!("{:?}", user_addr)),
+        "Debug/decimal byte array of address MUST NOT appear in public statement JSON string"
+    );
+
+    // Verify statement ID nullifier does not leak address bytes
+    assert_ne!(&public_statement.statement_id[..20], &user_addr[..]);
+
+    // Consume statement in consumer (nullifier tracking)
     let claimed = claim_ether(&stmt, &mut ether_nullifiers, 500).expect("claim succeeds");
     assert_eq!(claimed, 1_000_000);
 }
@@ -295,18 +320,22 @@ fn test_privacy_adversary_cannot_correlate_statements() {
 /// Test 5: Deep Memory and Event Log Inspection: Zero Address Leakage.
 ///
 /// Emulates an adversarial inspection of serialized VerifiedStatement logs,
-/// verifying that raw Ethereum addresses (sender, contract) and raw balance bytes
-/// do not appear anywhere in memory or string representations.
+/// verifying that raw Ethereum addresses (sender, token contract, recipient) and raw balance bytes
+/// do not appear anywhere in memory, event logs, or string representations when shielded.
 #[test]
 fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
-    let eth_sender_bytes = [
-        0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe,
-        0xef, 0xde, 0xad, 0xbe, 0xef,
-    ];
-    let eth_contract_bytes = [
+    let token_contract = [
         0xa0, 0xb8, 0x69, 0x91, 0xc6, 0x21, 0x8b, 0x36, 0xc1, 0xd1, 0x9d, 0x4a, 0x2e, 0x9e, 0xb0,
         0xce, 0x36, 0x06, 0xeb, 0x48,
     ];
+    let sender = [
+        0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe, 0xef, 0xde, 0xad, 0xbe,
+        0xef, 0xde, 0xad, 0xbe, 0xef,
+    ];
+    let recipient = [0x42u8; 32];
+    let exec_block_hash = [0x55u8; 32];
+    let slot = 12_000_000u64;
+
     let private_balance_val: u64 = 750_000_000_000u64; // 750 billion units
     let private_balance_be = private_balance_val.to_be_bytes();
     let private_balance_le = private_balance_val.to_le_bytes();
@@ -315,16 +344,12 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
     storage_val_bytes[24..32].copy_from_slice(&private_balance_be);
     let verified_val = VerifiedValue::StorageValue(storage_val_bytes);
 
-    let sender = [0x11; 20];
-    let recipient = [0x22; 32];
-    let exec_block_hash = [0x55; 32];
-    let slot = 12_000_000u64;
     let subject_key = derive_erc20_transfer_subject_key(
         &exec_block_hash,
         slot,
         0,
         0,
-        &eth_contract_bytes,
+        &token_contract,
         &sender,
         &recipient,
     );
@@ -338,7 +363,7 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
         slot,
         tx_index: 0,
         log_index: 0,
-        token_contract: eth_contract_bytes,
+        token_contract,
         sender,
         recipient,
     };
@@ -360,29 +385,65 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
     let minted = claim(&statement, &mut nullifiers, 500).expect("claim succeeds");
     assert_eq!(minted, 750_000_000_000);
 
-    // Serialize the statement into JSON bytes (as would appear in LEZ event logs)
-    let serialized_statement = serde_json::to_vec(&statement).expect("serializes");
+    // Shield the statement for public event emission (F#8 privacy gate)
+    let public_statement = statement.shield();
+    assert!(public_statement.is_shielded());
+
+    // Serialize the shielded statement into JSON bytes and string
+    let serialized_statement = serde_json::to_vec(&public_statement).expect("serializes");
+    let serialized_statement_str = serde_json::to_string(&public_statement).expect("serializes to str");
 
     // Serialize nullifier set state (recording statement nullifier)
-    let serialized_nullifier_hex = hex::encode(statement.statement_id);
+    let serialized_nullifier_hex = hex::encode(public_statement.statement_id);
 
-    // 1. Assert sender address (20 bytes) NEVER appears in statement or nullifiers
+    // 1. Assert sender address (20 bytes) NEVER appears in shielded statement bytes or string
     assert!(
         !serialized_statement
             .windows(20)
-            .any(|w| w == eth_sender_bytes),
-        "Ethereum sender address MUST NOT appear in emitted statement event"
+            .any(|w| w == sender),
+        "Ethereum sender address bytes MUST NOT appear in emitted statement event"
+    );
+    let sender_hex = hex::encode(sender);
+    assert!(
+        !serialized_statement_str.to_lowercase().contains(&sender_hex.to_lowercase()),
+        "Ethereum sender address hex MUST NOT appear in emitted statement JSON"
+    );
+    assert!(
+        !serialized_statement_str.contains(&format!("{:?}", sender)),
+        "Ethereum sender address array MUST NOT appear in emitted statement JSON"
     );
 
-    // 2. Assert contract address (20 bytes) NEVER appears in statement or nullifiers
+    // 2. Assert contract address (20 bytes) NEVER appears in shielded statement bytes or string
     assert!(
         !serialized_statement
             .windows(20)
-            .any(|w| w == eth_contract_bytes),
-        "Ethereum contract address MUST NOT appear in emitted statement event"
+            .any(|w| w == token_contract),
+        "Ethereum contract address bytes MUST NOT appear in emitted statement event"
+    );
+    let contract_hex = hex::encode(token_contract);
+    assert!(
+        !serialized_statement_str.to_lowercase().contains(&contract_hex.to_lowercase()),
+        "Ethereum contract address hex MUST NOT appear in emitted statement JSON"
+    );
+    assert!(
+        !serialized_statement_str.contains(&format!("{:?}", token_contract)),
+        "Ethereum contract address array MUST NOT appear in emitted statement JSON"
     );
 
-    // 3. Assert unshielded private balance NEVER appears in statement (both BE and LE encodings)
+    // 3. Assert recipient (32 bytes) NEVER appears in shielded statement bytes or string
+    assert!(
+        !serialized_statement
+            .windows(32)
+            .any(|w| w == recipient),
+        "Recipient bytes MUST NOT appear in emitted statement event"
+    );
+    let recipient_hex = hex::encode(recipient);
+    assert!(
+        !serialized_statement_str.to_lowercase().contains(&recipient_hex.to_lowercase()),
+        "Recipient hex MUST NOT appear in emitted statement JSON"
+    );
+
+    // 4. Assert unshielded private balance NEVER appears in statement (both BE and LE encodings)
     assert!(
         !serialized_statement
             .windows(8)
@@ -390,12 +451,11 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
         "Private balance bytes MUST NOT appear in emitted statement event"
     );
 
-    // 4. Assert nullifier hex does NOT contain sender or contract hex substrings
-    let sender_hex = hex::encode(eth_sender_bytes);
-    let contract_hex = hex::encode(eth_contract_bytes);
+    // 5. Assert nullifier hex does NOT contain sender, contract, or recipient hex substrings
     assert!(!serialized_nullifier_hex.contains(&sender_hex));
     assert!(!serialized_nullifier_hex.contains(&contract_hex));
+    assert!(!serialized_nullifier_hex.contains(&recipient_hex));
 
-    // 5. Assert the only identifiers retained in consumer state are the 32-byte nullifier hash
+    // 6. Assert the only identifiers retained in consumer state are the 32-byte nullifier hash
     assert!(nullifiers.is_used(&statement.statement_id));
 }
