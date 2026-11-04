@@ -148,7 +148,7 @@ pub fn derive_nullifier_pda(program_id: &[u8; 32], statement_id: &[u8; 32]) -> [
 
 /// Persistent nullifier store mapping verified statement IDs to spent state on LEZ.
 /// On LEZ runtime, each nullifier maps to a distinct PDA account per statement_id.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct NullifierSet {
     used: HashMap<[u8; 32], bool>,
 }
