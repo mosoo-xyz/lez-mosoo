@@ -117,7 +117,7 @@ pub fn derive_ether_nullifier_pda(program_id: &[u8; 32], statement_id: &[u8; 32]
 }
 
 /// Persistent nullifier store mapping verified statement IDs to spent state on LEZ.
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Clone, Debug, PartialEq, Eq)]
 pub struct EtherNullifierSet {
     used: HashMap<[u8; 32], bool>,
 }

@@ -10,12 +10,23 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 
 ---
 
-## Quickstart
+## Canonical Test Inventory & Verification
+
+The Mosoo test suite contains **332 automated tests** (316 Rust tests across 13 test binaries + 3 doc-tests, plus 16 Foundry EVM tests). All tests pass with 0 failures and 0 warnings.
+For an exhaustive, canonical breakdown of every test file, unique counts, sub-category mappings (adversarial, hardening regressions, light-client, bridge), and reproduction steps, see [`docs/TEST_INVENTORY.md`](docs/TEST_INVENTORY.md).
+
+## Quickstart & Environment Verification
+
+Verification evidence is partitioned into four distinct operational environments:
+1. **Public LEZ v0.3.1 Network**: Verified block production, sequencer RPC, and account structures (`scripts/verify-onchain.py`).
+2. **Ethereum Sepolia Testnet**: Deployed canonical `MosooLocker` contract at [`0x74625D146B8d9413F3c3976B323d94A739be7856`](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856).
+3. **Offline LEZ v0.4 Sequencer Harness**: Reproducible local environment simulating LEZ v0.4 containerized sequencer, 10M gas limit, and 3-tx BLS split.
+4. **Public LEZ v0.4 Network**: Scheduled for milestone deployment upon official Logos LEZ v0.4 public testnet release (never claimed as currently deployed).
 
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 316 Rust workspace tests across 16 test binaries (0 failing, 0 warnings)
+# 1. Run all 316 Rust workspace tests across 13 test suites + doc-tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the Foundry Solidity test suite (16 passing tests, 332 total automated tests)
@@ -106,21 +117,23 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Trust Assumptions & Threat Model (`docs/TRUST_ASSUMPTIONS.md`)**: Specification of checkpoint provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness boundaries, privacy limitations, and reorganization failure conditions.
 - **Evaluation of Prior Art & Audited Light Clients (`docs/decisions/003-evaluation-of-helios-and-prior-art.md`)**: Architectural assessment of `helios` (a16z), `revm-helios`, `spl-helios`, and `r0vm-helios` (Boundless), delineating reused Altair SSZ primitives versus independent 3-Tx split innovation, and audit surface impact.
 
-### Subsystem Verification Status
+### Subsystem Verification Status (RFP-021 Alignment)
 
-| Component / Subsystem | Status | Verification Mode |
+| Component / Subsystem | Status | Verification Evidence / Roadmap |
 | :--- | :---: | :--- |
-| **Core Light Client (BLS12-381 / SSZ / MPT)** | Spec-Compliant (188 mosoo-core tests pass) | Offline Rust unit, integration & Criterion benchmarks |
-| **Full Protocol Test Suite** | 332 / 332 Tests Passing | Full workspace test suite (316 Rust + 16 Foundry EVM) |
-| **3-Transaction BLS Update Pipeline** | Verified (< 10M gas/tx) | Standalone LEZ v0.4 Sequencer Harness |
-| **Dual Reference Consumers (ERC-20 & Native ETH)** | Implemented & Hardened | In-memory CPI invocation & nullifier sets |
-| **Adversarial Invariant Hardening** | 42 Mutation Attacks Rejected | Deterministic mutation test suite (`mosoo-core/tests/adversarial_mutation_tests.rs`) |
-| **Security Hardening Regression Suite** | 58 Regression Tests Passing | Test suite (`tests/audit_oct26_hardening_tests.rs`) |
-| **Execution Manifest & Verification Script** | Verified | Offline verification runner (`scripts/verify-evidence.py`) |
-| **Public LEZ Testnet & Two-Way Settlement** | Live on Testnet & Sepolia | Live RPC queries (`scripts/verify-onchain.py`) & bridge pipeline (`scripts/testnet-two-way-bridge.py --mode live`) |
-| **Logos Module Packaging & SPEL Pipeline** | Configured | CI automation (`.github/workflows/logos-modules-release.yml`) |
-| **Logos Ethereum Core Proxy Integration** | Functional Prototype | Verified proxy routing (`--logos-ethereum-core-rpc`) |
-| **Consensus Daemon Service** | Functional Prototype | Daemon runner with randomized jitter and RPC failover |
+| **Core Light Client (BLS12-381 / SSZ / MPT)** | Complete (Offline Verified) | 188 `mosoo-core` tests passing; offline Rust unit, integration & Criterion benchmarks |
+| **Full Protocol Test Suite** | 332 / 332 Tests Passing | Canonical inventory documented in [`docs/TEST_INVENTORY.md`](docs/TEST_INVENTORY.md) (316 Rust + 16 Foundry EVM) |
+| **3-Transaction BLS Update Pipeline** | Complete (Offline Verified) | Verified (< 10M gas/tx) in standalone LEZ v0.4 sequencer harness; 3 transactions (5.38M, 4.18M, 3.74M gas) |
+| **Dual Reference Consumers (ERC-20 & Native ETH)** | Partially Complete | In-memory CPI invocation & nullifier sets verified (81 tests); public LEZ v0.4 on-chain deployment planned in M4 |
+| **Composite Predicates (`And`, `Or`, `Not`)** | Partially Complete | Basic predicates (`AtLeast`, `Equal`, `WithinRange`) complete; composite boolean tree scheduled for M2 |
+| **Settlement Privacy & State Diffs (F#8)** | Partially Complete | 32-byte Statement ID state footprint verified; comprehensive state/event diff & unlinkability test suite in progress |
+| **Adversarial Invariant Hardening** | Complete (Offline Verified) | 42 mutation attack scenarios rejected in 50 tests (`mosoo-core/tests/adversarial_mutation_tests.rs`) |
+| **Security Hardening Regression Suite** | Complete (Offline Verified) | 58 regression tests passing (`mosoo-core/tests/audit_oct26_hardening_tests.rs`) |
+| **Logos Ethereum Core Proxy Integration** | Partially Complete (Functional Prototype) | 3 verified proxy routing paths implemented in daemon & CLI; production hardening & failover in M3 |
+| **Consensus Daemon Service** | Partially Complete (Functional Prototype) | Relayer daemon with randomized jitter & RPC retry implemented; 72-hour soak & dual-relayer redundancy in M3 |
+| **CLI Workflows & Dry-Run Parity** | Partially Complete | All 4 RFP workflows supported (`attest`, `dry-run`, `submit-update`, `config`); typed error parity suite in M1 |
+| **Two-Way Bridge (Outbound Settlement)** | Experimental Research Prototype | Secondary experimental component; explicitly decoupled from primary RFP-021 inbound acceptance |
+| **External Security Audit** | Partially Complete | Internal security review and 58 regression tests complete; independent 3rd-party audit pending Logos contracting |
 
 ### Roadmap
 
@@ -165,6 +178,21 @@ Once a `HeaderRecord` is committed, consuming contracts request state proofs via
 Detailed cycle breakdowns, hardware profiles, and library comparisons (`blst` vs `arkworks` vs `substrate-bls12-381`) are documented in [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md).
 
 ---
+
+## Scope Separation: Inbound Attestation vs Experimental Outbound Bridge
+
+> [!IMPORTANT]
+> **RFP-021 Primary Scope:** The primary deliverable of this grant is **Inbound Ethereum State Attestation for LEZ**: verifying Ethereum consensus updates, state roots, and account/storage/receipt inclusion proofs inside the LEZ zkVM guest context.
+> **Experimental Secondary Scope:** The Two-Way Cross-Chain Bridge (`contracts/MosooLocker.sol`, `two_way_bridge_tests.rs`) is an **experimental research prototype** designed to explore reverse-direction (LEZ-to-Ethereum) settlement via an attester committee and timelocked guardian. It is strictly optional and explicitly decoupled from RFP-021 milestone evaluation and grant acceptance.
+
+## Native ETH & ERC-20 Deposit Binding Requirements
+
+For both ERC-20 token transfers and native ETH deposits, consuming applications MUST enforce strict cryptographic and contextual binding to prevent fabricated claim attacks:
+- **Canonical Locker Binding**: Deposits must originate from the authentic, verified `MosooLocker` contract address (e.g. `0x74625D146B8d9413F3c3976B323d94A739be7856` on Sepolia). Claims referencing arbitrary emitter contracts are rejected.
+- **Value & Semantics Binding**: The verified value must match the exact transferred wei or token amount (converted via safe U256-to-u128 primitives).
+- **Sender & Recipient Binding**: Event logs must strictly bind the Ethereum depositor address and the destination LEZ account public key.
+- **Nullifier Replay Protection**: Each deposit emits a deterministic `statement_id`. Upon claim, this 32-byte identifier is stored in the consumer's persistent Nullifier PDA. Replayed claims revert immediately with `AlreadyClaimed`.
+- **Atomic Revert**: If any inclusion proof, locker address check, or predicate condition fails, the entire transaction reverts fail-closed with zero state modification.
 
 ## Recommended Consumer Pattern
 
