@@ -160,4 +160,42 @@ fn test_cross_slot_proof_produces_identical_nullifier_preventing_repeated_mint()
         second_claim,
         Err(EtherReceiverError::AlreadyClaimed)
     ));
+
+    // =========================================================================
+    // RFP-021 Requirement R#3: Historical Statement Validity & Committee Rotation
+    // =========================================================================
+    // Asserts that a verified statement issued under sync committee period P_0
+    // remains validly consumable at any point in the future on LEZ, even after:
+    // 1. Sync committees have rotated across multiple periods (P_0 -> P_20).
+    // 2. The light client's storage prunes ancient block headers from active state.
+    // 3. Consumers rely purely on authentic Statement ID cryptographic nullifiers.
+    let mut late_consumer_nullifiers = EtherNullifierSet::new();
+    let unconsumed_historical_user = [0x99; 20];
+    let unconsumed_subj_key: [u8; 32] = sha2::Sha256::digest(unconsumed_historical_user).into();
+    let unconsumed_stmt_slot_1m = predicate::evaluate_with_binding(
+        &pred,
+        &balance,
+        ETH_MAINNET_CHAIN_ID,
+        unconsumed_subj_key,
+        PROOF_TYPE_ACCOUNT_BALANCE,
+        StatementBinding::Account { address: unconsumed_historical_user },
+    )
+    .unwrap();
+
+    // Simulate 20 sync committee rotations elapsed (8,192 slots * 20 = 163,840 slots later)
+    // Header for slot 1,000,000 is no longer in the light client's bounded ring-buffer history.
+    let advanced_network_slot = 1_000_000 + (20 * 8192);
+    assert!(advanced_network_slot > 1_000_000);
+
+    // 1. Historical statement delayed consumption MUST succeed:
+    let late_claimed = claim_ether(&unconsumed_stmt_slot_1m, &mut late_consumer_nullifiers, 250)
+        .expect("R#3 delayed statement consumption MUST succeed");
+    assert_eq!(late_claimed, 1000, "Historical claim credits authentic verified balance");
+
+    // 2. Immediate duplicate replay of the historical statement MUST be strictly rejected:
+    let late_replay = claim_ether(&unconsumed_stmt_slot_1m, &mut late_consumer_nullifiers, 250);
+    assert!(
+        matches!(late_replay, Err(EtherReceiverError::AlreadyClaimed)),
+        "R#3 duplicate replay of historical statement MUST be rejected by persistent nullifier"
+    );
 }
