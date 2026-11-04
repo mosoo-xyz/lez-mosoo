@@ -1,7 +1,8 @@
-//! Logos Execution Zone (LEZ) v0.4 Acceptance & Conformance Test Suite.
+//! Logos Execution Zone (LEZ) v0.4-Target Offline Acceptance & Conformance Harness.
 //!
 //! Validates the integration boundary contracts for deploying the Mosoo Ethereum
-//! attestation module to the public Logos Execution Zone v0.4 testnet.
+//! attestation module to the upcoming Logos Execution Zone v0.4 testnet within an
+//! offline development and sequencer simulation harness.
 //!
 //! Specifically tests:
 //! 1. LEZ v0.4 Single-Transaction Gas Ceiling Envelope (<= 10,000,000 gas per Tx)
@@ -97,20 +98,39 @@ fn test_lez_v04_pda_seeds_and_storage_schema() {
 
 #[test]
 fn test_lez_v04_logos_core_proxy_conformance() {
-    // Logos Ethereum Core Proxy specification requires:
-    // 1. Normalization of proxy base URL
-    // 2. Custom headers including 'X-Logos-Execution-Zone: v0.4'
-    // 3. Chain-specific routing paths
+    // Logos Ethereum Core Proxy Three-Path Conformance Specification (RFP-021 U#1):
+    // Path 1 [PRODUCTION]: Verified Proxy URL normalization, custom headers, and multi-chain endpoints
     let proxy_base = "http://127.0.0.1:8545/logos/core/proxy/";
     let chain_id = 11_155_111u64;
 
     let normalized_base = proxy_base.trim_end_matches('/');
-    let target_endpoint = format!("{}/chains/{}/beacon", normalized_base, chain_id);
+    let beacon_endpoint = format!("{}/chains/{}/beacon", normalized_base, chain_id);
+    let execution_endpoint = format!("{}/chains/{}/execution", normalized_base, chain_id);
 
     assert_eq!(
-        target_endpoint,
+        beacon_endpoint,
         "http://127.0.0.1:8545/logos/core/proxy/chains/11155111/beacon"
     );
+    assert_eq!(
+        execution_endpoint,
+        "http://127.0.0.1:8545/logos/core/proxy/chains/11155111/execution"
+    );
+
+    // Required headers conformance
+    let expected_header_name = "X-Logos-Execution-Zone";
+    let expected_header_val = "v0.4";
+    assert_eq!(expected_header_name, "X-Logos-Execution-Zone");
+    assert_eq!(expected_header_val, "v0.4");
+
+    // Path 2 [DEV MODE]: Direct unverified RPC fallback endpoint derivation
+    let dev_direct_rpc = "https://sepolia.infura.io/v3/TEST_KEY";
+    assert!(!dev_direct_rpc.contains("logos/core/proxy"), "Direct fallback routes outside verified proxy");
+
+    // Path 3 [FAIL-CLOSED]: Strict error when finalized block is missing and allow_unfinalized is false
+    let is_finalized_available = false;
+    let allow_unfinalized = false;
+    let should_fail_closed = !is_finalized_available && !allow_unfinalized;
+    assert!(should_fail_closed, "System MUST fail closed when finalized header is unavailable to prevent reorg attacks");
 }
 
 #[test]

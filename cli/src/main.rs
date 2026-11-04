@@ -83,6 +83,12 @@ enum Commands {
         /// Perform local cryptographic validation without submitting to LEZ
         #[arg(long)]
         dry_run: bool,
+        /// Privacy mode for emitted statement: "public", "address-private", or "confidential" (RFP-021 F#8)
+        #[arg(long, default_value = "public")]
+        privacy_mode: String,
+        /// Optional 32-byte secret salt (hex 0x...) for privacy-preserving blinding commitments
+        #[arg(long)]
+        privacy_salt: Option<String>,
     },
     /// Offline local simulation of BLS light client update and MPT proof verification (RFP-021)
     DryRun {
@@ -113,6 +119,9 @@ enum Commands {
         /// Filter config display by chain ID (1 = Mainnet, 11155111 = Sepolia, 17000 = Holesky)
         #[arg(long, default_value = "1")]
         chain_id: u64,
+        /// Optional light-client instance ID or PDA (hex 0x...) to inspect on-chain instance configuration
+        #[arg(long)]
+        instance: Option<String>,
     },
     /// Independently verify a weak-subjectivity bootstrap checkpoint against consensus rules and public beacon data (RFP-021)
     VerifyCheckpoint {
@@ -178,6 +187,8 @@ fn main() -> anyhow::Result<()> {
             rpc_url,
             logos_core_rpc,
             dry_run,
+            privacy_mode,
+            privacy_salt,
         } => run_attest(AttestArgs {
             chain_id,
             address_str: &address,
@@ -192,6 +203,8 @@ fn main() -> anyhow::Result<()> {
             rpc_url: rpc_url.as_deref(),
             logos_core_rpc: logos_core_rpc.as_deref(),
             dry_run,
+            privacy_mode: &privacy_mode,
+            privacy_salt: privacy_salt.as_deref(),
         }),
         Commands::DryRun {
             chain_id,
@@ -208,7 +221,7 @@ fn main() -> anyhow::Result<()> {
             &lez_rpc,
             private_key.as_deref(),
         ),
-        Commands::Config { chain_id } => run_config(chain_id),
+        Commands::Config { chain_id, instance } => run_config(chain_id, instance.as_deref()),
         Commands::VerifyCheckpoint {
             chain_id,
             bootstrap_file,
@@ -820,6 +833,8 @@ struct AttestArgs<'a> {
     pub rpc_url: Option<&'a str>,
     pub logos_core_rpc: Option<&'a str>,
     pub dry_run: bool,
+    pub privacy_mode: &'a str,
+    pub privacy_salt: Option<&'a str>,
 }
 
 fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
@@ -1581,6 +1596,33 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     let header_pda = header.pda_address();
     store.insert_program_account(header_pda, serde_json::to_vec(&header)?, MOSOO_PROGRAM_ID);
 
+    let p_mode = match args.privacy_mode.to_lowercase().as_str() {
+        "address-private" | "address_private" => Some(mosoo_core::types::PrivacyMode::AddressPrivate),
+        "confidential" => Some(mosoo_core::types::PrivacyMode::Confidential),
+        _ => Some(mosoo_core::types::PrivacyMode::Public),
+    };
+    let p_salt: Option<[u8; 32]> = if let Some(salt_str) = args.privacy_salt {
+        let clean = salt_str.trim_start_matches("0x");
+        if let Ok(bytes) = hex::decode(clean) {
+            if bytes.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&bytes);
+                Some(arr)
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else if matches!(p_mode, Some(mosoo_core::types::PrivacyMode::AddressPrivate | mosoo_core::types::PrivacyMode::Confidential)) {
+        let mut hasher = sha2::Sha256::new();
+        hasher.update(b"mosoo_cli_blinding_salt:");
+        hasher.update(args.slot.to_le_bytes());
+        Some(hasher.finalize().into())
+    } else {
+        None
+    };
+
     let attest_args = mosoo_core::verifier::AttestStateArgs {
         instance: instance.clone(),
         header: header.clone(),
@@ -1588,9 +1630,9 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         historical_execution_proof: None,
         proof,
         predicate,
-        privacy_salt: None,
+        privacy_salt: p_salt,
         trusted_head_slot: Some(args.slot.max(bootstrap_slot)),
-        privacy_mode: None,
+        privacy_mode: p_mode,
     };
 
     println!(
@@ -2030,7 +2072,7 @@ fn run_submit_update(
     Ok(())
 }
 
-fn run_config(chain_id: u64) -> anyhow::Result<()> {
+fn run_config(chain_id: u64, instance_query: Option<&str>) -> anyhow::Result<()> {
     let (name, finality_slot, electra_slot, fulu_slot, gloas_slot) = match chain_id {
         1 => ("Ethereum Mainnet", 15_433_760, 12_810_000, 15_200_000, 0),
         11_155_111 => (
@@ -2075,6 +2117,22 @@ fn run_config(chain_id: u64) -> anyhow::Result<()> {
     println!("  Max Gas Per Transaction:    10,000,000 gas");
     println!("  Verification Split:         3 Transactions (Begin -> Miller -> Finish)");
     println!();
+
+    if let Some(query) = instance_query {
+        println!("[1;33m[*] Instance Query & On-Chain Configuration:[0m");
+        println!("  Queried Target:             {}", query);
+        let canonical_cfg = TrustedBridgeConfig::canonical();
+        if let Some(canonical_inst) = canonical_cfg.trusted_instances.get(&chain_id) {
+            println!("  Canonical Instance ID:      0x{}", hex::encode(canonical_inst));
+            if query.trim_start_matches("0x").eq_ignore_ascii_case(&hex::encode(canonical_inst)) {
+                println!("  Authentication Status:      [1;32mAUTHENTIC & PINNED (Approved in TrustedBridgeConfig)[0m");
+            } else {
+                println!("  Authentication Status:      [1;33mUNPINNED / CUSTOM INSTANCE (Requires Registration)[0m");
+            }
+        }
+        println!();
+    }
+
     Ok(())
 }
 
@@ -2350,11 +2408,26 @@ mod tests {
             Commands::SubmitUpdate { chain_id: 1, .. }
         ));
 
-        let config_args = vec!["mosoo", "config", "--chain-id", "1"];
+        let config_args = vec!["mosoo", "config", "--chain-id", "1", "--instance", "0x4242424242424242424242424242424242424242424242424242424242424242"];
         let config_cli = Cli::try_parse_from(config_args).expect("Parse config");
         assert!(matches!(
             config_cli.command,
-            Commands::Config { chain_id: 1 }
+            Commands::Config { chain_id: 1, instance: Some(ref s) } if s == "0x4242424242424242424242424242424242424242424242424242424242424242"
+        ));
+
+        let privacy_args = vec![
+            "mosoo", "attest", "--chain-id", "1", "--privacy-mode", "address-private",
+            "--privacy-salt", "0x0102030405060708010203040506070801020304050607080102030405060708",
+            "--dry-run"
+        ];
+        let privacy_cli = Cli::try_parse_from(privacy_args).expect("Parse privacy attest");
+        assert!(matches!(
+            privacy_cli.command,
+            Commands::Attest {
+                ref privacy_mode,
+                privacy_salt: Some(ref s),
+                ..
+            } if privacy_mode == "address-private" && s.starts_with("0x0102")
         ));
 
         let verify_args = vec![
@@ -2401,10 +2474,12 @@ mod tests {
             rpc_url: None,
             logos_core_rpc: None,
             dry_run: true,
+            privacy_mode: "public",
+            privacy_salt: None,
         };
         assert!(run_attest(storage_args).is_ok());
 
-        // Deposit receipt target
+        // Deposit receipt target with address-private shielding (RFP-021 F#8)
         let deposit_args = AttestArgs {
             chain_id: 1,
             address_str: "0x4299900000000000000000000000000000000001",
@@ -2419,6 +2494,8 @@ mod tests {
             rpc_url: None,
             logos_core_rpc: None,
             dry_run: true,
+            privacy_mode: "address-private",
+            privacy_salt: Some("0x1122334455667788112233445566778811223344556677881122334455667788"),
         };
         assert!(run_attest(deposit_args).is_ok());
 
@@ -2437,6 +2514,8 @@ mod tests {
             rpc_url: None,
             logos_core_rpc: None,
             dry_run: true,
+            privacy_mode: "confidential",
+            privacy_salt: None,
         };
         assert!(run_attest(erc20_args).is_ok());
     }
