@@ -91,9 +91,16 @@ Regressions written specifically to ensure vulnerability fixes remain permanentl
 - Unsigned deposit locker address rejection.
 - Zero-address recipient and sender rejection.
 
-### C. 74 Verified Statement (VS) Relevant Tests
-The "74 VS-relevant tests" cited in architectural documents refer to the cross-cutting subset of tests that explicitly construct, sign, derive, verify, or consume a `VerifiedStatement` struct.
-This subset is distributed across:
+### C. 74 VerifiedStatement Consumer-Integration Tests (Data Structure Coverage)
+
+> [!NOTE]
+> **Disambiguation: Consumer-Integration vs Verification-Security (VS#1–VS#6):**
+> Architectural documentation references two distinct subsets of 74 tests:
+> 1. **74 VerifiedStatement Consumer-Integration Tests (documented here):** The cross-cutting subset of tests that explicitly construct, sign, derive, verify, or consume a `VerifiedStatement` struct across consumer PDAs, deterministic nullifiers, ERC-20 mint/burn, and native ETH claims.
+> 2. **74 Verification-Security (VS#1–VS#6) Requirement Test Cases:** The security and boundary test scenarios evaluating fork reorgs, invalid BLS signatures, unfinalized headers, and replay protection across `adversarial_mutation_tests.rs` and `audit_oct26_hardening_tests.rs`.
+> Both are distinct functional classifications of tests within the canonical 316 workspace tests and do NOT add to the total count.
+
+The 74 VerifiedStatement consumer-integration tests are distributed across:
 - `consumers/erc20-receiver/src/lib.rs` (32 tests)
 - `consumers/ether-receiver/src/lib.rs` (28 tests)
 - `mosoo-core/tests/privacy_and_correlation_tests.rs` (5 tests)
