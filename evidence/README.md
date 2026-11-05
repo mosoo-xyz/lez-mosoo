@@ -31,9 +31,12 @@ This directory contains deterministic execution manifests, gas reports, and stat
 You can verify the entire manifest, gas limits, and cryptographic transaction hashes with:
 
 ```bash
-# Python verification script
+# Python verification script (verifies 7 applied transactions and 5 adversarial rejections)
 python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
 # On Windows: py -3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
+
+# Manifest mutation verification (validates verifier fail-closed behavior across 7 mutation attack scenarios)
+python3 scripts/test-evidence-mutation.py
 
 # Live sequencer test harness (recomputes all hashes from scratch)
 cargo test --test sequencer_e2e_tests -- --nocapture
