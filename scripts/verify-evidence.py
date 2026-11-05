@@ -130,15 +130,36 @@ def main():
     test_output = proc.stdout
     verification_failed = False
 
-    # 4. Strict Hash Reproduction Check (Applied Transactions)
+    # 4. Strict Hash & Action Label Reproduction Check (Applied Transactions)
     print("\n--- [Step 3/3] Strict Transaction Hash & Invariant Rejection Verification ---")
     print("Verifying applied transaction hashes against live state machine stdout:")
+    label_patterns = {
+        "initialize": "(Initialize)",
+        "begin_update": "(BeginUpdate)",
+        "miller_update": "(MillerUpdate)",
+        "finish_update": "(FinishUpdate)",
+        "attest_state": "(AttestState)",
+        "erc20_claim": "(ERC20 Claim)",
+        "ether_claim": "(Ether Claim)",
+    }
+
     for r in applied_records:
+        pattern = label_patterns.get(r["label"])
+        if not pattern:
+            print(f"  [FAIL] Unknown or unauthorized transaction action label: '{r['label']}'", file=sys.stderr)
+            verification_failed = True
+            continue
+
         if r["tx_hash"].startswith("0x"):
-            if r["tx_hash"] in test_output:
+            found_match = False
+            for line in test_output.splitlines():
+                if pattern in line and r["tx_hash"] in line:
+                    found_match = True
+                    break
+            if found_match:
                 print(f"  ok   Hash reproduced: {r['label']:<16} -> {r['tx_hash'][:18]}...")
             else:
-                print(f"  [FAIL] Hash {r['tx_hash']} for {r['label']} NOT reproduced in test output!", file=sys.stderr)
+                print(f"  [FAIL] Action '{r['label']}' with hash {r['tx_hash']} NOT verified in test output!", file=sys.stderr)
                 verification_failed = True
 
     # 5. Strict Adversarial Invariant Rejection Check (Refused Transactions)
