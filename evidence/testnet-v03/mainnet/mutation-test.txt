@@ -1,0 +1,18 @@
+================================================================================
+Mosoo Verifier Mutation Testing Suite (RFP-021 Evidence Integrity)
+Verifying that the evidence verifier rejects 7 deliberate manifest corruptions
+================================================================================
+[+] Baseline Verification: Canonical deployment passed with 0 errors.
+
+  ok   [1/7] Mutation 1: Fake Transaction Hash                            -> CAUGHT (Verifier exited 1)
+  ok   [2/7] Mutation 2: Refused -> Applied Flip (Tampered Verdict)       -> CAUGHT (Verifier exited 1)
+  ok   [3/7] Mutation 3: Applied -> Refused Flip                          -> CAUGHT (Verifier exited 1)
+  ok   [4/7] Mutation 4: Gas Limit Cap Violation (> 10,000,000 gas)       -> CAUGHT (Verifier exited 1)
+  ok   [5/7] Mutation 5: Unknown Action Label Injection                   -> CAUGHT (Verifier exited 1)
+  ok   [6/7] Mutation 6: Tampered Adversarial Rejection Reason            -> CAUGHT (Verifier exited 1)
+  ok   [7/7] Mutation 7: Non-Existent Execution Proof / ImageID Tampering -> CAUGHT (Verifier exited 1)
+
+================================================================================
+[+] Mutation Test Result: 7 / 7 deliberate corruptions caught by verifier.
+[+] Status: PASS (100% Tamper Detection Rate)
+================================================================================

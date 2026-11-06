@@ -19,6 +19,12 @@
 .env.local
 *.key
 keypair.json
+scripts/donor_wallet*.json
+scripts/wallet_real.json
+scripts/deployment_state.json
+scripts/lifecycle_state.json
+scripts/*.bin
+contracts/deployments/*wallet*.json
 
 # OS
 .DS_Store
