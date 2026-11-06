@@ -204,11 +204,6 @@ pub fn dispatch_guest_instruction(
         #[cfg(not(any(test, feature = "test-harness")))]
         GuestInstruction::AttestState(_) => Err(MosooError::UnauthenticatedInstance),
 
-        #[cfg(not(any(test, feature = "test-harness")))]
-        GuestInstruction::AttestStateAuthenticated { .. } => {
-            Err(MosooError::UnauthenticatedInstance)
-        }
-        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::AttestStateAuthenticated {
             expected_instance_pda,
             expected_header_pda,
@@ -239,11 +234,6 @@ pub fn dispatch_guest_instruction(
             }
             handle_attest_state(args)
         }
-        #[cfg(not(any(test, feature = "test-harness")))]
-        GuestInstruction::FinishUpdateAuthenticated { .. } => {
-            Err(MosooError::UnauthenticatedInstance)
-        }
-        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::FinishUpdateAuthenticated {
             expected_instance_pda,
             expected_job_pda,
@@ -285,11 +275,6 @@ pub fn dispatch_guest_instruction(
             }
             handle_finish_update(args)
         }
-        #[cfg(not(any(test, feature = "test-harness")))]
-        GuestInstruction::BeginUpdateAuthenticated { .. } => {
-            Err(MosooError::UnauthenticatedInstance)
-        }
-        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::BeginUpdateAuthenticated {
             expected_instance_pda,
             args,
@@ -314,11 +299,6 @@ pub fn dispatch_guest_instruction(
             })?;
             handle_begin_update(args)
         }
-        #[cfg(not(any(test, feature = "test-harness")))]
-        GuestInstruction::MillerUpdateAuthenticated { .. } => {
-            Err(MosooError::UnauthenticatedInstance)
-        }
-        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::MillerUpdateAuthenticated {
             expected_instance_pda,
             expected_job_pda,
@@ -357,13 +337,10 @@ pub fn dispatch_guest_instruction(
             }
             handle_miller_update(args)
         }
-        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::StoreBacked {
             mut store,
             instruction,
         } => dispatch_store_instruction(&mut store, *instruction),
-        #[cfg(not(any(test, feature = "test-harness")))]
-        GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
 
         GuestInstruction::RegisterNetworkCheckpoint { .. }
         | GuestInstruction::RegisterTrustedInstance { .. }

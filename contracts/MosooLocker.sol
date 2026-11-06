@@ -247,6 +247,7 @@ contract MosooLocker {
     error GuardianMustNotBeOwner();
     error LegacyRoutesDisabled();
     error LegacyRoutesArePermanentlyRetired();
+    error AmountExceedsUint192();
 
     // --- Modifiers ---
 
@@ -1117,6 +1118,7 @@ contract MosooLocker {
             _ethWithdrawalHead = 0;
         }
 
+        if (amount > type(uint192).max) revert AmountExceedsUint192();
         _rollingWithdrawnETH = rolling + amount;
         _ethWithdrawals.push(WithdrawalRecord({
             timestamp: uint64(block.timestamp),
@@ -1169,6 +1171,7 @@ contract MosooLocker {
             _erc20WithdrawalHead[token] = 0;
         }
 
+        if (amount > type(uint192).max) revert AmountExceedsUint192();
         _rollingWithdrawnERC20[token] = rolling + amount;
         history.push(WithdrawalRecord({
             timestamp: uint64(block.timestamp),
