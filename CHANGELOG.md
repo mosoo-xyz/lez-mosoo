@@ -17,7 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Refactored consensus trust assumptions (`docs/TRUST_ASSUMPTIONS.md`), cleanly delineating 256-epoch sync committee rotation from dynamic PoS weak-subjectivity and Mosoo dual operational/safety windows.
-- Synchronized authoritative test suite counts across documentation and execution traces: 332 total tests passing (316 Rust workspace tests + 16 Foundry EVM tests).
+- Synchronized authoritative test suite counts across documentation and execution traces: 336 total tests passing (320 Rust workspace tests + 16 Foundry EVM tests).
 - Replaced absolute security terminology with rigorous cryptographic hardness and zkVM soundness statements.
 
 ## [0.2.0] - 2026-10-28

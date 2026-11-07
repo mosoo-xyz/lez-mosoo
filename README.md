@@ -26,7 +26,7 @@ Verification evidence is partitioned into four distinct operational environments
 ```console
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# 1. Run all 318 Rust workspace tests across 13 test suites + doc-tests (0 failing, 0 warnings)
+# 1. Run all 320 Rust workspace tests across 13 test suites + doc-tests (0 failing, 0 warnings)
 cargo test --workspace
 
 # 2. Run the Foundry Solidity test suite (16 passing tests, 336 total automated tests)

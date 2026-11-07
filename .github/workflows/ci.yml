@@ -92,6 +92,15 @@ jobs:
           echo "Committed On-Chain Program ImageID: $EXPECTED_IMAGE_ID"
           test -n "$EXPECTED_IMAGE_ID" || exit 1
 
+          # Verify guest binary integrity against container-generated sha256 (Finding P1 / Build Reproducibility)
+          CONTAINER_SHA256=$(cat target/zkvm-elf/mosoo-guest.sha256 | awk '{print $1}')
+          if [ "$DIGEST" != "$CONTAINER_SHA256" ]; then
+            echo "[-] Error: Built ELF SHA-256 ($DIGEST) does not match exported container hash ($CONTAINER_SHA256)"
+            exit 1
+          fi
+          echo "[+] Verified: zkVM guest binary matched committed container hash ($DIGEST)"
+          echo "[+] Verified: zkVM guest deployment manifest ImageID authenticated ($EXPECTED_IMAGE_ID)
+
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 

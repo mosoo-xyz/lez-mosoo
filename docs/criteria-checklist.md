@@ -84,7 +84,7 @@ Additionally, **Two-Way Bridge & Escrow Security** (`tests/two_way_bridge_tests.
 
 ## 4. Verification Evidence & Test Suite Breakdown
 
-The repository test suite consists of **318 automated Rust tests** (315 unit/integration + 3 doc tests) plus **16 Foundry EVM tests** = **334 total passing tests** with 0 warnings:
+The repository test suite consists of **320 automated Rust tests** (317 unit/integration + 3 doc tests) plus **16 Foundry EVM tests** = **336 total passing tests** with 0 warnings:
 
 | Subsystem / Test Suite | Test File | Test Count | Scope Covered |
 | :--- | :--- | :---: | :--- |
@@ -110,7 +110,7 @@ The repository test suite consists of **318 automated Rust tests** (315 unit/int
 ## 5. Development Roadmap, Security Model & Independent Audit
 
 - **Cryptographic Trust Assumptions & Threat Model**: Formally documented in [`docs/TRUST_ASSUMPTIONS.md`](TRUST_ASSUMPTIONS.md), covering checkpoint bootstrap provenance, 2/3 honest sync committee quorum assumptions, off-chain daemon safety vs liveness roles, zero address leakage and privacy limitations, and deep re-org / partition failure modes.
-- **Core Architecture & Engine (Implemented)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract deployed on Sepolia, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 334 passing tests (318 Rust + 16 Foundry), reproducibility scripts, live testnet pipeline (`evidence/public-testnet-v03/`), and empirical benchmarks.
+- **Core Architecture & Engine (Implemented)**: Complete cryptographic engine, 3-transaction split pipeline, MPT provers, canonical Ethereum `MosooLocker.sol` contract deployed on Sepolia, `mETH` and ERC-20 token and burn ledgers, dual reference consumers with atomic same-transaction verification, 336 passing tests (320 Rust + 16 Foundry), reproducibility scripts, live testnet pipeline (`evidence/public-testnet-v03/`), and empirical benchmarks.
 - **Public LEZ v0.4 Devnet Migration**: Deploy module to Logos Execution Zone public devnet upon v0.4 release and network freeze; track live Sepolia/Mainnet beacon heads; deploy consumer dApps.
 - **Logos Core Module Catalog, SPEL Release & Verified Proxy Integration**: Upstream into the official Logos Core module catalog via `.github/workflows/logos-modules-release.yml` (`logos-modules-release-action`), SPEL IDL compiler integration, and native integration with the canonical Logos Ethereum Core verified consensus proxy (`LOGOS_ETHEREUM_CORE_RPC`).
 - **Daemon Production Hardening & Observability**: Standalone daemon operations, Prometheus telemetry metrics, `/healthz` liveness probes, SIGINT/SIGTERM clean shutdown, automated re-org handling, and multi-RPC weighted failover.

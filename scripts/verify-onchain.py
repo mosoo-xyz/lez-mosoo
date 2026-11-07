@@ -158,6 +158,9 @@ def main():
         base_dir / "scripts" / "lifecycle_state.json",
     ]
     life_file = next((p for p in life_candidates if p.exists()), None)
+    if not life_file:
+        print("\n[-] FATAL ERROR: lifecycle manifest not found! Verification cannot pass without lifecycle traces.")
+        sys.exit(1)
     if life_file:
         life = json.loads(life_file.read_text(encoding='utf-8'))
         for label, step in life.items():

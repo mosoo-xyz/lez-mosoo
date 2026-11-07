@@ -98,7 +98,7 @@ Regressions written specifically to ensure vulnerability fixes remain permanentl
 > Architectural documentation references two distinct subsets of 74 tests:
 > 1. **74 VerifiedStatement Consumer-Integration Tests (documented here):** The cross-cutting subset of tests that explicitly construct, sign, derive, verify, or consume a `VerifiedStatement` struct across consumer PDAs, deterministic nullifiers, ERC-20 mint/burn, and native ETH claims.
 > 2. **74 Verification-Security (VS#1–VS#6) Requirement Test Cases:** The security and boundary test scenarios evaluating fork reorgs, invalid BLS signatures, unfinalized headers, and replay protection across `adversarial_mutation_tests.rs` and `audit_oct26_hardening_tests.rs`.
-> Both are distinct functional classifications of tests within the canonical 316 workspace tests and do NOT add to the total count.
+> Both are distinct functional classifications of tests within the canonical 320 workspace tests and do NOT add to the total count.
 
 The 74 VerifiedStatement consumer-integration tests are distributed across:
 - `consumers/erc20-receiver/src/lib.rs` (32 tests)
@@ -107,13 +107,13 @@ The 74 VerifiedStatement consumer-integration tests are distributed across:
 - `mosoo-core/tests/e2e_consumer_tests.rs` (2 tests)
 - `mosoo-core/tests/sequencer_e2e_tests.rs` (4 tests)
 - `mosoo-core/src/predicate.rs` (3 tests)
-**Total: 74 tests.** They are **already counted** in the table above and do NOT add to the 334 total.
+**Total: 74 tests.** They are **already counted** in the table above and do NOT add to the 336 total.
 
 ---
 
 ## 4. Verification and Reproduction Instructions
 
-### 1. Execute the Entire Rust Test Suite (316 tests)
+### 1. Execute the Entire Rust Test Suite (320 tests)
 ```bash
 cargo test --workspace
 ```
@@ -133,7 +133,7 @@ test result: ok. 4 passed  (sequencer_e2e_tests)
 test result: ok. 22 passed (two_way_bridge_tests)
 test result: ok. 15 passed (mosoo-daemon)
 test result: ok. 3 passed  (doc-tests)
-Total: 316 passed; 0 failed; 0 ignored
+Total: 320 passed; 0 failed; 0 ignored
 ```
 
 ### 2. Execute the Solidity Foundry Suite (16 tests)

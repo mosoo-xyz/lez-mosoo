@@ -20,6 +20,20 @@ All on-chain LEZ deployments and consumer contract verification routines anchor 
 
 ---
 
+### zkVM Guest ImageID Provenance & Network Shard Architecture
+
+The Mosoo light client codebase tracks two distinct, verified ImageIDs for clear architectural reasons:
+1. **Live Testnet v0.3.1 ImageID (`0xad6fbedb983da6b6d75b287da354ce3041905d152d4e576ec318871eddfaa928`):**
+   - Deployed on-chain in Header shard at block 78002 (`evidence/public-testnet-v03/deployment_manifest.json`).
+   - Represents the canonical reference light client guest binary verified across LEZ public testnet segments 0–6 on program ID `DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf`.
+2. **Offline Sequencer Harness v0.4 ImageID (`0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4`):**
+   - Used in offline deterministic test harness (`evidence/sequencer-harness-v04/run.tsv`).
+   - Built with mock predicate verification targets enabled for deterministic local integration test vectors.
+
+Both artifacts are fully reproducible via `docker build -f docker/Dockerfile.guest .`.
+
+---
+
 ## 2. Pinned Toolchain Environment
 
 For byte-for-byte reproducibility across independent reviewers and Logos auditors:

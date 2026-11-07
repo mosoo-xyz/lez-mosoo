@@ -36,12 +36,12 @@ cargo build --workspace --release
 
 ---
 
-## 3. Running the Test Suite (334 Total Tests)
+## 3. Running the Test Suite (336 Total Tests)
 
 Every test executes deterministically from a clean checkout without flaky behavior or network dependencies:
 
 ```bash
-# 1. Run all 316 Rust workspace tests (includes core verifier, 50 adversarial mutation tests, 58 hardening tests)
+# 1. Run all 320 Rust workspace tests (includes core verifier, 50 adversarial mutation tests, 58 hardening tests)
 cargo test --workspace
 
 # 2. Run the 16 Foundry Solidity fuzz and invariant tests
@@ -57,7 +57,7 @@ python scripts/verify-evidence.py
 - **Adversarial Mutation Tests:** 50 tests covering 42 attack vectors (invalid BLS signatures, sub-threshold quorums, non-monotonic slots, tampered MPT proofs).
 - **Security Hardening Tests:** 58 tests validating audit regression invariants.
 - **Foundry Reference Suite:** 16 tests in `MosooLocker.t.sol` testing consumer rate-limiting, timelocks, and guardian veto.
-- **Grand Total Automated Tests:** **334 tests**.
+- **Grand Total Automated Tests:** **336 tests** (320 Rust workspace + 16 Foundry EVM).
 
 ---
 

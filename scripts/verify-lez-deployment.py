@@ -135,7 +135,8 @@ def main():
     ]
     life_file = next((p for p in life_candidates if p.exists()), None)
     if not life_file:
-        print("\nNote: lifecycle manifest not found.")
+        print("\n[-] FATAL ERROR: lifecycle manifest not found! Verification cannot pass without lifecycle traces.")
+        sys.exit(1)
     else:
         print(f"\nLoading lifecycle manifest: {life_file.relative_to(base_dir)}")
         life = json.loads(life_file.read_text(encoding='utf-8'))

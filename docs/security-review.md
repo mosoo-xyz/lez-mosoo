@@ -4,7 +4,7 @@ This document specifies the cryptographic threat model, core protocol invariants
 
 > [!NOTE]
 > **Security & Verification Status:**
-> - **Internal Hardening & Test Suite:** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 334 tests (318 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
+> - **Internal Hardening & Test Suite:** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 336 tests (320 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
 > - **Independent External Audit:** Planned formal third-party security audit engagement prior to mainnet release.
 
 ---
@@ -266,6 +266,20 @@ A formal third-party audit is planned prior to mainnet deployment:
 
 In accordance with our strict dependency auditing policy, CI runs `cargo audit` to monitor known vulnerabilities across the entire dependency graph. Two transitive dependency advisories are actively tracked with cryptographic risk analyses:
 
+```text
+Authoritative Dependency Trees (cargo tree verification):
+$ cargo tree -i crypto-bigint@0.5.5
+crypto-bigint v0.5.5
+└── elliptic-curve v0.13.8
+    ├── alloy-signer v0.4.2 -> alloy -> mosoo-cli, mosoo-daemon
+    └── k256 v0.13.4 -> alloy-primitives -> alloy-trie -> mosoo-core (MPT hashing only)
+
+$ cargo tree -i tracing-subscriber@0.2.25
+tracing-subscriber v0.2.25
+└── ark-relations v0.4.0
+    └── ark-crypto-primitives -> ark-groth16 -> risc0-groth16 -> risc0-zkvm -> mosoo-guest
+```
+
 ### RUSTSEC-2026-0387: `crypto-bigint 0.5.5` (via `alloy` -> `k256` -> `elliptic-curve`)
 - **Vulnerability Summary:** Certain constant-time modular arithmetic operations in older versions of `crypto-bigint` may execute secret-dependent timing branches under specific CPU/compiler optimizations.
 - **Downstream Cryptographic Risk in Mosoo: ZERO.**
@@ -289,7 +303,11 @@ The `MosooLocker.sol` smart contract on Ethereum L1 manages native ETH and ERC-2
 
 ### Initial Bootstrap Configuration vs. Production Multicall
 - **Testnet Bootstrap (1-of-1):** Fresh deployments initialize with `attesterCount = 1` and `requiredQuorum = 1` solely to facilitate automated deterministic bootstrapping and continuous integration on the Sepolia testnet.
-- **Production Governance Pipeline (2-of-3 / 3-of-5):** Prior to accepting public production deposits, the contract owner executes a mandatory 3-step timelocked governance transition:
+- **Commissioning Mode & Production Threshold Graduation:**
+  - `MosooLocker.sol` exposes `isCommissioned()` which checks `attesterCount >= 2 && requiredQuorum >= 2`.
+  - For atomic launch graduation without timelock latency during initial deployment, the owner can call `commissionLocker(address[] additionalAttesters, uint256 initialQuorum)`.
+  - Once `isCommissioned()` evaluates to true, legacy single-attester routes (`unlockETH`, `unlockERC20`) permanently revert with `LegacyRoutesDisabled()`, strictly enforcing multi-attester quorum (`unlockETHWithInstanceAndQuorum`, `unlockERC20WithInstanceAndQuorum`).
+- **Production Governance Pipeline (2-of-3 / 3-of-5):** Alternatively, the contract owner can execute a mandatory 3-step timelocked governance transition:
   1. `proposeAddAttester(newAttester1)` -> wait 48-hour timelock -> `executeAddAttester()`
   2. `proposeAddAttester(newAttester2)` -> wait 48-hour timelock -> `executeAddAttester()`
   3. `proposeQuorum(2)`                 -> wait 48-hour timelock -> `executeQuorum()`

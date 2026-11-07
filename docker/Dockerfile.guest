@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
 
 # Install rzup and RISC0 zkVM toolchain
-RUN curl -L https://risczero.com/install | bash \
+RUN (curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/risc0/risc0/v1.0.5/install | bash || curl --proto '=https' --tlsv1.2 -sSf https://risczero.com/install | bash) \
     && rzup install cargo-risczero 1.0.5 \
     && rzup install cpp
 

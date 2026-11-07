@@ -37,6 +37,9 @@ contract MosooLocker {
     uint256 public attesterCount;
     uint256 public requiredQuorum;
 
+    /// @notice Strict multi-attester threshold requirement for fully commissioned production release (Finding 11)
+    uint256 public constant MIN_PRODUCTION_QUORUM = 2;
+
     address public guardian;
     bool public paused;
 
@@ -239,6 +242,7 @@ contract MosooLocker {
     error InvalidQuorum();
     error DuplicateOrUnorderedAttesterSignature();
     error AttesterAlreadyExists();
+    error AlreadyCommissioned();
     error AttesterNotFound();
     error GovernanceTimelockActive(uint256 currentTime, uint256 unlockTime);
     error NoPendingGovernanceAction();
@@ -266,6 +270,35 @@ contract MosooLocker {
         _status = _ENTERED;
         _;
         _status = _NOT_ENTERED;
+    }
+
+    /// @notice Returns true if the locker has graduated from initial commissioning (attesterCount >= 2 and requiredQuorum >= 2).
+    function isCommissioned() public view returns (bool) {
+        return attesterCount >= MIN_PRODUCTION_QUORUM && requiredQuorum >= MIN_PRODUCTION_QUORUM;
+    }
+
+    /**
+     * @notice Commission locker to production multi-attester threshold (>= 2 attesters, quorum >= 2).
+     * @dev Allows initial bootstrap from 1-of-1 commissioning mode without 2-day timelock delay.
+     *      Once commissioned, all subsequent attester additions/removals and quorum changes require full timelock governance.
+     * @param additionalAttesters Array of new authorized attester addresses.
+     * @param initialQuorum New threshold quorum (must be >= 2 and <= attesterCount).
+     */
+    function commissionLocker(address[] calldata additionalAttesters, uint256 initialQuorum) external onlyOwner {
+        if (isCommissioned()) revert AlreadyCommissioned();
+        if (additionalAttesters.length == 0) revert ZeroAmount();
+        for (uint256 i = 0; i < additionalAttesters.length; i++) {
+            address att = additionalAttesters[i];
+            if (att == address(0)) revert ZeroAddress();
+            if (isAttester[att]) revert AttesterAlreadyExists();
+            isAttester[att] = true;
+            attesterCount += 1;
+            emit AttesterAdded(att);
+        }
+        if (initialQuorum < MIN_PRODUCTION_QUORUM || initialQuorum > attesterCount) revert InvalidQuorum();
+        uint256 oldQuorum = requiredQuorum;
+        requiredQuorum = initialQuorum;
+        emit QuorumUpdated(oldQuorum, requiredQuorum);
     }
 
     // --- Constructor ---
@@ -394,7 +427,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
+        if (!legacyRoutesEnabled || isCommissioned()) revert LegacyRoutesDisabled();
         if (amount == 0) revert ZeroAmount();
         if (recipient == address(0)) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
@@ -482,7 +515,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
+        if (!legacyRoutesEnabled || isCommissioned()) revert LegacyRoutesDisabled();
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || recipient == address(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();

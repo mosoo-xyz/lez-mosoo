@@ -190,13 +190,19 @@ pub async fn try_submit_update(
     client: &reqwest::Client,
 ) -> anyhow::Result<SubmitResult> {
     // 1. Reliability guard: check if an unfinalized job from a previous crashed/restarted daemon is pending completion
-    if let Ok(Some(open_job)) = query_active_job(cli, client).await {
-        info!(
-            job_nonce = open_job.job_nonce,
-            stage = %open_job.stage,
-            "Resuming uncompleted consensus job from prior session"
-        );
-        return resume_open_job(cli, client, open_job).await;
+    match query_active_job(cli, client).await {
+        Ok(Some(open_job)) => {
+            info!(
+                job_nonce = open_job.job_nonce,
+                stage = %open_job.stage,
+                "Resuming uncompleted consensus job from prior session"
+            );
+            return resume_open_job(cli, client, open_job).await;
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("Active job query returned error (proceeding): {}", e);
+        }
     }
 
     let lez_head_slot = fetch_lez_head_slot(cli, client).await?;
@@ -221,7 +227,7 @@ pub async fn try_submit_update(
     let job_nonce = match submit_begin(cli, client, &update).await {
         Ok(nonce) => nonce,
         Err(e) if e.to_string().contains("JobAlreadyOpen") => {
-            if let Ok(Some(open_job)) = query_active_job(cli, client).await {
+            if let Some(open_job) = query_active_job(cli, client).await? {
                 info!(
                     job_nonce = open_job.job_nonce,
                     stage = %open_job.stage,
@@ -269,30 +275,49 @@ pub async fn query_active_job(
         "id": 10
     });
 
-    let resp = match client.post(&cli.lez_rpc_url).json(&payload).send().await {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::debug!("lez_getActiveJob query skipped: {}", e);
-            return Ok(None);
-        }
-    };
+    let resp = client
+        .post(&cli.lez_rpc_url)
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Network error querying active job from LEZ RPC {}: {}",
+                cli.lez_rpc_url,
+                e
+            )
+        })?;
 
     if !resp.status().is_success() {
-        return Ok(None);
+        anyhow::bail!(
+            "LEZ RPC returned HTTP {} when querying active job",
+            resp.status()
+        );
     }
 
-    let json: serde_json::Value = resp.json().await.unwrap_or_default();
+    let json: serde_json::Value = resp.json().await.map_err(|e| {
+        anyhow::anyhow!("Failed parsing JSON response from lez_getActiveJob: {}", e)
+    })?;
+
+    if let Some(err) = json.get("error").filter(|v| !v.is_null()) {
+        anyhow::bail!("LEZ RPC error on lez_getActiveJob: {}", err);
+    }
+
     if let Some(result) = json.get("result").filter(|v| !v.is_null()) {
         if let Some(nonce) = result.get("job_nonce").and_then(|n| n.as_u64()) {
             let stage = result
                 .get("stage")
                 .and_then(|s| s.as_str())
-                .unwrap_or("miller")
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Active job payload missing mandatory 'stage' field")
+                })?
                 .to_string();
             let target_slot = result
                 .get("target_slot")
                 .and_then(|s| s.as_u64())
-                .unwrap_or(0);
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Active job payload missing mandatory 'target_slot' field")
+                })?;
             return Ok(Some(OpenJobStatus {
                 job_nonce: nonce,
                 stage,
@@ -1037,6 +1062,11 @@ pub async fn submit_miller(
         anyhow::bail!("LEZ RPC execution error on miller_update: {}", err);
     }
 
+    let tx_hash = resp_json
+        .get("result")
+        .and_then(|r| r.as_str())
+        .unwrap_or("confirmed");
+    info!(job_nonce = job_nonce, tx_hash = %tx_hash, "MillerUpdate transaction confirmed on LEZ sequencer");
     Ok(())
 }
 
@@ -1116,6 +1146,11 @@ pub async fn submit_finish(
         anyhow::bail!("LEZ RPC execution error on finish_update: {}", err);
     }
 
+    let tx_hash = resp_json
+        .get("result")
+        .and_then(|r| r.as_str())
+        .unwrap_or("confirmed");
+    info!(job_nonce = job_nonce, tx_hash = %tx_hash, "FinishUpdate transaction finalized on LEZ sequencer");
     Ok(())
 }
 

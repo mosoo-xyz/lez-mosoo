@@ -131,6 +131,7 @@ def main():
     parser.add_argument("--locker", default=None, help="Ethereum MosooLocker contract address (0x...)")
     parser.add_argument("--deposit-tx", default=None, help="Transaction hash of an on-chain deposit event (DepositETH/DepositERC20) on Ethereum/Sepolia")
     parser.add_argument("--private-key", default=None, help="Optional deployer/tester private key for live on-chain interaction")
+    parser.add_argument("--token-decimals", type=int, default=None, help="Explicit ERC-20 token decimals (overrides RPC query, avoids 18-decimal assumption)")
     args = parser.parse_args()
 
     # Default Ethereum RPC for Sepolia if not provided
@@ -354,13 +355,18 @@ def main():
                         deposit_nonce = int(data_hex[64:128], 16)
 
                         # Query token decimals() (0x313ce567) and symbol() (0x95d89b41) via eth_call
-                        deposit_token_decimals = 18
+                        deposit_token_decimals = args.token_decimals
                         deposit_token_symbol = "ERC20"
-                        if eth_rpc:
+                        if deposit_token_decimals is None and eth_rpc:
                             try:
                                 dec_res = call_rpc(eth_rpc, "eth_call", [{"to": deposit_token_contract, "data": "0x313ce567"}, "latest"]).get("result", "")
                                 if len(dec_res) >= 66:
                                     deposit_token_decimals = int(dec_res, 16)
+                            except Exception:
+                                pass
+
+                        if eth_rpc:
+                            try:
                                 sym_res = call_rpc(eth_rpc, "eth_call", [{"to": deposit_token_contract, "data": "0x95d89b41"}, "latest"]).get("result", "")
                                 if len(sym_res) >= 130:
                                     sb = bytes.fromhex(sym_res[2:])
@@ -371,7 +377,12 @@ def main():
                             except Exception:
                                 pass
 
-                        deposit_amount = deposit_raw_units / (10 ** deposit_token_decimals)
+                        if deposit_token_decimals is None:
+                            print(f"      [!] Warning: ERC-20 decimals() query failed; displaying raw base units (no synthetic 18-decimal assumption)")
+                            deposit_token_decimals = 0
+                            deposit_amount = deposit_raw_units
+                        else:
+                            deposit_amount = deposit_raw_units / (10 ** deposit_token_decimals)
                         found_event = True
                         print(f"  [+] Live On-Chain DepositERC20 Log Verified from Tx: {deposit_tx_to_verify}")
                         print(f"      * Token Address : {deposit_token_contract} (Symbol: {deposit_token_symbol}, Decimals: {deposit_token_decimals})")
