@@ -21,5 +21,15 @@
     "lezRecipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "nonce": 1
   },
+  "liveAttestationDeposit": {
+    "transactionHash": "0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913",
+    "blockNumber": 12082214,
+    "amountWei": "10000000000000000",
+    "amountEth": "0.01",
+    "depositor": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
+    "lezRecipient": "0x3c6241644a263062423834f9cd926912cae9c6ebfb5eea85633c52bcbfcbe8c6",
+    "nonce": 2,
+    "gasUsed": "53682"
+  },
   "notes": "Testnet contract initialized with 1-of-1 attester authority for pipeline verification. Supports on-chain addAttester and setQuorum for M-of-N multisig transition."
 }
