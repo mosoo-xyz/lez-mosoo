@@ -80,7 +80,8 @@ def main():
     args = parser.parse_args()
 
     print("=" * 80)
-    print("Mosoo Comprehensive On-Chain Verification Suite")
+    print("Mosoo Comprehensive On-Chain Testnet Verification Suite")
+    print("Verification Scope: Sequencer Health, Gas Limits, Program Shards, ImageID, and Mined Blocks")
     print(f"Target RPC: {args.rpc} (TLS: Strict Verified)")
     print("=" * 80)
 

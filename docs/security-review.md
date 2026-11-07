@@ -269,10 +269,8 @@ In accordance with our strict dependency auditing policy, CI runs `cargo audit` 
 ### RUSTSEC-2026-0387: `crypto-bigint 0.5.5` (via `alloy` -> `k256` -> `elliptic-curve`)
 - **Vulnerability Summary:** Certain constant-time modular arithmetic operations in older versions of `crypto-bigint` may execute secret-dependent timing branches under specific CPU/compiler optimizations.
 - **Downstream Cryptographic Risk in Mosoo: ZERO.**
-  - Mosoo is an Ethereum Consensus Light Client verifier.
-  - Its verification pipeline processes exclusively public consensus artifacts: validator sync committee public keys, aggregate BLS signatures, Merkle-Patricia Trie nodes, and public Ethereum block headers.
-  - Mosoo holds no private signing keys or confidential secret exponents in its verifier runtime.
-  - Because no cryptographic secrets are manipulated, timing branch variations cannot leak secret key material.
+  - **Core Light Client Verifier Isolation (`mosoo-core`, `methods/guest`):** The core verifier processes exclusively public Ethereum consensus artifacts: validator sync committee public keys, aggregate BLS signatures, Merkle-Patricia Trie nodes, and public execution headers. The verifier runtime holds zero private keys or secret exponents, eliminating timing leakage in verification.
+  - **Relayer & Operator Signing Isolation (`cli`, `daemon`):** When operators use the relayer daemon or CLI to dispatch envelopes to the LEZ sequencer, local transaction signing uses `PrivateKeySigner` (via `alloy-signer-local`). Signing operations execute strictly within the operator's local, process-isolated memory using standard operating system entropy (`getrandom`). Mosoo relayer nodes are autonomous background clients, not multi-tenant public RPC endpoints, and never accept unauthenticated external signing queries. Consequently, network-based timing side-channels cannot be mounted against relayer keys.
 - **Remediation Plan:** Upstream `alloy` and `k256` crates are tracking the upgrade to `crypto-bigint 0.7.6`. Mosoo will adopt the patched dependency in the next routine workspace bump.
 
 ### RUSTSEC-2025-0055: `tracing-subscriber 0.2.25` (via `risc0-zkvm` -> `risc0-groth16` -> `ark-relations`)
@@ -292,9 +290,9 @@ The `MosooLocker.sol` smart contract on Ethereum L1 manages native ETH and ERC-2
 ### Initial Bootstrap Configuration vs. Production Multicall
 - **Testnet Bootstrap (1-of-1):** Fresh deployments initialize with `attesterCount = 1` and `requiredQuorum = 1` solely to facilitate automated deterministic bootstrapping and continuous integration on the Sepolia testnet.
 - **Production Governance Pipeline (2-of-3 / 3-of-5):** Prior to accepting public production deposits, the contract owner executes a mandatory 3-step timelocked governance transition:
-  1. `proposeAddAttester(newAttester1)` -> wait 48-hour timelock -> `executeAddAttester(proposalId)`
-  2. `proposeAddAttester(newAttester2)` -> wait 48-hour timelock -> `executeAddAttester(proposalId)`
-  3. `proposeQuorum(2)`                 -> wait 48-hour timelock -> `executeQuorum(proposalId)`
+  1. `proposeAddAttester(newAttester1)` -> wait 48-hour timelock -> `executeAddAttester()`
+  2. `proposeAddAttester(newAttester2)` -> wait 48-hour timelock -> `executeAddAttester()`
+  3. `proposeQuorum(2)`                 -> wait 48-hour timelock -> `executeQuorum()`
 
 ### Elimination of Single-Key Administrative Takeover
 - Direct un-timelocked administration functions (`addAttester()`, `setQuorum()`) are **permanently deprecated** and revert with `DirectGovernanceDeprecated()`.

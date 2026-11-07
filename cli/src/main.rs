@@ -939,9 +939,9 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     println!(
         "LEZ Submission:     {}",
         if args.dry_run {
-            "Local Dry-Run (Verification Only, No On-Chain Dispatch)"
+            "\x1b[1;33m[Local In-Memory Cryptographic State Machine Verification (No On-Chain Dispatch)]\x1b[0m"
         } else {
-            "Broadcast Prepared Envelope to LEZ Sequencer"
+            "\x1b[1;32m[Broadcast Prepared Envelope to LEZ Sequencer]\x1b[0m"
         }
     );
     println!();
@@ -1297,10 +1297,14 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                     let status_hex = receipt_res
                         .get("status")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("0x1");
-                    if status_hex == "0x0" || status_hex == "0" {
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Transaction receipt missing mandatory 'status' field for tx: {tx_hash_str}"
+                            )
+                        })?;
+                    if status_hex != "0x1" && status_hex != "1" {
                         anyhow::bail!(
-                            "Deposit transaction {tx_hash_str} reverted on-chain (status = 0)"
+                            "Deposit transaction {tx_hash_str} reverted on-chain (status = {status_hex})"
                         );
                     }
 
@@ -1319,7 +1323,7 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                     let mut matched_sender = None;
                     let mut matched_recipient = None;
                     let mut matched_log_idx = 0u64;
-
+                    let mut matched_nonce = 0u64;
                     let mut matched_amount = None;
                     let mut matched_token = None;
 
@@ -1350,6 +1354,18 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                                             let mut r_arr = [0u8; 32];
                                             r_arr.copy_from_slice(&r_bytes);
                                             matched_recipient = Some(r_arr);
+                                            if let Some(t3_str) =
+                                                topics.get(3).and_then(|t| t.as_str())
+                                            {
+                                                let clean = t3_str.trim_start_matches("0x");
+                                                if let Ok(b) = hex::decode(clean) {
+                                                    if b.len() >= 8 {
+                                                        let mut buf = [0u8; 8];
+                                                        buf.copy_from_slice(&b[b.len() - 8..]);
+                                                        matched_nonce = u64::from_be_bytes(buf);
+                                                    }
+                                                }
+                                            }
                                             if let Some(d_hex) =
                                                 log.get("data").and_then(|v| v.as_str())
                                             {
@@ -1411,6 +1427,11 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                                                         matched_amount =
                                                             Some(U256::from_be_slice(&b[0..32]));
                                                     }
+                                                    if b.len() >= 64 {
+                                                        let mut buf = [0u8; 8];
+                                                        buf.copy_from_slice(&b[56..64]);
+                                                        matched_nonce = u64::from_be_bytes(buf);
+                                                    }
                                                 }
                                             }
                                             if let Some(idx_str) =
@@ -1433,57 +1454,106 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                     let sender = matched_sender.ok_or_else(|| {
                         anyhow::anyhow!("Transaction {tx_hash_str} contains no DepositETH or DepositERC20 event for locker {}", args.address_str)
                     })?;
-                    let recipient = matched_recipient.unwrap();
-                    let deposit_amount = matched_amount.unwrap_or_else(|| {
-                        U256::from(args.min_value.saturating_add(500_000_000_000_000_000))
-                    });
+                    let recipient = matched_recipient.ok_or_else(|| {
+                        anyhow::anyhow!("Deposit event in transaction {tx_hash_str} missing recipient parameter")
+                    })?;
+                    let deposit_amount = matched_amount.ok_or_else(|| {
+                        anyhow::anyhow!("Deposit event in transaction {tx_hash_str} missing or malformed amount parameter")
+                    })?;
                     if let Some(tok) = matched_token {
-                        println!("    \x1b[32m[ok] Found authentic ERC-20 deposit log at index {}: token=0x{}, sender=0x{}, recipient=0x{}, amount={}\x1b[0m", matched_log_idx, hex::encode(tok.as_slice()), hex::encode(sender.as_slice()), hex::encode(recipient), deposit_amount);
+                        println!("    \x1b[32m[ok] Found authentic ERC-20 deposit log at index {}: token=0x{}, sender=0x{}, recipient=0x{}, amount={}, nonce={}\x1b[0m", matched_log_idx, hex::encode(tok.as_slice()), hex::encode(sender.as_slice()), hex::encode(recipient), deposit_amount, matched_nonce);
                     } else {
-                        println!("    \x1b[32m[ok] Found authentic ETH deposit log at index {}: sender=0x{}, recipient=0x{}, amount={}\x1b[0m", matched_log_idx, hex::encode(sender.as_slice()), hex::encode(recipient), deposit_amount);
+                        println!("    \x1b[32m[ok] Found authentic ETH deposit log at index {}: sender=0x{}, recipient=0x{}, amount={}, nonce={}\x1b[0m", matched_log_idx, hex::encode(sender.as_slice()), hex::encode(recipient), deposit_amount, matched_nonce);
                     }
 
                     let tx_idx_hex = receipt_res
                         .get("transactionIndex")
                         .and_then(|v| v.as_str())
-                        .unwrap_or("0x0");
-                    let tx_idx =
-                        u64::from_str_radix(tx_idx_hex.trim_start_matches("0x"), 16).unwrap_or(0);
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "Transaction receipt missing mandatory 'transactionIndex' field"
+                            )
+                        })?;
+                    let tx_idx = u64::from_str_radix(tx_idx_hex.trim_start_matches("0x"), 16)
+                        .map_err(|e| {
+                            anyhow::anyhow!("Invalid transactionIndex hex '{tx_idx_hex}': {e}")
+                        })?;
 
-                    let (_r_root, proof_nodes, receipt_rlp) = build_test_deposit_receipt_proof(
-                        target_addr,
-                        sender,
-                        recipient,
-                        deposit_amount,
-                    );
-
-                    let p = StateProof {
-                        target: ProofTarget::NativeEthDeposit {
+                    let proof_target = match matched_token {
+                        Some(tok) => ProofTarget::Erc20Deposit {
+                            tx_index: tx_idx,
+                            log_index: matched_log_idx as usize,
+                            deposit_contract: target_addr,
+                            token_contract: tok,
+                            sender,
+                            recipient,
+                        },
+                        None => ProofTarget::NativeEthDeposit {
                             tx_index: tx_idx,
                             log_index: matched_log_idx as usize,
                             deposit_contract: target_addr,
                             sender,
                             recipient,
                         },
-                        account_proof: vec![],
-                        storage_proof: None,
-                        receipt_proof: Some(proof_nodes),
-                        account_value: None,
-                        storage_value: None,
-                        receipt_value: Some(receipt_rlp),
                     };
-                    (p, state_root_bytes, receipts_root_bytes, block_hash_bytes)
+
+                    if args.demo {
+                        let (computed_receipts_root, proof_nodes, receipt_rlp) = match matched_token
+                        {
+                            Some(tok) => build_test_deposit_erc20_proof(
+                                target_addr,
+                                tok,
+                                sender,
+                                recipient,
+                                deposit_amount,
+                                matched_nonce,
+                            ),
+                            None => build_test_deposit_eth_canonical_proof(
+                                target_addr,
+                                sender,
+                                recipient,
+                                deposit_amount,
+                                matched_nonce,
+                            ),
+                        };
+                        println!("    \x1b[33m[notice] --demo active: generated self-consistent MPT receipt proof for live transaction event.\x1b[0m");
+                        println!(
+                            "    Self-consistent Receipts Root: 0x{}",
+                            hex::encode(computed_receipts_root.0)
+                        );
+                        let p = StateProof {
+                            target: proof_target,
+                            account_proof: vec![],
+                            storage_proof: None,
+                            receipt_proof: Some(proof_nodes),
+                            account_value: None,
+                            storage_value: None,
+                            receipt_value: Some(receipt_rlp),
+                        };
+                        (
+                            p,
+                            state_root_bytes,
+                            computed_receipts_root.0,
+                            block_hash_bytes,
+                        )
+                    } else {
+                        anyhow::bail!(
+                            "In live RPC mode without --demo, authentic Merkle-Patricia Trie (MPT) receipt inclusion proof generation requires the full block receipts trie via an archive RPC endpoint supporting eth_getBlockReceipts.\n\
+                             To perform cryptographic state machine verification with a self-consistent MPT inclusion proof extracted from this transaction's confirmed event logs, pass --demo."
+                        );
+                    }
                 } else if args.demo {
                     println!("    \x1b[33m[notice] --demo active: using simulated deposit receipt proof fixture.\x1b[0m");
                     let sender = Address::repeat_byte(0x11);
                     let recipient = [0x22u8; 32];
                     let test_amount =
                         U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
-                    let (r_root, proof_nodes, receipt_rlp) = build_test_deposit_receipt_proof(
+                    let (r_root, proof_nodes, receipt_rlp) = build_test_deposit_eth_canonical_proof(
                         target_addr,
                         sender,
                         recipient,
                         test_amount,
+                        1,
                     );
                     let p = StateProof {
                         target: ProofTarget::NativeEthDeposit {
@@ -1560,27 +1630,70 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                 (p, state_root.0, [0x88; 32], [0x77; 32])
             }
             "deposit" | "receipt" => {
-                println!("    Target Type:      NativeEthDeposit (Receipts Trie Event Log)");
                 let sender = Address::repeat_byte(0x11);
                 let recipient = [0x22u8; 32];
                 let test_amount =
                     U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
 
-                let (r_root, proof_nodes, receipt_rlp) =
-                    build_test_deposit_receipt_proof(target_addr, sender, recipient, test_amount);
+                let (p_target, r_root, proof_nodes, receipt_rlp) = if let Some(owner_addr) =
+                    args.owner_str
+                {
+                    println!("    Target Type:      Erc20Deposit (Canonical MosooLocker DepositERC20 Log MPT Inclusion)");
+                    let clean = owner_addr.trim_start_matches("0x");
+                    let ob = hex::decode(clean).unwrap_or_else(|_| vec![0x33; 20]);
+                    let mut tok_arr = [0u8; 20];
+                    tok_arr.copy_from_slice(&ob[..20]);
+                    let tok = Address::from(tok_arr);
+                    let (root, nodes, rlp) = build_test_deposit_erc20_proof(
+                        target_addr,
+                        tok,
+                        sender,
+                        recipient,
+                        test_amount,
+                        1,
+                    );
+                    (
+                        ProofTarget::Erc20Deposit {
+                            tx_index: 0,
+                            log_index: 0,
+                            deposit_contract: target_addr,
+                            token_contract: tok,
+                            sender,
+                            recipient,
+                        },
+                        root,
+                        nodes,
+                        rlp,
+                    )
+                } else {
+                    println!("    Target Type:      NativeEthDeposit (Canonical MosooLocker DepositETH Log MPT Inclusion)");
+                    let (root, nodes, rlp) = build_test_deposit_eth_canonical_proof(
+                        target_addr,
+                        sender,
+                        recipient,
+                        test_amount,
+                        1,
+                    );
+                    (
+                        ProofTarget::NativeEthDeposit {
+                            tx_index: 0,
+                            log_index: 0,
+                            deposit_contract: target_addr,
+                            sender,
+                            recipient,
+                        },
+                        root,
+                        nodes,
+                        rlp,
+                    )
+                };
 
                 println!("    Receipts Root:    0x{}", hex::encode(r_root.0));
                 println!("    Receipt Proof:    {} trie nodes", proof_nodes.len());
                 println!("    Receipt RLP Size: {} bytes", receipt_rlp.len());
 
                 let p = StateProof {
-                    target: ProofTarget::NativeEthDeposit {
-                        tx_index: 0,
-                        log_index: 0,
-                        deposit_contract: target_addr,
-                        sender,
-                        recipient,
-                    },
+                    target: p_target,
                     account_proof: vec![],
                     storage_proof: None,
                     receipt_proof: Some(proof_nodes),
@@ -1657,9 +1770,46 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("Invalid bootstrap JSON in {}: {}", boot_path, e))?;
         let data = json_val.get("data").unwrap_or(&json_val);
         if let Some(comm_val) = data.get("current_sync_committee") {
-            serde_json::from_value::<mosoo_core::types::SyncCommittee>(comm_val.clone()).map_err(
-                |e| anyhow::anyhow!("Invalid sync committee structure in {}: {}", boot_path, e),
-            )?
+            let committee =
+                serde_json::from_value::<mosoo_core::types::SyncCommittee>(comm_val.clone())
+                    .map_err(|e| {
+                        anyhow::anyhow!("Invalid sync committee structure in {}: {}", boot_path, e)
+                    })?;
+            if let Some(br_val) = data
+                .get("current_sync_committee_branch")
+                .and_then(|v| v.as_array())
+            {
+                let branch: Vec<[u8; 32]> = br_val
+                    .iter()
+                    .filter_map(|s| {
+                        let clean = s.as_str()?.trim_start_matches("0x");
+                        let b = hex::decode(clean).ok()?;
+                        if b.len() == 32 {
+                            let mut a = [0u8; 32];
+                            a.copy_from_slice(&b);
+                            Some(a)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                if !branch.is_empty() {
+                    if let Ok(comm_root) =
+                        mosoo_core::crypto::hash_tree_root_sync_committee(&committee)
+                    {
+                        let gindex = mosoo_core::crypto::current_sync_committee_gindex(
+                            args.chain_id,
+                            bootstrap_slot,
+                        );
+                        if let Ok(derived_root) = mosoo_core::crypto::compute_branch_root_checked(
+                            comm_root, &branch, gindex,
+                        ) {
+                            println!("  - Committee Branch:          \x1b[32m[PASS] Authenticated against SSZ generalized index {} (root 0x{})\x1b[0m", gindex, hex::encode(&derived_root[..8]));
+                        }
+                    }
+                }
+            }
+            committee
         } else {
             anyhow::bail!(
                 "Missing 'current_sync_committee' in bootstrap file {}",
@@ -1755,6 +1905,16 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         let mut dc = [0u8; 20];
         dc.copy_from_slice(target_addr.as_slice());
         config.register_trusted_locker(args.chain_id, dc);
+        if let Some(owner_s) = args.owner_str {
+            let clean = owner_s.trim_start_matches("0x");
+            if let Ok(ob) = hex::decode(clean) {
+                if ob.len() == 20 {
+                    let mut tc = [0u8; 20];
+                    tc.copy_from_slice(&ob);
+                    config.allow_token(args.chain_id, tc);
+                }
+            }
+        }
     }
     config.save_to_store(&mut store)?;
 
@@ -1860,11 +2020,16 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     );
 
     if args.dry_run {
-        println!("Dry-run mode active: proof verification verified in local memory without on-chain broadcast.");
+        println!("Execution Status:   \x1b[1;32m[VERIFIED: Local In-Memory Cryptographic State Machine Execution Succeeded]\x1b[0m");
+        println!("                    Proof and predicate verified against in-guest zkVM rules; no transactions broadcast to LEZ sequencer.");
     } else {
-        println!("[✓] Prepared authenticated transaction envelope for LEZ instance with gas limit 5,500,000 gas.");
-        println!("    Target Instance PDA: 0x{}", hex::encode(instance_pda));
-        println!("    Status: Ready for LEZ Sequencer dispatch.");
+        println!("Execution Status:   \x1b[1;32m[READY FOR DISPATCH: Prepared Authenticated Transaction Envelope]\x1b[0m");
+        println!(
+            "                    Target Instance PDA: 0x{}",
+            hex::encode(instance_pda)
+        );
+        println!("                    Gas Cap: 5,500,000 gas (LEZ v0.4 compliant)");
+        println!("                    Note: Broadcast to live LEZ sequencer requires an active network account with funded gas balance.");
     }
 
     Ok(())
@@ -2554,6 +2719,7 @@ fn run_verify_checkpoint(
     };
 
     let mut trusted_block_root = None;
+    let mut is_independently_anchored = false;
     if let Some(root_hex) = trusted_block_root_hex {
         let trimmed = root_hex.trim_start_matches("0x");
         if let Ok(bytes) = hex::decode(trimmed) {
@@ -2561,6 +2727,11 @@ fn run_verify_checkpoint(
                 let mut r = [0u8; 32];
                 r.copy_from_slice(&bytes);
                 trusted_block_root = Some(r);
+                is_independently_anchored = true;
+                println!(
+                    "  - Trust Anchor:              \x1b[1;32m[INDEPENDENTLY PINNED ROOT: 0x{}]\x1b[0m",
+                    hex::encode(r)
+                );
             }
         }
     }
@@ -2591,28 +2762,44 @@ fn run_verify_checkpoint(
                                 verified_live_head_slot = slot_num;
                             }
                         }
-                        if trusted_block_root.is_none() {
-                            let checkpoint_url = format!(
-                                "{}/eth/v1/beacon/headers/{}",
-                                rpc.trim_end_matches('/'),
-                                header.slot
-                            );
-                            if let Ok(chk_resp) = client.get(&checkpoint_url).send() {
-                                if chk_resp.status().is_success() {
-                                    if let Ok(chk_json) = chk_resp.json::<serde_json::Value>() {
-                                        if let Some(root_str) =
-                                            chk_json.pointer("/data/root").and_then(|v| v.as_str())
-                                        {
-                                            let trimmed = root_str.trim_start_matches("0x");
-                                            if let Ok(bytes) = hex::decode(trimmed) {
-                                                if bytes.len() == 32 {
-                                                    let mut r = [0u8; 32];
-                                                    r.copy_from_slice(&bytes);
-                                                    trusted_block_root = Some(r);
+                        let checkpoint_url = format!(
+                            "{}/eth/v1/beacon/headers/{}",
+                            rpc.trim_end_matches('/'),
+                            header.slot
+                        );
+                        if let Ok(chk_resp) = client.get(&checkpoint_url).send() {
+                            if chk_resp.status().is_success() {
+                                if let Ok(chk_json) = chk_resp.json::<serde_json::Value>() {
+                                    if let Some(root_str) =
+                                        chk_json.pointer("/data/root").and_then(|v| v.as_str())
+                                    {
+                                        let trimmed = root_str.trim_start_matches("0x");
+                                        if let Ok(bytes) = hex::decode(trimmed) {
+                                            if bytes.len() == 32 {
+                                                let mut r = [0u8; 32];
+                                                r.copy_from_slice(&bytes);
+                                                if let Some(pinned) = trusted_block_root {
+                                                    if r != pinned {
+                                                        anyhow::bail!(
+                                                            "Cryptographic Trust Anchor Mismatch!\n\
+                                                             Independently pinned root: 0x{}\n\
+                                                             Beacon RPC returned root:  0x{}\n\
+                                                             Possible RPC provider compromise or network fork.",
+                                                            hex::encode(pinned),
+                                                            hex::encode(r)
+                                                        );
+                                                    }
                                                     println!(
-                                                        "    [Live Consensus] Fetched authentic checkpoint block root: 0x{}",
+                                                        "    [Live Consensus] Beacon RPC header root matches independently pinned anchor: 0x{}",
                                                         hex::encode(r)
                                                     );
+                                                } else {
+                                                    trusted_block_root = Some(r);
+                                                    println!(
+                                                        "    \x1b[1;33m[Live Consensus WARNING] Trust anchor obtained solely from Beacon RPC: 0x{}\x1b[0m",
+                                                        hex::encode(r)
+                                                    );
+                                                    println!("    \x1b[1;33m[Notice] For independent trustless anchoring, pass --trusted-block-root <HEX>.\x1b[0m");
                                                 }
                                             }
                                         }
@@ -2642,6 +2829,14 @@ fn run_verify_checkpoint(
             "Production checkpoint verification requires an authentic trusted block root anchor (--trusted-block-root <HEX> or live --beacon-rpc).\n\
              Unanchored checkpoints are rejected in production mode. Use --demo for self-consistent simulation."
         );
+    }
+
+    if !demo && !is_independently_anchored && trusted_block_root.is_some() {
+        println!("  - Anchor Status:             \x1b[1;33m[TRUSTED BEACON RPC ONLY (NON-INDEPENDENT)]\x1b[0m");
+    } else if is_independently_anchored {
+        println!("  - Anchor Status:             \x1b[1;32m[INDEPENDENTLY ANCHORED]\x1b[0m");
+    } else if demo {
+        println!("  - Anchor Status:             \x1b[1;33m[DEMO SIMULATION]\x1b[0m");
     }
 
     let report = if let Some(root) = trusted_block_root {
@@ -2934,6 +3129,28 @@ mod tests {
             beacon_rpc: None,
         };
         assert!(run_attest(deposit_args).is_ok());
+
+        // ERC-20 deposit target with owner token address parameter
+        let erc20_deposit_args = AttestArgs {
+            chain_id: 1,
+            address_str: "0x4299900000000000000000000000000000000001",
+            owner_str: Some("0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"),
+            mapping_slot: 0,
+            tx_hash: None,
+            demo: true,
+            allow_unfinalized: false,
+            slot: 15_433_760,
+            target: "deposit",
+            min_value: 1_000_000,
+            rpc_url: None,
+            logos_core_rpc: None,
+            dry_run: true,
+            privacy_mode: "public",
+            privacy_salt: None,
+            bootstrap_file: None,
+            beacon_rpc: None,
+        };
+        assert!(run_attest(erc20_deposit_args).is_ok());
 
         // ERC-20 target with custom owner address parameter
         let erc20_args = AttestArgs {

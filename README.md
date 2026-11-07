@@ -12,7 +12,7 @@ It verifies 512-validator Ethereum sync-committee BLS aggregate signatures acros
 
 ## Canonical Test Inventory & Verification
 
-The Mosoo test suite contains **334 automated tests** (318 Rust tests across 13 test binaries + 3 doc-tests, plus 16 Foundry EVM tests). All tests pass with 0 failures and 0 warnings.
+The Mosoo test suite contains **336 automated tests** (320 Rust tests across 13 test binaries + 3 doc-tests, plus 16 Foundry EVM tests). All tests pass with 0 failures and 0 warnings.
 For an exhaustive, canonical breakdown of every test file, unique counts, sub-category mappings (adversarial, hardening regressions, light-client, bridge), and reproduction steps, see [`docs/TEST_INVENTORY.md`](docs/TEST_INVENTORY.md).
 
 ## Quickstart & Environment Verification
@@ -29,7 +29,7 @@ git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 # 1. Run all 318 Rust workspace tests across 13 test suites + doc-tests (0 failing, 0 warnings)
 cargo test --workspace
 
-# 2. Run the Foundry Solidity test suite (16 passing tests, 334 total automated tests)
+# 2. Run the Foundry Solidity test suite (16 passing tests, 336 total automated tests)
 forge test -vvv
 
 # 2. Run the full Two-Way Bridge integration test suite (22 passing tests)
@@ -96,8 +96,8 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 - **Two Reference Consumers**: `erc20-receiver` (token minting from verified Ethereum deposits) and `ether-receiver` (native balance accounting & `mETH` token ledger), each supporting storage-authenticated verification (`claim_authenticated_store_u256`, `claim_native_eth_deposit_authenticated_store_with_config`) strictly binding to approved light-client instances (`config.is_trusted_instance`) and program-owned persistent accounts (`store.get_account_owner == MOSOO_PROGRAM_ID`), atomic test harness verification, and decoupled relayer flows with nullifier replay rejection, backed by program-owned authenticated locker and token allowlist configurations.
 - **Permissionless Consensus Daemon (`daemon/`)**: Headless service monitoring Ethereum beacon and execution RPCs, featuring randomized jitter (1.0x to 2.5x poll interval) and idempotent skipping to prevent duplicate gas expenditure.
 - **Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`)**: Simulates LEZ v0.4 opcode execution, CPI dispatch, PDA creations, and gas metering across blocks 500,000 to 500,006.
-- **318 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **334 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
-- **Complete Test Matrix (334 Total Tests)**:
+- **320 Passing Tests** (Rust Workspace) + **16 Passing Tests** (Foundry Solidity Suite) = **336 Total Passing Tests**: Verified in CI with zero compiler or Clippy warnings (`-D warnings`).
+- **Complete Test Matrix (336 Total Tests)**:
   - `mosoo-core/tests/audit_oct26_hardening_tests.rs`: 58 security hardening regression tests.
   - `mosoo-core/tests/adversarial_mutation_tests.rs`: 50 test functions covering 42 distinct mutation attack scenarios.
   - `mosoo-core/tests/two_way_bridge_tests.rs`: 22 cross-chain bridge lifecycle, rate-limiting, and timelock governance tests.
@@ -108,7 +108,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
   - `consumers/erc20-receiver`: 42 unit tests (and 1 doc test).
   - `consumers/ether-receiver`: 39 unit tests (and 1 doc test).
   - `daemon/src/main.rs`: 15 operational consensus daemon tests.
-  - `cli/src/main.rs`: 4 local verification, authentic committee fail-closed, and dry-run tests.
+  - `cli/src/main.rs`: 7 local verification, authentic committee fail-closed, anchor verification, and dry-run tests.
   - Documentation tests: 3 doc tests (erc20, ether, predicate).
   - `contracts/test/MosooLocker.t.sol`: 16 Foundry EVM unit and fuzz tests.
   - All verified in fresh execution trace [`evidence/verify_all_output.txt`](evidence/verify_all_output.txt).
@@ -123,7 +123,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 | Component / Subsystem | Status | Verification Evidence / Roadmap |
 | :--- | :---: | :--- |
 | **Core Light Client (BLS12-381 / SSZ / MPT)** | Complete (Offline Verified) | 188 `mosoo-core` tests passing; offline Rust unit, integration & Criterion benchmarks |
-| **Full Protocol Test Suite** | 334 / 334 Tests Passing | Canonical inventory documented in [`docs/TEST_INVENTORY.md`](docs/TEST_INVENTORY.md) (318 Rust + 16 Foundry EVM) |
+| **Full Protocol Test Suite** | 336 / 336 Tests Passing | Canonical inventory documented in [`docs/TEST_INVENTORY.md`](docs/TEST_INVENTORY.md) (320 Rust + 16 Foundry EVM) |
 | **3-Transaction BLS Update Pipeline** | Complete (Offline Verified) | Verified (< 10M gas/tx) in standalone LEZ v0.4 sequencer harness; 3 transactions (5.38M, 4.18M, 3.74M gas) |
 | **Dual Reference Consumers (ERC-20 & Native ETH)** | Partially Complete | In-memory CPI invocation & nullifier sets verified (81 tests); public LEZ v0.4 on-chain deployment planned in M4 |
 | **Composite Predicates (`And`, `Or`, `Not`)** | Partially Complete | Basic predicates (`AtLeast`, `Equal`, `WithinRange`) complete; composite boolean tree scheduled for M2 |
@@ -147,13 +147,13 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 ### Reproducing All Tests Locally
 
 ```bash
-# 1. Run all Rust workspace tests (318 tests across 13 test suites + 3 doc-tests)
+# 1. Run all Rust workspace tests (320 tests across 13 test suites + 3 doc-tests)
 cargo test --workspace
 
 # 2. Run MosooLocker Solidity EVM tests (16 tests via Foundry)
 forge test -vvv
 
-# GRAND TOTAL: 318 Rust + 16 Foundry = 334 tests (+ 12 sequencer harness evidence checks)
+# GRAND TOTAL: 320 Rust + 16 Foundry = 336 tests (+ 12 sequencer harness evidence checks)
 
 # 4. Verify committed execution manifest & gas headroom
 python scripts/verify-evidence.py

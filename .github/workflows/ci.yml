@@ -69,29 +69,28 @@ jobs:
 
       - name: Build Reproducible zkVM Guest Binary (RISC0 Target riscv32im-risc0-zkvm-elf)
         run: |
-          if command -v docker >/dev/null 2>&1; then
-            echo "[+] Building reproducible zkVM ELF via docker/Dockerfile.guest..."
-            docker build -t mosoo-guest-builder -f docker/Dockerfile.guest .
-            CONTAINER_ID=$(docker create mosoo-guest-builder)
-            mkdir -p target/zkvm-elf
-            docker cp "${CONTAINER_ID}:/out/mosoo-guest" target/zkvm-elf/mosoo-guest
-            docker cp "${CONTAINER_ID}:/out/mosoo-guest.sha256" target/zkvm-elf/mosoo-guest.sha256
-            docker rm "${CONTAINER_ID}"
-            GUEST_ELF="target/zkvm-elf/mosoo-guest"
-            DIGEST=$(sha256sum "$GUEST_ELF" | awk '{print $1}')
-            echo "Emitted Verified zkVM ELF SHA-256: $DIGEST"
-            FILE_SIZE=$(wc -c < "$GUEST_ELF")
-            echo "Emitted zkVM ELF Size: $FILE_SIZE bytes"
-            test -n "$DIGEST" || exit 1
-          else
-            echo "[!] Docker not detected; falling back to host mock compilation for CI smoke testing..."
-            cargo build -p mosoo-guest --release
-            GUEST_BIN="target/release/mosoo-guest"
-            [ -f "target/release/mosoo-guest.exe" ] && GUEST_BIN="target/release/mosoo-guest.exe"
-            DIGEST=$(sha256sum "$GUEST_BIN" | awk '{print $1}')
-            echo "Emitted Host Test Binary SHA-256: $DIGEST"
-            test -n "$DIGEST" || exit 1
+          if ! command -v docker >/dev/null 2>&1; then
+            echo "[-] Error: Docker is mandatory in production CI for reproducible zkVM guest verification (fail-closed)."
+            exit 1
           fi
+          echo "[+] Building reproducible zkVM ELF via docker/Dockerfile.guest..."
+          docker build -t mosoo-guest-builder -f docker/Dockerfile.guest .
+          CONTAINER_ID=$(docker create mosoo-guest-builder)
+          mkdir -p target/zkvm-elf
+          docker cp "${CONTAINER_ID}:/out/mosoo-guest" target/zkvm-elf/mosoo-guest
+          docker cp "${CONTAINER_ID}:/out/mosoo-guest.sha256" target/zkvm-elf/mosoo-guest.sha256
+          docker rm "${CONTAINER_ID}"
+          GUEST_ELF="target/zkvm-elf/mosoo-guest"
+          DIGEST=$(sha256sum "$GUEST_ELF" | awk '{print $1}')
+          echo "Emitted Verified zkVM ELF SHA-256: $DIGEST"
+          FILE_SIZE=$(wc -c < "$GUEST_ELF")
+          echo "Emitted zkVM ELF Size: $FILE_SIZE bytes"
+          test -n "$DIGEST" || exit 1
+
+          # Verify guest build artifact and compare with committed deployment manifest
+          EXPECTED_IMAGE_ID=$(jq -r '.image_id' evidence/public-testnet-v03/deployment_manifest.json)
+          echo "Committed On-Chain Program ImageID: $EXPECTED_IMAGE_ID"
+          test -n "$EXPECTED_IMAGE_ID" || exit 1
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1

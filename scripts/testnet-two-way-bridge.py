@@ -279,9 +279,9 @@ def main():
             if required_quorum < 2:
                 print("      * Note: Testnet bootstrap initialized in 1-of-1 attester configuration for initial commissioning.")
                 print("      * Production Governance Pipeline (Timelock Enforced):")
-                print("          1. proposeAddAttester(newAttester1) -> wait 2 days -> executeAddAttester(proposalId)")
-                print("          2. proposeAddAttester(newAttester2) -> wait 2 days -> executeAddAttester(proposalId)")
-                print("          3. proposeQuorum(2)                 -> wait 2 days -> executeQuorum(proposalId)")
+                print("          1. proposeAddAttester(newAttester1) -> wait 2 days -> executeAddAttester()")
+                print("          2. proposeAddAttester(newAttester2) -> wait 2 days -> executeAddAttester()")
+                print("          3. proposeQuorum(2)                 -> wait 2 days -> executeQuorum()")
                 print("        (Direct addAttester() / setQuorum() calls revert with DirectGovernanceDeprecated).")
         except Exception as e:
             print(f"  [-] Fatal: Failed querying contract on-chain state: {e}")
@@ -289,8 +289,12 @@ def main():
 
     eth_depositor = b"\x22" * 20
     alice_lez = b"\xaa" * 32
-    deposit_amount_eth = 10.0
-    deposit_wei = int(deposit_amount_eth * 10**18)
+    deposit_is_erc20 = False
+    deposit_token_contract = None
+    deposit_token_symbol = "ETH"
+    deposit_token_decimals = 18
+    deposit_amount = 10.0
+    deposit_raw_units = int(deposit_amount * 10**18)
     deposit_nonce = 1
     deposit_slot = 10_500_000
     deposit_tx_to_verify = args.deposit_tx or canonical_deposit_tx
@@ -326,8 +330,11 @@ def main():
                         eth_depositor = bytes.fromhex(topics[1][-40:])
                         alice_lez = bytes.fromhex(topics[2][2:])
                         deposit_nonce = int(topics[3], 16)
-                        deposit_wei = int(data_hex[:64], 16)
-                        deposit_amount_eth = deposit_wei / 10**18
+                        deposit_raw_units = int(data_hex[:64], 16)
+                        deposit_is_erc20 = False
+                        deposit_token_symbol = "ETH"
+                        deposit_token_decimals = 18
+                        deposit_amount = deposit_raw_units / (10 ** deposit_token_decimals)
                         found_event = True
                         print(f"  [+] Live On-Chain DepositETH Log Verified from Tx: {deposit_tx_to_verify}")
                         break
@@ -339,13 +346,35 @@ def main():
                         if len(data_hex) < 128:
                             print(f"  [-] Fatal: Malformed DepositERC20 event data (expected at least 128 hex chars, got {len(data_hex)}) in tx {deposit_tx_to_verify}")
                             sys.exit(1)
+                        deposit_is_erc20 = True
+                        deposit_token_contract = "0x" + topics[1][-40:].lower()
                         eth_depositor = bytes.fromhex(topics[2][-40:])
                         alice_lez = bytes.fromhex(topics[3][2:])
-                        deposit_wei = int(data_hex[:64], 16)
+                        deposit_raw_units = int(data_hex[:64], 16)
                         deposit_nonce = int(data_hex[64:128], 16)
-                        deposit_amount_eth = deposit_wei / 10**18
+
+                        # Query token decimals() (0x313ce567) and symbol() (0x95d89b41) via eth_call
+                        deposit_token_decimals = 18
+                        deposit_token_symbol = "ERC20"
+                        if eth_rpc:
+                            try:
+                                dec_res = call_rpc(eth_rpc, "eth_call", [{"to": deposit_token_contract, "data": "0x313ce567"}, "latest"]).get("result", "")
+                                if len(dec_res) >= 66:
+                                    deposit_token_decimals = int(dec_res, 16)
+                                sym_res = call_rpc(eth_rpc, "eth_call", [{"to": deposit_token_contract, "data": "0x95d89b41"}, "latest"]).get("result", "")
+                                if len(sym_res) >= 130:
+                                    sb = bytes.fromhex(sym_res[2:])
+                                    slen = int.from_bytes(sb[32:64], "big")
+                                    sstr = sb[64:64+slen].decode("utf-8", errors="ignore").strip()
+                                    if sstr:
+                                        deposit_token_symbol = sstr
+                            except Exception:
+                                pass
+
+                        deposit_amount = deposit_raw_units / (10 ** deposit_token_decimals)
                         found_event = True
                         print(f"  [+] Live On-Chain DepositERC20 Log Verified from Tx: {deposit_tx_to_verify}")
+                        print(f"      * Token Address : {deposit_token_contract} (Symbol: {deposit_token_symbol}, Decimals: {deposit_token_decimals})")
                         break
 
             if not found_event:
@@ -357,12 +386,18 @@ def main():
     else:
         print("  [+] Mode: Local Verified Harness (Deterministic Mock Escrow Deposit)")
 
+    synth_token = f"m{deposit_token_symbol}"
     print(f"  [+] Contract       : MosooLocker.sol (0x{locker_address.hex()})")
     print(f"  [+] Depositor      : 0x{eth_depositor.hex()}")
     print(f"  [+] Target LEZ PDA : {alice_lez.hex()[:16]}...{alice_lez.hex()[-8:]}")
-    print(f"  [+] Locked Native  : {deposit_amount_eth:.4f} ETH ({deposit_wei} wei)")
+    if deposit_is_erc20:
+        print(f"  [+] Locked ERC-20  : {deposit_amount:.4f} {deposit_token_symbol} ({deposit_raw_units} raw units)")
+        print(f"  [+] Token Contract : {deposit_token_contract}")
+        print(f"  [+] Emitted Event  : DepositERC20(token, sender, recipient, amount, nonce)")
+    else:
+        print(f"  [+] Locked Native  : {deposit_amount:.4f} ETH ({deposit_raw_units} wei)")
+        print(f"  [+] Emitted Event  : DepositETH(sender, recipient, amount, nonce)")
     print(f"  [+] Deposit Nonce  : {deposit_nonce}")
-    print(f"  [+] Emitted Event  : DepositETH(sender, recipient, amount, nonce)")
 
     # 3. Consensus Sync & MPT Verification on LEZ
     print("\n--- [Phase 3/5] LEZ Consensus Update & MPT Proof Attestation ---")
@@ -380,21 +415,22 @@ def main():
     print("\n--- [Phase 4/5] Minting mETH on LEZ & Peer-to-Peer Transfer ---")
     print("  [*] State Transition: [CONSERVATION OF VALUE & ESCROW BALANCE VERIFICATION]")
     bob_lez = b"\xbb" * 32
-    transfer_wei = deposit_wei * 4 // 10  # 40% transferred to Bob
-    burn_wei = deposit_wei - transfer_wei # 60% burned for withdrawal
+    transfer_units = deposit_raw_units * 4 // 10  # 40% transferred to Bob
+    burn_units = deposit_raw_units - transfer_units # 60% burned for withdrawal
 
-    alice_balance = deposit_wei
-    total_supply = deposit_wei
-    print(f"  [+] Minted mETH to Alice : {alice_balance / 10**18:.4f} mETH")
-    print(f"  [+] Active mETH Supply   : {total_supply / 10**18:.4f} mETH")
-    print(f"  [+] Cross-chain invariant: Locked ETH ({deposit_amount_eth:.4f}) == LEZ Supply ({total_supply / 10**18:.4f}) [OK]")
+    alice_balance = deposit_raw_units
+    total_supply = deposit_raw_units
+    unit_div = 10 ** deposit_token_decimals
+    print(f"  [+] Minted {synth_token} to Alice : {alice_balance / unit_div:.4f} {synth_token}")
+    print(f"  [+] Active {synth_token} Supply   : {total_supply / unit_div:.4f} {synth_token}")
+    print(f"  [+] Cross-chain invariant: Locked {deposit_token_symbol} ({deposit_amount:.4f}) == LEZ Supply ({total_supply / unit_div:.4f}) [OK]")
 
-    print(f"\n  [+] Alice transfers {transfer_wei / 10**18:.4f} mETH to Bob on LEZ:")
-    alice_balance -= transfer_wei
-    bob_balance = transfer_wei
-    print(f"      * Alice balance: {alice_balance / 10**18:.4f} mETH")
-    print(f"      * Bob balance  : {bob_balance / 10**18:.4f} mETH")
-    print(f"      * Total Supply : {total_supply / 10**18:.4f} mETH (Unchanged)")
+    print(f"\n  [+] Alice transfers {transfer_units / unit_div:.4f} {synth_token} to Bob on LEZ:")
+    alice_balance -= transfer_units
+    bob_balance = transfer_units
+    print(f"      * Alice balance: {alice_balance / unit_div:.4f} {synth_token}")
+    print(f"      * Bob balance  : {bob_balance / unit_div:.4f} {synth_token}")
+    print(f"      * Total Supply : {total_supply / unit_div:.4f} {synth_token} (Unchanged)")
 
     # 5. Burning mETH on LEZ & Unlocking real ETH on Ethereum
     print("\n--- [Phase 5/5] Burning mETH on LEZ -> Unlocking ETH on Ethereum ---")
@@ -403,14 +439,14 @@ def main():
     lez_burn_slot = 62_185
     burn_nonce = 1
 
-    alice_balance -= burn_wei
-    total_supply -= burn_wei
+    alice_balance -= burn_units
+    total_supply -= burn_units
 
     # Canonical Mosoo Sepolia instance ID (strictly bound into V2 burnId)
     canonical_instance = bytes.fromhex("7700000000000000000000000000000000000000000000000000000000000000")
-    burn_id = derive_burn_id(args.chain_id, canonical_instance, alice_lez, eth_recipient, burn_wei, burn_nonce, lez_burn_slot)
-    print(f"  [+] Alice burns          : {burn_wei / 10**18:.4f} mETH")
-    print(f"  [+] Alice balance post-burn : {alice_balance / 10**18:.4f} mETH")
+    burn_id = derive_burn_id(args.chain_id, canonical_instance, alice_lez, eth_recipient, burn_units, burn_nonce, lez_burn_slot)
+    print(f"  [+] Alice burns          : {burn_units / unit_div:.4f} {synth_token}")
+    print(f"  [+] Alice balance post-burn : {alice_balance / unit_div:.4f} {synth_token}")
     print(f"  [+] Target Chain ID      : {args.chain_id}")
     print(f"  [+] Burn Nonce           : {burn_nonce} at LEZ slot {lez_burn_slot}")
     print(f"  [+] Canonical Keccak-256 : 0x{burn_id.hex()}")
@@ -419,20 +455,20 @@ def main():
     print("      * Verifying canonical burnId derivation: keccak256(mosoo_burn_v2 || chain_id || sourceInstance || lezOwner || recipient || amount || nonce || slot)")
     print("      * Verifying burn has not already been executed (replay check)")
     print("      * Verifying burn has not been cancelled by Guardian/Owner (cancelledBurns check)")
-    print(f"      * Escrow release allowance: {burn_wei / 10**18:.4f} ETH to 0x{eth_recipient.hex()}")
+    print(f"      * Escrow release allowance: {burn_units / unit_div:.4f} {deposit_token_symbol} to 0x{eth_recipient.hex()}")
     print("      * Reentrancy guard: nonReentrant modifier active")
 
     print("\n  [+] Final Settlement Verification:")
-    print(f"      * Total ETH Remaining in Locker : {total_supply / 10**18:.4f} ETH")
-    print(f"      * Total mETH Remaining on LEZ   : {total_supply / 10**18:.4f} mETH")
-    print(f"      * Total ETH Released to Recipient: {burn_wei / 10**18:.4f} ETH")
-    print(f"      * Invariant: Remaining Locked ETH ({total_supply / 10**18:.4f}) == Active mETH ({total_supply / 10**18:.4f}) [100% MATCH]")
+    print(f"      * Total {deposit_token_symbol} Remaining in Locker : {total_supply / unit_div:.4f} {deposit_token_symbol}")
+    print(f"      * Total {synth_token} Remaining on LEZ   : {total_supply / unit_div:.4f} {synth_token}")
+    print(f"      * Total {deposit_token_symbol} Released to Recipient: {burn_units / unit_div:.4f} {deposit_token_symbol}")
+    print(f"      * Invariant: Remaining Locked {deposit_token_symbol} ({total_supply / unit_div:.4f}) == Active {synth_token} ({total_supply / unit_div:.4f}) [100% MATCH]")
 
     print("\n" + "=" * 80)
     print(f"[+] TWO-WAY BRIDGE PIPELINE ({args.mode.upper()} MODE) COMPLETED SUCCESSFULLY")
-    print("  - Live On-Chain Escrow: Verified Deposit on Ethereum Sepolia (Tx confirmed)")
-    print("  - Settlement Engine:    zkVM Invariant & MPT State Machine Verified")
-    print("  - Invariant Status:     100% Conservation of Value across Cross-Chain Boundaries")
+    print("  - Live Ethereum Phase : Verified MosooLocker deployment and deposit receipt event on-chain")
+    print("  - LEZ Settlement Phase: Cryptographic state-machine simulation (MPT inclusion, nullifier, conservation of value)")
+    print("  - Invariant Status    : 100% Conservation of Value across Cross-Chain Boundaries")
     print("=" * 80)
 
 if __name__ == "__main__":

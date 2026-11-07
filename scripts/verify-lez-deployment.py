@@ -69,10 +69,11 @@ def get_tx_block(tx_hash: str) -> int | None:
     return None
 
 def main():
-    print("=" * 70)
-    print("  MOSOO / LEZ TESTNET INDEPENDENT ON-CHAIN VERIFIER")
-    print(f"  Sequencer Endpoint: {RPC_URL} (TLS: Verified)")
-    print("=" * 70)
+    print("=" * 78)
+    print("  MOSOO / LEZ TESTNET INDEPENDENT ON-CHAIN ARTIFACT & LIFECYCLE VERIFIER")
+    print(f"  Sequencer Endpoint: {RPC_URL} (TLS: Strict Verification Active)")
+    print("  Verification Scope: On-chain Program Shards, ImageID, Loader & Mined Blocks")
+    print("=" * 78)
 
     # 1. Read deployment manifest using relative paths (clean-clone portable)
     base_dir = Path(__file__).resolve().parent.parent
