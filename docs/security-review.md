@@ -258,3 +258,45 @@ A formal third-party audit is planned prior to mainnet deployment:
 - **Target Timeline:** Following public devnet deployment
 - **Candidate Audit Firms:** Veridise, Trail of Bits, or Least Authority
 - **Audit Scope:** In-guest `blst` pairing split, MPT trie verification logic, SPEL IDL deserialization safety, and consumer nullifier persistence.
+
+
+---
+
+## 6. Supply Chain & Transitive Dependency Risk Analysis (RUSTSEC)
+
+In accordance with our strict dependency auditing policy, CI runs `cargo audit` to monitor known vulnerabilities across the entire dependency graph. Two transitive dependency advisories are actively tracked with cryptographic risk analyses:
+
+### RUSTSEC-2026-0387: `crypto-bigint 0.5.5` (via `alloy` -> `k256` -> `elliptic-curve`)
+- **Vulnerability Summary:** Certain constant-time modular arithmetic operations in older versions of `crypto-bigint` may execute secret-dependent timing branches under specific CPU/compiler optimizations.
+- **Downstream Cryptographic Risk in Mosoo: ZERO.**
+  - Mosoo is an Ethereum Consensus Light Client verifier.
+  - Its verification pipeline processes exclusively public consensus artifacts: validator sync committee public keys, aggregate BLS signatures, Merkle-Patricia Trie nodes, and public Ethereum block headers.
+  - Mosoo holds no private signing keys or confidential secret exponents in its verifier runtime.
+  - Because no cryptographic secrets are manipulated, timing branch variations cannot leak secret key material.
+- **Remediation Plan:** Upstream `alloy` and `k256` crates are tracking the upgrade to `crypto-bigint 0.7.6`. Mosoo will adopt the patched dependency in the next routine workspace bump.
+
+### RUSTSEC-2025-0055: `tracing-subscriber 0.2.25` (via `risc0-zkvm` -> `risc0-groth16` -> `ark-relations`)
+- **Vulnerability Summary:** Untrusted log message formatting in older `tracing-subscriber` releases could permit ANSI escape sequence injection into interactive terminal emulators.
+- **Downstream Cryptographic Risk in Mosoo: ZERO.**
+  - `tracing-subscriber 0.2.25` is an internal telemetry dependency pulled exclusively by `ark-relations` during Groth16 circuit definition.
+  - Mosoo uses standard structured error types (`MosooError`) and JSON-RPC outputs.
+  - Untrusted external network strings are never piped through interactive ANSI terminal log formatters.
+- **Remediation Plan:** RISC Zero is upgrading its circuit backend in the upcoming toolchain release, which removes the legacy `ark-relations` dependency.
+
+---
+
+## 7. Cross-Chain Bridge Governance & Multi-Signer Quorum Enforcement
+
+The `MosooLocker.sol` smart contract on Ethereum L1 manages native ETH and ERC-20 token escrow for cross-chain settlement on LEZ.
+
+### Initial Bootstrap Configuration vs. Production Multicall
+- **Testnet Bootstrap (1-of-1):** Fresh deployments initialize with `attesterCount = 1` and `requiredQuorum = 1` solely to facilitate automated deterministic bootstrapping and continuous integration on the Sepolia testnet.
+- **Production Governance Pipeline (2-of-3 / 3-of-5):** Prior to accepting public production deposits, the contract owner executes a mandatory 3-step timelocked governance transition:
+  1. `proposeAddAttester(newAttester1)` -> wait 48-hour timelock -> `executeAddAttester(proposalId)`
+  2. `proposeAddAttester(newAttester2)` -> wait 48-hour timelock -> `executeAddAttester(proposalId)`
+  3. `proposeQuorum(2)`                 -> wait 48-hour timelock -> `executeQuorum(proposalId)`
+
+### Elimination of Single-Key Administrative Takeover
+- Direct un-timelocked administration functions (`addAttester()`, `setQuorum()`) are **permanently deprecated** and revert with `DirectGovernanceDeprecated()`.
+- An attacker compromising the deployer private key cannot instantly lower the quorum or register malicious attesters; all governance alterations are subject to the immutable 48-hour timelock (`GOVERNANCE_TIMELOCK = 2 days`).
+- An independent emergency `guardian` (which strictly cannot be the contract owner) holds unilateral veto authority (`vetoQueuedWithdrawal`, `cancelPendingGovernanceAction`, `pause`) to neutralize rogue proposals or freeze compromised routes before the timelock elapses.

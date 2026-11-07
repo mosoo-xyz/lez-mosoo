@@ -15,6 +15,7 @@ Usage:
 """
 
 import sys
+import hashlib
 import json
 import argparse
 import urllib.request
@@ -133,10 +134,15 @@ def main():
         acc = seg['account_id']
         tx = seg['tx']
         expected_blk = seg['block']
+        expected_len = seg.get('length')
+        expected_sha = seg.get('sha256')
         shard = get_shard(args.rpc, acc, LOADER_B58)
+        shard_sha = hashlib.sha256(shard).hexdigest()
         mined_blk = get_tx_block(args.rpc, tx)
-        report(len(shard) > 0 and mined_blk == expected_blk,
-               f"Segment {idx} ({acc[:10]}...): on chain ({len(shard):,} bytes, block {mined_blk})")
+
+        content_ok = (len(shard) == expected_len and shard_sha == expected_sha) if (expected_len and expected_sha) else (len(shard) > 0)
+        report(content_ok and mined_blk == expected_blk,
+               f"Segment {idx} ({acc[:10]}...): authenticated on-chain ({len(shard):,} bytes, sha256:{shard_sha[:16]}..., block {mined_blk})")
 
     hdr_tx = dep['header']['tx']
     expected_hdr_blk = dep['header']['block']

@@ -18,6 +18,7 @@ Checks:
 """
 
 import sys
+import hashlib
 import json
 import urllib.request
 import ssl
@@ -104,7 +105,16 @@ def main():
         expected_blk = seg['block']
 
         shard = get_shard(acc, LOADER_B58)
-        report(len(shard) > 0, f"Segment {idx} ({acc[:10]}...): on chain ({len(shard):,} bytes)")
+        shard_len = len(shard)
+        shard_sha = hashlib.sha256(shard).hexdigest()
+        expected_len = seg.get('length')
+        expected_sha = seg.get('sha256')
+
+        if expected_len and expected_sha:
+            report(shard_len == expected_len and shard_sha == expected_sha,
+                   f"Segment {idx} ({acc[:10]}...): authenticated on-chain ({shard_len:,} bytes, sha256:{shard_sha[:16]}...)")
+        else:
+            report(shard_len > 0, f"Segment {idx} ({acc[:10]}...): on chain ({shard_len:,} bytes)")
 
         mined_blk = get_tx_block(tx)
         report(mined_blk == expected_blk,

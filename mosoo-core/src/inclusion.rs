@@ -812,6 +812,9 @@ fn verify_storage_slot(
     let raw = storage_value.unwrap_or_default();
     let mut value = [0u8; 32];
     let stripped = rlp_strip_prefix(&raw);
+    if stripped.len() > 32 {
+        return Err(MosooError::InvalidTrieProof);
+    }
     let start = 32usize.saturating_sub(stripped.len());
     value[start..].copy_from_slice(stripped);
 

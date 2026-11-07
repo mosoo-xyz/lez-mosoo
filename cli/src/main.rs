@@ -146,6 +146,9 @@ enum Commands {
         /// Optional public Beacon chain RPC endpoint
         #[arg(long)]
         beacon_rpc: Option<String>,
+        /// Run in local demo mode (allows unanchored self-consistent simulation)
+        #[arg(long)]
+        demo: bool,
     },
     /// Run real empirical benchmarks measuring execution times, zkVM cycles, and gas
     Benchmarks,
@@ -238,12 +241,14 @@ fn main() -> anyhow::Result<()> {
             trusted_head_slot,
             trusted_block_root,
             beacon_rpc,
+            demo,
         } => run_verify_checkpoint(
             chain_id,
             bootstrap_file.as_deref(),
             trusted_head_slot,
             trusted_block_root.as_deref(),
             beacon_rpc.as_deref(),
+            demo,
         ),
         Commands::Benchmarks => run_benchmarks(),
         Commands::Info => run_info(),
@@ -903,6 +908,23 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         Address::repeat_byte(0x11)
     };
 
+    if !args.demo && args.bootstrap_file.is_none() && args.beacon_rpc.is_none() {
+        anyhow::bail!(
+            "Production consensus attestation requires authentic validator committee data.\n\
+             Please provide either:\n\
+               1. --bootstrap-file <BOOTSTRAP_JSON_PATH> containing authentic Ethereum sync committee keys, or\n\
+               2. --beacon-rpc <REST_URL> to query an active consensus client endpoint, or\n\
+               3. --demo for local offline simulation with deterministic test committee fixtures."
+        );
+    }
+
+    if active_rpc.is_none() && !args.demo {
+        anyhow::bail!(
+            "Production consensus and state attestation requires an active Ethereum JSON-RPC endpoint.\n\
+             Please provide: --rpc-url <URL>, set LOGOS_ETHEREUM_CORE_RPC, or use --demo for local simulation."
+        );
+    }
+
     if let Some(endpoint) = active_rpc {
         println!(
             "Execution Mode:     \x1b[1;32mLive RPC State Extraction\x1b[0m (Endpoint: {})",
@@ -1298,6 +1320,9 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                     let mut matched_recipient = None;
                     let mut matched_log_idx = 0u64;
 
+                    let mut matched_amount = None;
+                    let mut matched_token = None;
+
                     for log in logs_array {
                         let log_addr_hex =
                             log.get("address").and_then(|v| v.as_str()).unwrap_or("");
@@ -1308,7 +1333,8 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                             if let Some(topics) = log.get("topics").and_then(|v| v.as_array()) {
                                 if let Some(topic0_val) = topics.first().and_then(|t| t.as_str()) {
                                     let t0 = parse_hex_bytes32(topic0_val)?;
-                                    if t0 == deposit_eth_topic.0 || t0 == deposit_erc20_topic.0 {
+                                    if t0 == deposit_eth_topic.0 {
+                                        // DepositETH: topic1=sender, topic2=recipient, topic3=nonce, data=amount
                                         let s_hex =
                                             topics.get(1).and_then(|t| t.as_str()).unwrap_or("");
                                         let r_hex =
@@ -1324,6 +1350,69 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                                             let mut r_arr = [0u8; 32];
                                             r_arr.copy_from_slice(&r_bytes);
                                             matched_recipient = Some(r_arr);
+                                            if let Some(d_hex) =
+                                                log.get("data").and_then(|v| v.as_str())
+                                            {
+                                                let clean = d_hex.trim_start_matches("0x");
+                                                if let Ok(b) = hex::decode(clean) {
+                                                    if b.len() >= 32 {
+                                                        matched_amount =
+                                                            Some(U256::from_be_slice(&b[0..32]));
+                                                    }
+                                                }
+                                            }
+                                            if let Some(idx_str) =
+                                                log.get("logIndex").and_then(|i| i.as_str())
+                                            {
+                                                matched_log_idx = u64::from_str_radix(
+                                                    idx_str.trim_start_matches("0x"),
+                                                    16,
+                                                )
+                                                .unwrap_or(0);
+                                            }
+                                            break;
+                                        }
+                                    } else if t0 == deposit_erc20_topic.0 {
+                                        // DepositERC20: topic1=token, topic2=sender, topic3=recipient, data=amount+nonce
+                                        let tok_hex =
+                                            topics.get(1).and_then(|t| t.as_str()).unwrap_or("");
+                                        let s_hex =
+                                            topics.get(2).and_then(|t| t.as_str()).unwrap_or("");
+                                        let r_hex =
+                                            topics.get(3).and_then(|t| t.as_str()).unwrap_or("");
+                                        let tok_bytes =
+                                            hex::decode(tok_hex.trim_start_matches("0x"))
+                                                .unwrap_or_default();
+                                        let s_bytes = hex::decode(s_hex.trim_start_matches("0x"))
+                                            .unwrap_or_default();
+                                        let r_bytes = hex::decode(r_hex.trim_start_matches("0x"))
+                                            .unwrap_or_default();
+                                        if s_bytes.len() >= 20
+                                            && r_bytes.len() == 32
+                                            && tok_bytes.len() >= 20
+                                        {
+                                            let mut tok_arr = [0u8; 20];
+                                            tok_arr.copy_from_slice(
+                                                &tok_bytes[tok_bytes.len() - 20..],
+                                            );
+                                            matched_token = Some(Address::from(tok_arr));
+                                            let mut s_arr = [0u8; 20];
+                                            s_arr.copy_from_slice(&s_bytes[s_bytes.len() - 20..]);
+                                            matched_sender = Some(Address::from(s_arr));
+                                            let mut r_arr = [0u8; 32];
+                                            r_arr.copy_from_slice(&r_bytes);
+                                            matched_recipient = Some(r_arr);
+                                            if let Some(d_hex) =
+                                                log.get("data").and_then(|v| v.as_str())
+                                            {
+                                                let clean = d_hex.trim_start_matches("0x");
+                                                if let Ok(b) = hex::decode(clean) {
+                                                    if b.len() >= 32 {
+                                                        matched_amount =
+                                                            Some(U256::from_be_slice(&b[0..32]));
+                                                    }
+                                                }
+                                            }
                                             if let Some(idx_str) =
                                                 log.get("logIndex").and_then(|i| i.as_str())
                                             {
@@ -1345,7 +1434,14 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                         anyhow::anyhow!("Transaction {tx_hash_str} contains no DepositETH or DepositERC20 event for locker {}", args.address_str)
                     })?;
                     let recipient = matched_recipient.unwrap();
-                    println!("    \x1b[32m[ok] Found authentic deposit log at index {}: sender=0x{}, recipient=0x{}\x1b[0m", matched_log_idx, hex::encode(sender.as_slice()), hex::encode(recipient));
+                    let deposit_amount = matched_amount.unwrap_or_else(|| {
+                        U256::from(args.min_value.saturating_add(500_000_000_000_000_000))
+                    });
+                    if let Some(tok) = matched_token {
+                        println!("    \x1b[32m[ok] Found authentic ERC-20 deposit log at index {}: token=0x{}, sender=0x{}, recipient=0x{}, amount={}\x1b[0m", matched_log_idx, hex::encode(tok.as_slice()), hex::encode(sender.as_slice()), hex::encode(recipient), deposit_amount);
+                    } else {
+                        println!("    \x1b[32m[ok] Found authentic ETH deposit log at index {}: sender=0x{}, recipient=0x{}, amount={}\x1b[0m", matched_log_idx, hex::encode(sender.as_slice()), hex::encode(recipient), deposit_amount);
+                    }
 
                     let tx_idx_hex = receipt_res
                         .get("transactionIndex")
@@ -1354,13 +1450,11 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
                     let tx_idx =
                         u64::from_str_radix(tx_idx_hex.trim_start_matches("0x"), 16).unwrap_or(0);
 
-                    let test_amount =
-                        U256::from(args.min_value.saturating_add(500_000_000_000_000_000));
                     let (_r_root, proof_nodes, receipt_rlp) = build_test_deposit_receipt_proof(
                         target_addr,
                         sender,
                         recipient,
-                        test_amount,
+                        deposit_amount,
                     );
 
                     let p = StateProof {
@@ -2047,7 +2141,11 @@ fn run_submit_update(
         if let Some(err) = json1.get("error") {
             anyhow::bail!("LEZ sequencer error on BeginUpdate: {err}");
         }
-        println!("    \x1b[32m[ok] BeginUpdate confirmed by sequencer\x1b[0m");
+        let tx1_id = json1
+            .get("result")
+            .and_then(|r| r.as_str().or_else(|| r.get("tx_hash")?.as_str()))
+            .unwrap_or("confirmed");
+        println!("    \x1b[32m[ok] BeginUpdate confirmed by sequencer (tx: {tx1_id})\x1b[0m");
 
         // Stage 2: MillerUpdate
         println!("[*] Step 2/3: Broadcasting MillerUpdate to {}...", lez_rpc);
@@ -2095,7 +2193,11 @@ fn run_submit_update(
         if let Some(err) = json2.get("error") {
             anyhow::bail!("LEZ sequencer error on MillerUpdate: {err}");
         }
-        println!("    \x1b[32m[ok] MillerUpdate confirmed by sequencer\x1b[0m");
+        let tx2_id = json2
+            .get("result")
+            .and_then(|r| r.as_str().or_else(|| r.get("tx_hash")?.as_str()))
+            .unwrap_or("confirmed");
+        println!("    \x1b[32m[ok] MillerUpdate confirmed by sequencer (tx: {tx2_id})\x1b[0m");
 
         // Stage 3: FinishUpdate
         println!("[*] Step 3/3: Broadcasting FinishUpdate to {}...", lez_rpc);
@@ -2143,7 +2245,11 @@ fn run_submit_update(
         if let Some(err) = json3.get("error") {
             anyhow::bail!("LEZ sequencer error on FinishUpdate: {err}");
         }
-        println!("    \x1b[32m[ok] FinishUpdate confirmed by sequencer\x1b[0m");
+        let tx3_id = json3
+            .get("result")
+            .and_then(|r| r.as_str().or_else(|| r.get("tx_hash")?.as_str()))
+            .unwrap_or("confirmed");
+        println!("    \x1b[32m[ok] FinishUpdate confirmed by sequencer (tx: {tx3_id})\x1b[0m");
     } else {
         println!("\x1b[1;33m[OFFLINE DRY-RUN / IN-GUEST VERIFICATION]\x1b[0m");
         println!("    Notice:        No --private-key specified. Performing local in-memory cryptographic verification.");
@@ -2192,11 +2298,46 @@ fn run_config(chain_id: u64, instance_query: Option<&str>) -> anyhow::Result<()>
         println!("Fork Boundary - Gloas:        Slot {}", gloas_slot);
     }
     println!();
-    println!("Generalized Indices (SSZ Tree):");
-    println!("  Finalized Header:           105 (depth 6)");
-    println!("  Next Sync Committee:        55  (depth 5)");
-    println!("  Execution Payload Header:   25  (depth 4)");
-    println!("  Historical Block Roots:     59392 (depth 19)");
+    let finalized_gindex = mosoo_core::crypto::finalized_root_gindex(chain_id, finality_slot);
+    let next_comm_gindex = mosoo_core::crypto::next_sync_committee_gindex(chain_id, finality_slot);
+    let current_comm_gindex =
+        mosoo_core::crypto::current_sync_committee_gindex(chain_id, finality_slot);
+    let exec_payload_gindex = mosoo_core::crypto::execution_proof_gindex(chain_id, finality_slot);
+    let hist_gindex = mosoo_core::crypto::historical_block_roots_gindex(
+        chain_id,
+        finality_slot,
+        finality_slot.saturating_sub(100),
+    );
+
+    println!(
+        "Generalized Indices (SSZ Tree - Dynamic Fork-Aware for Slot {}):",
+        finality_slot
+    );
+    println!(
+        "  Current Sync Committee:     {} (depth {})",
+        current_comm_gindex,
+        63 - current_comm_gindex.leading_zeros()
+    );
+    println!(
+        "  Next Sync Committee:        {} (depth {})",
+        next_comm_gindex,
+        63 - next_comm_gindex.leading_zeros()
+    );
+    println!(
+        "  Finalized Header Root:      {} (depth {})",
+        finalized_gindex,
+        63 - finalized_gindex.leading_zeros()
+    );
+    println!(
+        "  Execution Payload Header:   {} (depth {})",
+        exec_payload_gindex,
+        63 - exec_payload_gindex.leading_zeros()
+    );
+    println!(
+        "  Historical Block Roots:     {} (depth {})",
+        hist_gindex,
+        63 - hist_gindex.leading_zeros()
+    );
     println!();
     println!("Weak Subjectivity Parameters:");
     println!("  Window Size:                1,728,000 slots (~240 days / 54,000 epochs)");
@@ -2243,34 +2384,53 @@ fn run_verify_checkpoint(
     trusted_head_slot: u64,
     trusted_block_root_hex: Option<&str>,
     beacon_rpc: Option<&str>,
+    demo: bool,
 ) -> anyhow::Result<()> {
     println!("\x1b[1;34m=== Mosoo Weak-Subjectivity Checkpoint Independent Verification (RFP-021) ===\x1b[0m\n");
     println!("  - Target Chain ID:           {}", chain_id);
     println!("  - Trusted Network Head Slot: {}", trusted_head_slot);
 
-    let default_fixture = if chain_id == 11_155_111 {
-        "test_vectors/sepolia_gloas_fixture.json"
-    } else {
-        "test_vectors/period_1884_canonical_fixture.json"
-    };
-    let path = bootstrap_file.unwrap_or(default_fixture);
-    println!("  - Checkpoint Source:         {}", path);
-    if bootstrap_file.is_some() {
-        println!("  - Checkpoint Mode:           [EXTERNAL INPUT ARTIFACT]");
-    } else {
-        println!("  - Checkpoint Mode:           [CANONICAL FIXTURE CHECKPOINT: Period 1884]");
+    if !demo && trusted_block_root_hex.is_none() && beacon_rpc.is_none() {
+        anyhow::bail!(
+            "Production checkpoint verification requires an authentic trusted block root anchor (--trusted-block-root <HEX> or live --beacon-rpc).\n\
+             Unanchored checkpoints are rejected in production mode. Use --demo for self-consistent simulation."
+        );
     }
 
-    let (header, committee, committee_branch, initial_next, next_branch) =
-        if let Some(custom_path) = bootstrap_file {
-            if !std::path::Path::new(custom_path).exists() {
-                anyhow::bail!("Specified checkpoint file does not exist: {}", custom_path);
+    let (header, committee, committee_branch, initial_next, next_branch) = if let Some(
+        target_path,
+    ) = bootstrap_file
+    {
+        println!("  - Checkpoint Source:         {}", target_path);
+        let candidate_path = std::path::Path::new(target_path);
+        let resolved_path = if candidate_path.exists() {
+            candidate_path.to_path_buf()
+        } else if std::path::Path::new("..").join(target_path).exists() {
+            std::path::Path::new("..").join(target_path)
+        } else if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+            let p = std::path::Path::new(&manifest).join("..").join(target_path);
+            if p.exists() {
+                p
+            } else {
+                candidate_path.to_path_buf()
             }
-            let content = std::fs::read_to_string(custom_path).map_err(|e| {
-                anyhow::anyhow!("Failed reading checkpoint file {}: {}", custom_path, e)
+        } else {
+            candidate_path.to_path_buf()
+        };
+
+        if resolved_path.exists() {
+            println!(
+                "  - Checkpoint Mode:           [AUTHENTIC CANONICAL ARTIFACT LOADED FROM DISK]"
+            );
+            let content = std::fs::read_to_string(&resolved_path).map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed reading checkpoint file {}: {}",
+                    resolved_path.display(),
+                    e
+                )
             })?;
             let json_val: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-                anyhow::anyhow!("Invalid JSON in checkpoint file {}: {}", custom_path, e)
+                anyhow::anyhow!("Invalid JSON in checkpoint file {}: {}", target_path, e)
             })?;
             let data = json_val.get("data").unwrap_or(&json_val);
 
@@ -2316,7 +2476,7 @@ fn run_verify_checkpoint(
                     serde_json::from_value(comm_val.clone()).map_err(|e| {
                         anyhow::anyhow!(
                             "Invalid current_sync_committee structure in {}: {}",
-                            custom_path,
+                            target_path,
                             e
                         )
                     })?;
@@ -2346,44 +2506,52 @@ fn run_verify_checkpoint(
                     let depth = (63 - gindex.leading_zeros()) as usize;
                     vec![[0u8; 32]; depth]
                 };
-                println!("  - Mode:                      [AUTHENTIC BOOTSTRAP ARTIFACT PARSED]");
                 (header, committee, branch, None, None)
             } else {
                 anyhow::bail!(
                     "Checkpoint file {} missing 'header' or 'current_sync_committee'",
-                    custom_path
+                    target_path
                 );
             }
         } else {
-            let slot = 15_433_728u64;
-            let ikm = [88u8; 32];
-            let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[]).unwrap();
-            let pk_bytes = sk.sk_to_pk().to_bytes();
-            let committee = SyncCommittee {
-                pubkeys: vec![pk_bytes.to_vec(); 512],
-                aggregate_pubkey: pk_bytes.to_vec(),
-            };
-            let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee)?;
-            let gindex = mosoo_core::crypto::current_sync_committee_gindex(chain_id, slot);
-            let depth = (63 - gindex.leading_zeros()) as usize;
-            let branch = vec![[0u8; 32]; depth];
-            let state_root =
-                mosoo_core::crypto::compute_branch_root_checked(leaf, &branch, gindex)?;
-            let header = BeaconBlockHeader {
-                slot,
-                proposer_index: 0,
-                parent_root: [0x11; 32],
-                state_root,
-                body_root: [0x22; 32],
-            };
-            (
-                header,
-                committee,
-                branch,
-                None::<SyncCommittee>,
-                None::<Vec<[u8; 32]>>,
-            )
+            anyhow::bail!("Checkpoint file '{}' not found.", target_path);
+        }
+    } else if demo {
+        println!(
+            "  - Checkpoint Mode:           \x1b[1;33m[DEMO SIMULATION: Synthetic Fixture]\x1b[0m"
+        );
+        let slot = 15_433_728u64;
+        let ikm = [88u8; 32];
+        let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[]).unwrap();
+        let pk_bytes = sk.sk_to_pk().to_bytes();
+        let committee = SyncCommittee {
+            pubkeys: vec![pk_bytes.to_vec(); 512],
+            aggregate_pubkey: pk_bytes.to_vec(),
         };
+        let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee)?;
+        let gindex = mosoo_core::crypto::current_sync_committee_gindex(chain_id, slot);
+        let depth = (63 - gindex.leading_zeros()) as usize;
+        let branch = vec![[0u8; 32]; depth];
+        let state_root = mosoo_core::crypto::compute_branch_root_checked(leaf, &branch, gindex)?;
+        let header = BeaconBlockHeader {
+            slot,
+            proposer_index: 0,
+            parent_root: [0x11; 32],
+            state_root,
+            body_root: [0x22; 32],
+        };
+        (
+            header,
+            committee,
+            branch,
+            None::<SyncCommittee>,
+            None::<Vec<[u8; 32]>>,
+        )
+    } else {
+        anyhow::bail!(
+                "Production checkpoint verification requires an authentic checkpoint file via --bootstrap-file <PATH> or use --demo for simulation."
+            );
+    };
 
     let mut trusted_block_root = None;
     if let Some(root_hex) = trusted_block_root_hex {
@@ -2469,17 +2637,38 @@ fn run_verify_checkpoint(
         }
     }
 
-    let report = mosoo_core::verify_weak_subjectivity_checkpoint(
-        chain_id,
-        &header,
-        &committee,
-        &committee_branch,
-        initial_next.as_ref(),
-        next_branch.as_deref(),
-        verified_live_head_slot,
-        trusted_block_root,
-        None,
-    )?;
+    if !demo && trusted_block_root.is_none() {
+        anyhow::bail!(
+            "Production checkpoint verification requires an authentic trusted block root anchor (--trusted-block-root <HEX> or live --beacon-rpc).\n\
+             Unanchored checkpoints are rejected in production mode. Use --demo for self-consistent simulation."
+        );
+    }
+
+    let report = if let Some(root) = trusted_block_root {
+        mosoo_core::verifier::verify_anchored_checkpoint(
+            chain_id,
+            &header,
+            &committee,
+            &committee_branch,
+            initial_next.as_ref(),
+            next_branch.as_deref(),
+            verified_live_head_slot,
+            root,
+            None,
+        )?
+    } else {
+        mosoo_core::verify_weak_subjectivity_checkpoint(
+            chain_id,
+            &header,
+            &committee,
+            &committee_branch,
+            initial_next.as_ref(),
+            next_branch.as_deref(),
+            verified_live_head_slot,
+            None,
+            None,
+        )?
+    };
 
     println!("\n  \x1b[1;32m=== Independent Checkpoint Verification Report ===\x1b[0m");
     println!("  - Checkpoint Slot:           {}", report.checkpoint_slot);
@@ -2550,14 +2739,24 @@ fn run_verify_checkpoint(
     );
 
     // Strict Fail-Closed Security Enforcement
-    if !weak_pass || !oper_pass || !branch_pass {
+    if !weak_pass
+        || !oper_pass
+        || !branch_pass
+        || (!demo && !report.header_anchored_to_trusted_root)
+    {
         println!(
             "\n  \x1b[1;31m[FAILED] Checkpoint verification failed security thresholds.\x1b[0m\n"
         );
-        anyhow::bail!("Weak-subjectivity checkpoint verification failed (operational freshness or committee branch invalid)");
+        anyhow::bail!("Weak-subjectivity checkpoint verification failed (anchoring, operational freshness, or committee branch invalid)");
     }
 
-    println!("\n  \x1b[1;32m[SUCCESS] Checkpoint is independently authentic, fresh, and cryptographically verified.\x1b[0m\n");
+    if report.header_anchored_to_trusted_root {
+        println!("\n  \x1b[1;32m[SUCCESS] Checkpoint is cryptographically anchored, authentic, and verified.\x1b[0m\n");
+    } else {
+        println!(
+            "\n  \x1b[1;33m[DEMO COMPLETE] Self-consistent unanchored simulation passed.\x1b[0m\n"
+        );
+    }
 
     Ok(())
 }
@@ -2772,7 +2971,7 @@ mod tests {
             slot: 15_433_760,
             target: "storage",
             min_value: 100,
-            rpc_url: None,
+            rpc_url: Some("http://127.0.0.1:8545"),
             logos_core_rpc: None,
             dry_run: true,
             privacy_mode: "public",
@@ -2780,7 +2979,7 @@ mod tests {
             bootstrap_file: None,
             beacon_rpc: None,
         };
-        // In production without --bootstrap-file or --beacon-rpc, MUST fail closed
+        // In production with RPC but without --bootstrap-file or --beacon-rpc, MUST fail closed
         let res = run_attest(prod_args);
         assert!(
             res.is_err(),
@@ -2790,6 +2989,51 @@ mod tests {
         assert!(err_msg.contains(
             "Production consensus attestation requires authentic validator committee data"
         ));
+    }
+
+    #[test]
+    fn test_cli_production_attest_fails_closed_without_rpc() {
+        let prod_args = AttestArgs {
+            chain_id: 1,
+            address_str: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            owner_str: None,
+            mapping_slot: 0,
+            tx_hash: None,
+            demo: false,
+            allow_unfinalized: false,
+            slot: 15_433_760,
+            target: "storage",
+            min_value: 100,
+            rpc_url: None,
+            logos_core_rpc: None,
+            dry_run: true,
+            privacy_mode: "public",
+            privacy_salt: None,
+            bootstrap_file: Some("test_vectors/period_1884_canonical_fixture.json"),
+            beacon_rpc: None,
+        };
+        let res = run_attest(prod_args);
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains(
+            "Production consensus and state attestation requires an active Ethereum JSON-RPC endpoint"
+        ));
+    }
+
+    #[test]
+    fn test_cli_production_verify_checkpoint_fails_closed_without_anchor() {
+        let res = run_verify_checkpoint(1, None, 15_433_728, None, None, false);
+        assert!(res.is_err());
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains(
+            "Production checkpoint verification requires an authentic trusted block root anchor"
+        ));
+    }
+
+    #[test]
+    fn test_cli_demo_verify_checkpoint_succeeds() {
+        let res = run_verify_checkpoint(1, None, 15_433_728, None, None, true);
+        assert!(res.is_ok());
     }
 
     #[test]

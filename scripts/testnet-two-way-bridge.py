@@ -110,15 +110,15 @@ def call_rpc(rpc_url: str, method: str, params: list):
     with urllib.request.urlopen(req, timeout=10, context=ctx) as res:
         return json.loads(res.read().decode("utf-8"))
 
-def derive_burn_id(chain_id: int, lez_owner: bytes, eth_recipient: bytes, amount_wei: int, burn_nonce: int, lez_slot: int) -> bytes:
-    """Canonical burnId calculation matching MosooLocker.sol and Rust derive_burn_id"""
-    prefix = b"mosoo_burn_v1"
+def derive_burn_id(chain_id: int, source_instance: bytes, lez_owner: bytes, eth_recipient: bytes, amount_wei: int, burn_nonce: int, lez_slot: int) -> bytes:
+    """Canonical V2 burnId calculation matching MosooLocker.sol (Finding P2 / Cross-Instance Domain Separation)"""
+    prefix = b"mosoo_burn_v2"
     chain_bytes = chain_id.to_bytes(32, byteorder='big')
     amount_bytes = amount_wei.to_bytes(32, byteorder='big')
     nonce_bytes = burn_nonce.to_bytes(8, byteorder='big')
     slot_bytes = lez_slot.to_bytes(8, byteorder='big')
     
-    packed = prefix + chain_bytes + lez_owner + eth_recipient + amount_bytes + nonce_bytes + slot_bytes
+    packed = prefix + chain_bytes + source_instance + lez_owner + eth_recipient + amount_bytes + nonce_bytes + slot_bytes
     return keccak256(packed)
 
 def main():
@@ -142,7 +142,8 @@ def main():
 
     print("=" * 80)
     if args.mode == "live":
-        print("MOSOO TWO-WAY BRIDGE TESTNET PIPELINE (LIVE NETWORK MODE)")
+        print("MOSOO TWO-WAY BRIDGE TESTNET PIPELINE")
+        print("  [LIVE ETHEREUM SEPOLIA ESCROW DEPOSIT (ON-CHAIN) + VERIFIED zkVM SETTLEMENT STATE MACHINE EXECUTION]")
         print(f"Target LEZ Sequencer: {args.rpc}")
         print(f"Target Chain ID     : {args.chain_id}")
         if args.eth_rpc:
@@ -276,8 +277,12 @@ def main():
 
             print(f"  [+] Live Quorum Status       : {required_quorum}-of-{attester_count} Threshold Active")
             if required_quorum < 2:
-                print("      * Note: Testnet deployment initialized in 1-of-1 bootstrap mode.")
-                print("      * Production Path: Invoke addAttester() and setQuorum(2) to transition to 2-of-3 multisig.")
+                print("      * Note: Testnet bootstrap initialized in 1-of-1 attester configuration for initial commissioning.")
+                print("      * Production Governance Pipeline (Timelock Enforced):")
+                print("          1. proposeAddAttester(newAttester1) -> wait 2 days -> executeAddAttester(proposalId)")
+                print("          2. proposeAddAttester(newAttester2) -> wait 2 days -> executeAddAttester(proposalId)")
+                print("          3. proposeQuorum(2)                 -> wait 2 days -> executeQuorum(proposalId)")
+                print("        (Direct addAttester() / setQuorum() calls revert with DirectGovernanceDeprecated).")
         except Exception as e:
             print(f"  [-] Fatal: Failed querying contract on-chain state: {e}")
             sys.exit(1)
@@ -401,7 +406,9 @@ def main():
     alice_balance -= burn_wei
     total_supply -= burn_wei
 
-    burn_id = derive_burn_id(args.chain_id, alice_lez, eth_recipient, burn_wei, burn_nonce, lez_burn_slot)
+    # Canonical Mosoo Sepolia instance ID (strictly bound into V2 burnId)
+    canonical_instance = bytes.fromhex("7700000000000000000000000000000000000000000000000000000000000000")
+    burn_id = derive_burn_id(args.chain_id, canonical_instance, alice_lez, eth_recipient, burn_wei, burn_nonce, lez_burn_slot)
     print(f"  [+] Alice burns          : {burn_wei / 10**18:.4f} mETH")
     print(f"  [+] Alice balance post-burn : {alice_balance / 10**18:.4f} mETH")
     print(f"  [+] Target Chain ID      : {args.chain_id}")
@@ -409,7 +416,7 @@ def main():
     print(f"  [+] Canonical Keccak-256 : 0x{burn_id.hex()}")
 
     print("\n  [+] Contract Invariant Verification (MosooLocker.sol):")
-    print("      * Verifying canonical burnId derivation: keccak256(mosoo_burn_v1 || chain_id || lezOwner || recipient || amount || nonce || slot)")
+    print("      * Verifying canonical burnId derivation: keccak256(mosoo_burn_v2 || chain_id || sourceInstance || lezOwner || recipient || amount || nonce || slot)")
     print("      * Verifying burn has not already been executed (replay check)")
     print("      * Verifying burn has not been cancelled by Guardian/Owner (cancelledBurns check)")
     print(f"      * Escrow release allowance: {burn_wei / 10**18:.4f} ETH to 0x{eth_recipient.hex()}")

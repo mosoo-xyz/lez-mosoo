@@ -147,7 +147,7 @@ Detailed testnet parameters, fee state, and verification steps are documented at
 ### Reproducing All Tests Locally
 
 ```bash
-# 1. Run all Rust workspace tests (316 tests across 16 test binaries)
+# 1. Run all Rust workspace tests (318 tests across 13 test suites + 3 doc-tests)
 cargo test --workspace
 
 # 2. Run MosooLocker Solidity EVM tests (16 tests via Foundry)

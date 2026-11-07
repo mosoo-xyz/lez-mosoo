@@ -270,6 +270,19 @@ contract MosooLocker {
 
     // --- Constructor ---
 
+    /**
+     * @notice Initializes MosooLocker vault and sets initial governance addresses.
+     * @dev Note on Governance & Multi-Signer Quorum Threshold:
+     *      Initial deployment sets `attesterCount = 1` and `requiredQuorum = 1` for bootstrap commissioning.
+     *      For production mainnet operation, the operator executes a 3-step timelocked governance transition:
+     *        1. proposeAddAttester(attester2) -> wait 2 days -> executeAddAttester(proposalId)
+     *        2. proposeAddAttester(attester3) -> wait 2 days -> executeAddAttester(proposalId)
+     *        3. proposeQuorum(2)              -> wait 2 days -> executeQuorum(proposalId)
+     *      Direct un-timelocked calls to addAttester/setQuorum are permanently deprecated (revert with DirectGovernanceDeprecated)
+     *      to prevent single-key administrative takeovers.
+     * @param _attesterAuthority The initial bootstrap attester authority address.
+     * @param _guardian The independent emergency guardian address (must NOT be owner).
+     */
     constructor(address _attesterAuthority, address _guardian) {
         if (_attesterAuthority == address(0)) revert ZeroAddress();
         if (_guardian == address(0)) revert InvalidGuardian();
