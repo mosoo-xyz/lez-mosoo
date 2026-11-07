@@ -63,7 +63,9 @@ async function getProvider(explicitRpc) {
   const candidates = explicitRpc ? [explicitRpc] : SEPOLIA_RPCS;
   for (const rpcUrl of candidates) {
     try {
-      const provider = new ethers.JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true });
+      const req = new ethers.FetchRequest(rpcUrl);
+      req.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+      const provider = new ethers.JsonRpcProvider(req, 11155111, { staticNetwork: true });
       const net = await provider.getNetwork();
       if (Number(net.chainId) === 11155111) {
         return provider;

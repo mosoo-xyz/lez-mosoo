@@ -18,8 +18,8 @@ For an exhaustive, canonical breakdown of every test file, unique counts, sub-ca
 ## Quickstart & Environment Verification
 
 Verification evidence is partitioned into four distinct operational environments:
-1. **Public LEZ v0.3.1 Network**: Verified block production, sequencer RPC, and account structures (`scripts/verify-onchain.py`).
-2. **Ethereum Sepolia Testnet**: Deployed canonical `MosooLocker` contract at [`0x74625D146B8d9413F3c3976B323d94A739be7856`](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856).
+1. **Public LEZ v0.3.1 Network**: Live on-chain program deployment (`DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf`, ImageID: `ad6fbedb983da6b6...`) with all 7 code segments (blocks 77987–78000), CreateHeader (block 78002), and all 12 lifecycle steps mined on-chain (blocks 78005–78025) verified via `scripts/verify-lez-deployment.py` (22/22 checks passed).
+2. **Ethereum Sepolia Testnet**: Deployed canonical `MosooLocker` contract at [`0x74625D146B8d9413F3c3976B323d94A739be7856`](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856) with live confirmed deposits (Tx `0x743aea...` block 11990019, and Tx [`0x6ecddb...`](https://sepolia.etherscan.io/tx/0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913) block 12082214).
 3. **Offline LEZ v0.4 Sequencer Harness**: Reproducible local environment simulating LEZ v0.4 containerized sequencer, 10M gas limit, and 3-tx BLS split.
 4. **Public LEZ v0.4 Network**: Scheduled for milestone deployment upon official Logos LEZ v0.4 public testnet release (never claimed as currently deployed).
 
@@ -48,6 +48,7 @@ python3 scripts/testnet-two-way-bridge.py --mode live
 # Deployed Sepolia Locker: 0x74625D146B8d9413F3c3976B323d94A739be7856 (https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856)
 
 # 6. Verify live testnet sequencer health, gas limits, and blocks
+python3 scripts/verify-lez-deployment.py
 python3 scripts/verify-onchain.py
 python3 scripts/lez-wallet.py faucet-status
 python3 scripts/lez-wallet.py new

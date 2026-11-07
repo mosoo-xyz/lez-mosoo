@@ -25,6 +25,10 @@ Anyone can independently verify the on-chain sequencer health, gas limits, and s
 
 ```console
 # 1. Verify live testnet sequencer health, block progression, and gas caps
+# 1. Verify live LEZ testnet program deployment, 7 segments, and 12 on-chain lifecycle steps (22/22 checks)
+python3 scripts/verify-lez-deployment.py
+
+# 2. Verify live testnet sequencer health, block progression, and gas caps
 python3 scripts/verify-onchain.py
 
 # 2. Check the live Piñata pool and testnet fee parameters
