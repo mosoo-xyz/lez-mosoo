@@ -861,7 +861,9 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         println!("  - Endpoint: {}", env_rpc);
         Some(env_rpc.as_str())
     } else if let Some(direct_rpc) = args.rpc_url {
-        println!("  - \x1b[33m[Development Mode]\x1b[0m Using direct unverified Ethereum RPC fallback.");
+        println!(
+            "  - \x1b[33m[Development Mode]\x1b[0m Using direct unverified Ethereum RPC fallback."
+        );
         println!("  - Note: Production mode requires Logos Ethereum Core verified proxy.");
         println!("  - Endpoint: {}", direct_rpc);
         Some(direct_rpc)
@@ -1597,7 +1599,9 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
     store.insert_program_account(header_pda, serde_json::to_vec(&header)?, MOSOO_PROGRAM_ID);
 
     let p_mode = match args.privacy_mode.to_lowercase().as_str() {
-        "address-private" | "address_private" => Some(mosoo_core::types::PrivacyMode::AddressPrivate),
+        "address-private" | "address_private" => {
+            Some(mosoo_core::types::PrivacyMode::AddressPrivate)
+        }
         "confidential" => Some(mosoo_core::types::PrivacyMode::Confidential),
         _ => Some(mosoo_core::types::PrivacyMode::Public),
     };
@@ -1614,7 +1618,13 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         } else {
             None
         }
-    } else if matches!(p_mode, Some(mosoo_core::types::PrivacyMode::AddressPrivate | mosoo_core::types::PrivacyMode::Confidential)) {
+    } else if matches!(
+        p_mode,
+        Some(
+            mosoo_core::types::PrivacyMode::AddressPrivate
+                | mosoo_core::types::PrivacyMode::Confidential
+        )
+    ) {
         let mut hasher = sha2::Sha256::new();
         hasher.update(b"mosoo_cli_blinding_salt:");
         hasher.update(args.slot.to_le_bytes());
@@ -2123,8 +2133,14 @@ fn run_config(chain_id: u64, instance_query: Option<&str>) -> anyhow::Result<()>
         println!("  Queried Target:             {}", query);
         let canonical_cfg = TrustedBridgeConfig::canonical();
         if let Some(canonical_inst) = canonical_cfg.trusted_instances.get(&chain_id) {
-            println!("  Canonical Instance ID:      0x{}", hex::encode(canonical_inst));
-            if query.trim_start_matches("0x").eq_ignore_ascii_case(&hex::encode(canonical_inst)) {
+            println!(
+                "  Canonical Instance ID:      0x{}",
+                hex::encode(canonical_inst)
+            );
+            if query
+                .trim_start_matches("0x")
+                .eq_ignore_ascii_case(&hex::encode(canonical_inst))
+            {
                 println!("  Authentication Status:      [1;32mAUTHENTIC & PINNED (Approved in TrustedBridgeConfig)[0m");
             } else {
                 println!("  Authentication Status:      [1;33mUNPINNED / CUSTOM INSTANCE (Requires Registration)[0m");
@@ -2304,23 +2320,39 @@ fn run_verify_checkpoint(
     println!(
         "  - Weak Subjectivity Window:  {} (<= 1,728,000 slots) {}",
         weak_pass,
-        if weak_pass { "\x1b[32m[PASS]\x1b[0m" } else { "\x1b[31m[FAIL]\x1b[0m" }
+        if weak_pass {
+            "\x1b[32m[PASS]\x1b[0m"
+        } else {
+            "\x1b[31m[FAIL]\x1b[0m"
+        }
     );
     println!(
         "  - Operational Freshness:     {} (<= 200,000 slots) {}",
         oper_pass,
-        if oper_pass { "\x1b[32m[PASS]\x1b[0m" } else { "\x1b[31m[FAIL]\x1b[0m" }
+        if oper_pass {
+            "\x1b[32m[PASS]\x1b[0m"
+        } else {
+            "\x1b[31m[FAIL]\x1b[0m"
+        }
     );
     println!(
         "  - Sync Committee SSZ Branch: {} {}",
         branch_pass,
-        if branch_pass { "\x1b[32m[CRYPTOGRAPHICALLY AUTHENTIC]\x1b[0m" } else { "\x1b[31m[INVALID]\x1b[0m" }
+        if branch_pass {
+            "\x1b[32m[CRYPTOGRAPHICALLY AUTHENTIC]\x1b[0m"
+        } else {
+            "\x1b[31m[INVALID]\x1b[0m"
+        }
     );
     if let Some(matched) = report.matches_trusted_block_root {
         println!(
             "  - Public Beacon Root Check:  {} {}",
             matched,
-            if matched { "\x1b[32m[100% MATCH]\x1b[0m" } else { "\x1b[31m[MISMATCH]\x1b[0m" }
+            if matched {
+                "\x1b[32m[100% MATCH]\x1b[0m"
+            } else {
+                "\x1b[31m[MISMATCH]\x1b[0m"
+            }
         );
     }
     println!(
@@ -2335,7 +2367,9 @@ fn run_verify_checkpoint(
 
     // Strict Fail-Closed Security Enforcement
     if !weak_pass || !oper_pass || !branch_pass {
-        println!("\n  \x1b[1;31m[FAILED] Checkpoint verification failed security thresholds.\x1b[0m\n");
+        println!(
+            "\n  \x1b[1;31m[FAILED] Checkpoint verification failed security thresholds.\x1b[0m\n"
+        );
         anyhow::bail!("Weak-subjectivity checkpoint verification failed (operational freshness or committee branch invalid)");
     }
 
@@ -2408,7 +2442,14 @@ mod tests {
             Commands::SubmitUpdate { chain_id: 1, .. }
         ));
 
-        let config_args = vec!["mosoo", "config", "--chain-id", "1", "--instance", "0x4242424242424242424242424242424242424242424242424242424242424242"];
+        let config_args = vec![
+            "mosoo",
+            "config",
+            "--chain-id",
+            "1",
+            "--instance",
+            "0x4242424242424242424242424242424242424242424242424242424242424242",
+        ];
         let config_cli = Cli::try_parse_from(config_args).expect("Parse config");
         assert!(matches!(
             config_cli.command,
@@ -2416,9 +2457,15 @@ mod tests {
         ));
 
         let privacy_args = vec![
-            "mosoo", "attest", "--chain-id", "1", "--privacy-mode", "address-private",
-            "--privacy-salt", "0x0102030405060708010203040506070801020304050607080102030405060708",
-            "--dry-run"
+            "mosoo",
+            "attest",
+            "--chain-id",
+            "1",
+            "--privacy-mode",
+            "address-private",
+            "--privacy-salt",
+            "0x0102030405060708010203040506070801020304050607080102030405060708",
+            "--dry-run",
         ];
         let privacy_cli = Cli::try_parse_from(privacy_args).expect("Parse privacy attest");
         assert!(matches!(
@@ -2495,7 +2542,9 @@ mod tests {
             logos_core_rpc: None,
             dry_run: true,
             privacy_mode: "address-private",
-            privacy_salt: Some("0x1122334455667788112233445566778811223344556677881122334455667788"),
+            privacy_salt: Some(
+                "0x1122334455667788112233445566778811223344556677881122334455667788",
+            ),
         };
         assert!(run_attest(deposit_args).is_ok());
 

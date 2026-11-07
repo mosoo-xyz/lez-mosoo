@@ -178,7 +178,9 @@ fn test_cross_slot_proof_produces_identical_nullifier_preventing_repeated_mint()
         ETH_MAINNET_CHAIN_ID,
         unconsumed_subj_key,
         PROOF_TYPE_ACCOUNT_BALANCE,
-        StatementBinding::Account { address: unconsumed_historical_user },
+        StatementBinding::Account {
+            address: unconsumed_historical_user,
+        },
     )
     .unwrap();
 
@@ -190,7 +192,10 @@ fn test_cross_slot_proof_produces_identical_nullifier_preventing_repeated_mint()
     // 1. Historical statement delayed consumption MUST succeed:
     let late_claimed = claim_ether(&unconsumed_stmt_slot_1m, &mut late_consumer_nullifiers, 250)
         .expect("R#3 delayed statement consumption MUST succeed");
-    assert_eq!(late_claimed, 1000, "Historical claim credits authentic verified balance");
+    assert_eq!(
+        late_claimed, 1000,
+        "Historical claim credits authentic verified balance"
+    );
 
     // 2. Immediate duplicate replay of the historical statement MUST be strictly rejected:
     let late_replay = claim_ether(&unconsumed_stmt_slot_1m, &mut late_consumer_nullifiers, 250);
