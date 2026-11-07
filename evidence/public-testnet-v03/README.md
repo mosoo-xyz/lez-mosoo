@@ -7,7 +7,7 @@ This directory contains live on-chain execution logs, sequencer consensus traces
 ## 1. Environment & Network Parameters
 
 - **Public LEZ Testnet Sequencer:** `https://testnet.lez.logos.co`
-- **LEZ Chain Block Height at Verification:** > 68,399
+- **LEZ Chain Block Height at Verification:** > 78,600
 - **Protocol Execution Gas Cap:** `10,000,000` gas (`getFeeState.max_gas_exec`)
 - **Protocol Base Execution Fee:** `8` gas units
 - **Ethereum Network:** Sepolia Testnet (Chain ID: `11155111`)
@@ -23,31 +23,31 @@ This directory contains live on-chain execution logs, sequencer consensus traces
 ## 2. Evidence Files
 
 1. **`sequencer_verification.txt`**:
-   Live verification trace from `python3 scripts/verify-onchain.py`, confirming live sequencer connectivity, block height progression, genesis block 1 integrity, recent finalized block verification, and single-tx gas headroom (< 10M gas).
+   Live verification trace from `python3 scripts/verify-onchain.py` (27/27 checks passed under strict verified TLS), confirming live sequencer connectivity, block height progression, genesis block 1 integrity, recent finalized block verification, program header ImageID, all 7 segments on-chain, and all 12 lifecycle transaction steps.
 2. **`live_bridge_execution.txt`**:
    End-to-end execution log from `python3 scripts/testnet-two-way-bridge.py --mode live`, proving:
-   - On-chain deployment verification of `MosooLocker.sol` on Sepolia.
-   - On-chain receipt & log decoding of `DepositETH` event.
+   - Live on-chain deployment verification of `MosooLocker.sol` on Sepolia.
+   - Live on-chain receipt & log decoding of `DepositETH` event.
    - 3-Tx light client update simulation on LEZ under 10M gas cap.
-   - 1:1 synthetic `mETH` minting and peer-to-peer transfer on LEZ.
+   - Deterministic `mETH` ledger state machine verification and peer-to-peer transfer on LEZ zkVM.
    - Invariant match: `Locked ETH == Active mETH`.
    - Replay-protected burn receipt generation and Ethereum unlock execution.
 3. **`deployment_manifest.json` & `lifecycle_manifest.json`**:
-   Full on-chain deployment and 12 lifecycle transaction manifests for independently verifying Mosoo's program deployment (`DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf`, ImageID `ad6fbedb983da6b6...`) via `python3 scripts/verify-lez-deployment.py`.
+   Full on-chain deployment and 12 lifecycle transaction manifests for independently verifying Mosoo's program deployment (`DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf`, ImageID `ad6fbedb983da6b6...`) via `python3 scripts/verify-lez-deployment.py` (29/29 checks passed).
 
 ---
 
 ## 3. Independent Reproduction
 
-Anyone can independently reproduce these public testnet results with a single command:
+Anyone can independently reproduce these public testnet results with simple commands:
 
 ```bash
-# 1. Verify deployed program and 12 lifecycle transactions on public LEZ testnet (29 checks)
+# 1. Verify deployed program, 7 segments, and 12 lifecycle transactions on public LEZ testnet (29 checks)
 python3 scripts/verify-lez-deployment.py
 
-# 2. Verify live LEZ testnet sequencer protocol parameters
+# 2. Comprehensive master on-chain verifier: sequencer consensus, gas engine, program shards, and lifecycle (27 checks)
 python3 scripts/verify-onchain.py
 
-# 3. Run live cross-chain two-way bridge pipeline
+# 3. Run live cross-chain two-way bridge pipeline (Sepolia On-Chain Escrow + LEZ zkVM State Machine)
 python3 scripts/testnet-two-way-bridge.py --mode live
 ```

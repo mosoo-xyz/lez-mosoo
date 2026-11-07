@@ -89,6 +89,12 @@ enum Commands {
         /// Optional 32-byte secret salt (hex 0x...) for privacy-preserving blinding commitments
         #[arg(long)]
         privacy_salt: Option<String>,
+        /// Optional path to a JSON LightClientBootstrap or checkpoint file containing authentic sync committee keys
+        #[arg(long)]
+        bootstrap_file: Option<String>,
+        /// Optional public Beacon REST endpoint to load live sync committee keys from an active consensus client
+        #[arg(long)]
+        beacon_rpc: Option<String>,
     },
     /// Offline local simulation of BLS light client update and MPT proof verification (RFP-021)
     DryRun {
@@ -189,6 +195,8 @@ fn main() -> anyhow::Result<()> {
             dry_run,
             privacy_mode,
             privacy_salt,
+            bootstrap_file,
+            beacon_rpc,
         } => run_attest(AttestArgs {
             chain_id,
             address_str: &address,
@@ -205,6 +213,8 @@ fn main() -> anyhow::Result<()> {
             dry_run,
             privacy_mode: &privacy_mode,
             privacy_salt: privacy_salt.as_deref(),
+            bootstrap_file: bootstrap_file.as_deref(),
+            beacon_rpc: beacon_rpc.as_deref(),
         }),
         Commands::DryRun {
             chain_id,
@@ -835,6 +845,8 @@ struct AttestArgs<'a> {
     pub dry_run: bool,
     pub privacy_mode: &'a str,
     pub privacy_salt: Option<&'a str>,
+    pub bootstrap_file: Option<&'a str>,
+    pub beacon_rpc: Option<&'a str>,
 }
 
 fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
@@ -891,7 +903,6 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         Address::repeat_byte(0x11)
     };
 
-    let active_rpc = args.rpc_url.or(args.logos_core_rpc);
     if let Some(endpoint) = active_rpc {
         println!(
             "Execution Mode:     \x1b[1;32mLive RPC State Extraction\x1b[0m (Endpoint: {})",
@@ -1540,14 +1551,76 @@ fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         [0u8; 32]
     };
 
-    // Authenticate consensus committee with cryptographically valid BLS public keys
-    let ikm = [88u8; 32];
-    let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[])
-        .map_err(|e| anyhow::anyhow!("BLS key_gen error: {e:?}"))?;
-    let pk_bytes = sk.sk_to_pk().to_bytes();
-    let current_sync_committee = SyncCommittee {
-        pubkeys: vec![pk_bytes.to_vec(); 512],
-        aggregate_pubkey: pk_bytes.to_vec(),
+    // Authenticate consensus committee
+    let current_sync_committee = if let Some(boot_path) = args.bootstrap_file {
+        println!(
+            "  - Committee Source:          Loading authentic validator committee from {}",
+            boot_path
+        );
+        let content = std::fs::read_to_string(boot_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read bootstrap file {}: {}", boot_path, e))?;
+        let json_val: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| anyhow::anyhow!("Invalid bootstrap JSON in {}: {}", boot_path, e))?;
+        let data = json_val.get("data").unwrap_or(&json_val);
+        if let Some(comm_val) = data.get("current_sync_committee") {
+            serde_json::from_value::<mosoo_core::types::SyncCommittee>(comm_val.clone()).map_err(
+                |e| anyhow::anyhow!("Invalid sync committee structure in {}: {}", boot_path, e),
+            )?
+        } else {
+            anyhow::bail!(
+                "Missing 'current_sync_committee' in bootstrap file {}",
+                boot_path
+            );
+        }
+    } else if let Some(rpc) = args.beacon_rpc {
+        println!(
+            "  - Committee Source:          Live Beacon REST API query to {}",
+            rpc
+        );
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()?;
+        let url = format!(
+            "{}/eth/v1/beacon/light_client/bootstrap/0x{}",
+            rpc.trim_end_matches('/'),
+            hex::encode(beacon_block_root)
+        );
+        let resp = client
+            .get(&url)
+            .send()
+            .map_err(|e| anyhow::anyhow!("Failed querying beacon bootstrap from {}: {}", url, e))?;
+        if !resp.status().is_success() {
+            anyhow::bail!(
+                "Beacon node returned error status {} for bootstrap query at {}",
+                resp.status(),
+                url
+            );
+        }
+        let json_val: serde_json::Value = resp.json()?;
+        let comm_val = json_val
+            .pointer("/data/current_sync_committee")
+            .ok_or_else(|| {
+                anyhow::anyhow!("Missing /data/current_sync_committee in beacon response")
+            })?;
+        serde_json::from_value::<mosoo_core::types::SyncCommittee>(comm_val.clone())?
+    } else if args.demo {
+        println!("  - Committee Source:          \x1b[1;33m[DEMO SIMULATION: Test committee fixture]\x1b[0m");
+        let ikm = [88u8; 32];
+        let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[])
+            .map_err(|e| anyhow::anyhow!("BLS key_gen error: {e:?}"))?;
+        let pk_bytes = sk.sk_to_pk().to_bytes();
+        SyncCommittee {
+            pubkeys: vec![pk_bytes.to_vec(); 512],
+            aggregate_pubkey: pk_bytes.to_vec(),
+        }
+    } else {
+        anyhow::bail!(
+            "Production consensus attestation requires authentic validator committee data.\n\
+             Please provide either:\n\
+               1. --bootstrap-file <BOOTSTRAP_JSON_PATH> containing authentic Ethereum sync committee keys, or\n\
+               2. --beacon-rpc <REST_URL> to query an active consensus client endpoint, or\n\
+               3. --demo for local offline simulation with deterministic test committee fixtures."
+        );
     };
 
     let instance = InstanceAccount {
@@ -2188,35 +2261,129 @@ fn run_verify_checkpoint(
         println!("  - Checkpoint Mode:           [CANONICAL FIXTURE CHECKPOINT: Period 1884]");
     }
 
-    let (header, committee, committee_branch, initial_next, next_branch) = {
-        let slot = 15_433_728u64;
-        let ikm = [88u8; 32];
-        let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[]).unwrap();
-        let pk_bytes = sk.sk_to_pk().to_bytes();
-        let committee = SyncCommittee {
-            pubkeys: vec![pk_bytes.to_vec(); 512],
-            aggregate_pubkey: pk_bytes.to_vec(),
+    let (header, committee, committee_branch, initial_next, next_branch) =
+        if let Some(custom_path) = bootstrap_file {
+            if !std::path::Path::new(custom_path).exists() {
+                anyhow::bail!("Specified checkpoint file does not exist: {}", custom_path);
+            }
+            let content = std::fs::read_to_string(custom_path).map_err(|e| {
+                anyhow::anyhow!("Failed reading checkpoint file {}: {}", custom_path, e)
+            })?;
+            let json_val: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
+                anyhow::anyhow!("Invalid JSON in checkpoint file {}: {}", custom_path, e)
+            })?;
+            let data = json_val.get("data").unwrap_or(&json_val);
+
+            if let (Some(hdr_val), Some(comm_val)) =
+                (data.get("header"), data.get("current_sync_committee"))
+            {
+                let beacon_hdr = hdr_val.get("beacon").unwrap_or(hdr_val);
+                let slot = beacon_hdr
+                    .get("slot")
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    .unwrap_or(15_433_728);
+                let proposer_index = beacon_hdr
+                    .get("proposer_index")
+                    .and_then(|v| v.as_u64().or_else(|| v.as_str()?.parse().ok()))
+                    .unwrap_or(0);
+
+                let parse_32 = |val: Option<&serde_json::Value>| -> anyhow::Result<[u8; 32]> {
+                    let s = val.and_then(|v| v.as_str()).unwrap_or("");
+                    let clean = s.trim_start_matches("0x");
+                    let b = hex::decode(clean)
+                        .map_err(|e| anyhow::anyhow!("Invalid hex 32 bytes: {e}"))?;
+                    if b.len() != 32 {
+                        anyhow::bail!("Expected 32 bytes, got {}", b.len());
+                    }
+                    let mut arr = [0u8; 32];
+                    arr.copy_from_slice(&b);
+                    Ok(arr)
+                };
+
+                let parent_root = parse_32(beacon_hdr.get("parent_root"))?;
+                let state_root = parse_32(beacon_hdr.get("state_root"))?;
+                let body_root = parse_32(beacon_hdr.get("body_root"))?;
+
+                let header = BeaconBlockHeader {
+                    slot,
+                    proposer_index,
+                    parent_root,
+                    state_root,
+                    body_root,
+                };
+
+                let committee: SyncCommittee =
+                    serde_json::from_value(comm_val.clone()).map_err(|e| {
+                        anyhow::anyhow!(
+                            "Invalid current_sync_committee structure in {}: {}",
+                            custom_path,
+                            e
+                        )
+                    })?;
+
+                let branch: Vec<[u8; 32]> = if let Some(br_arr) = data
+                    .get("current_sync_committee_branch")
+                    .and_then(|v| v.as_array())
+                {
+                    br_arr
+                        .iter()
+                        .filter_map(|item| item.as_str())
+                        .filter_map(|s| {
+                            let clean = s.trim_start_matches("0x");
+                            let b = hex::decode(clean).ok()?;
+                            if b.len() == 32 {
+                                let mut arr = [0u8; 32];
+                                arr.copy_from_slice(&b);
+                                Some(arr)
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    let _leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee)?;
+                    let gindex = mosoo_core::crypto::current_sync_committee_gindex(chain_id, slot);
+                    let depth = (63 - gindex.leading_zeros()) as usize;
+                    vec![[0u8; 32]; depth]
+                };
+                println!("  - Mode:                      [AUTHENTIC BOOTSTRAP ARTIFACT PARSED]");
+                (header, committee, branch, None, None)
+            } else {
+                anyhow::bail!(
+                    "Checkpoint file {} missing 'header' or 'current_sync_committee'",
+                    custom_path
+                );
+            }
+        } else {
+            let slot = 15_433_728u64;
+            let ikm = [88u8; 32];
+            let sk = blst::min_pk::SecretKey::key_gen(&ikm, &[]).unwrap();
+            let pk_bytes = sk.sk_to_pk().to_bytes();
+            let committee = SyncCommittee {
+                pubkeys: vec![pk_bytes.to_vec(); 512],
+                aggregate_pubkey: pk_bytes.to_vec(),
+            };
+            let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee)?;
+            let gindex = mosoo_core::crypto::current_sync_committee_gindex(chain_id, slot);
+            let depth = (63 - gindex.leading_zeros()) as usize;
+            let branch = vec![[0u8; 32]; depth];
+            let state_root =
+                mosoo_core::crypto::compute_branch_root_checked(leaf, &branch, gindex)?;
+            let header = BeaconBlockHeader {
+                slot,
+                proposer_index: 0,
+                parent_root: [0x11; 32],
+                state_root,
+                body_root: [0x22; 32],
+            };
+            (
+                header,
+                committee,
+                branch,
+                None::<SyncCommittee>,
+                None::<Vec<[u8; 32]>>,
+            )
         };
-        let leaf = mosoo_core::crypto::hash_tree_root_sync_committee(&committee)?;
-        let gindex = mosoo_core::crypto::current_sync_committee_gindex(chain_id, slot);
-        let depth = (63 - gindex.leading_zeros()) as usize;
-        let branch = vec![[0u8; 32]; depth];
-        let state_root = mosoo_core::crypto::compute_branch_root_checked(leaf, &branch, gindex)?;
-        let header = BeaconBlockHeader {
-            slot,
-            proposer_index: 0,
-            parent_root: [0x11; 32],
-            state_root,
-            body_root: [0x22; 32],
-        };
-        (
-            header,
-            committee,
-            branch,
-            None::<SyncCommittee>,
-            None::<Vec<[u8; 32]>>,
-        )
-    };
 
     let mut trusted_block_root = None;
     if let Some(root_hex) = trusted_block_root_hex {
@@ -2540,6 +2707,8 @@ mod tests {
             dry_run: true,
             privacy_mode: "public",
             privacy_salt: None,
+            bootstrap_file: None,
+            beacon_rpc: None,
         };
         assert!(run_attest(storage_args).is_ok());
 
@@ -2562,6 +2731,8 @@ mod tests {
             privacy_salt: Some(
                 "0x1122334455667788112233445566778811223344556677881122334455667788",
             ),
+            bootstrap_file: None,
+            beacon_rpc: None,
         };
         assert!(run_attest(deposit_args).is_ok());
 
@@ -2582,8 +2753,43 @@ mod tests {
             dry_run: true,
             privacy_mode: "confidential",
             privacy_salt: None,
+            bootstrap_file: None,
+            beacon_rpc: None,
         };
         assert!(run_attest(erc20_args).is_ok());
+    }
+
+    #[test]
+    fn test_cli_production_attest_fails_closed_without_authentic_committee() {
+        let prod_args = AttestArgs {
+            chain_id: 1,
+            address_str: "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            owner_str: None,
+            mapping_slot: 0,
+            tx_hash: None,
+            demo: false, // Production mode
+            allow_unfinalized: false,
+            slot: 15_433_760,
+            target: "storage",
+            min_value: 100,
+            rpc_url: None,
+            logos_core_rpc: None,
+            dry_run: true,
+            privacy_mode: "public",
+            privacy_salt: None,
+            bootstrap_file: None,
+            beacon_rpc: None,
+        };
+        // In production without --bootstrap-file or --beacon-rpc, MUST fail closed
+        let res = run_attest(prod_args);
+        assert!(
+            res.is_err(),
+            "Production mode must reject synthetic committee"
+        );
+        let err_msg = res.unwrap_err().to_string();
+        assert!(err_msg.contains(
+            "Production consensus attestation requires authentic validator committee data"
+        ));
     }
 
     #[test]

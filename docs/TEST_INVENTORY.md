@@ -1,7 +1,7 @@
 # Mosoo Canonical Test Inventory & Audit Breakdown
 
-**Total Automated Tests:** **332** (316 Rust + 16 Foundry Solidity EVM)  
-**Rust Workspace:** 316 tests (313 unit/integration tests + 3 documentation tests)  
+**Total Automated Tests:** **334** (318 Rust + 16 Foundry Solidity EVM)  
+**Rust Workspace:** 318 tests (315 unit/integration tests + 3 documentation tests)  
 **Foundry EVM Suite:** 16 tests (`MosooLocker.t.sol`)  
 **CI Status:** 100% Passing (0 failures, 0 warnings, 0 skipped)  
 **Last Verified:** Version `v0.4.0` (Commit `e04d0ca`)
@@ -13,11 +13,11 @@
 This document provides a canonical, non-overlapping directory and accounting of all automated tests in the `lez-mosoo` repository. It resolves all ambiguity regarding how sub-categories (such as adversarial mutation tests, security hardening regressions, and bridge tests) map into the verified workspace test total.
 
 > [!IMPORTANT]
-> **Zero Double-Counting Guarantee:** The total automated test suite consists of exactly **316 Rust tests** and **16 Solidity EVM tests** (total: **332 tests**). Specialized categories (e.g., "50 Adversarial Tests", "58 Hardening Tests", "74 Verified Statement Tests") are **functional classifications of tests within these files**, not additional additive tests.
+> **Zero Double-Counting Guarantee:** The total automated test suite consists of exactly **318 Rust tests** and **16 Solidity EVM tests** (total: **334 tests**). Specialized categories (e.g., "50 Adversarial Tests", "58 Hardening Tests", "74 Verified Statement Tests") are **functional classifications of tests within these files**, not additional additive tests.
 
 ```
-Total Test Suite: 332 Tests
-├── Rust Workspace: 316 Tests
+Total Test Suite: 334 Tests
+├── Rust Workspace: 318 Tests
 │   ├── mosoo-core integration tests: 167 tests
 │   │   ├── adversarial_mutation_tests.rs: 50 tests (42 attack vectors)
 │   │   ├── audit_oct26_hardening_tests.rs: 58 tests (security hardening)
@@ -36,7 +36,7 @@ Total Test Suite: 332 Tests
 │   ├── consumers/erc20-receiver: 42 tests (token allowlist, nullifiers)
 │   ├── consumers/ether-receiver: 39 tests (native ETH locker, balance)
 │   ├── daemon: 15 tests (Logos Core proxy, jitter, relayer failover)
-│   ├── cli: 3 tests (dry-run parity, attest, submit-update)
+│   ├── cli: 4 tests (dry-run parity, authentic committee fail-closed, attest, submit-update)
 │   └── Doc-tests: 3 tests (erc20_receiver: 1, ether_receiver: 1, mosoo_core: 1)
 └── Foundry EVM Suite: 16 Tests
     └── contracts/test/MosooLocker.t.sol: 16 tests (Sepolia locker, timelocks, veto)
@@ -64,10 +64,10 @@ Total Test Suite: 332 Tests
 | `consumers/erc20-receiver/src/lib.rs` | `erc20-receiver` | Unit & CPI Consumer | 42 | 42 | F#6, F#7, S#1 | `cargo test -p erc20-receiver` |
 | `consumers/ether-receiver/src/lib.rs` | `ether-receiver` | Unit & CPI Consumer | 39 | 39 | F#5, F#7, S#1 | `cargo test -p ether-receiver` |
 | `daemon/src/main.rs` | `mosoo-daemon` | Unit (Relayer Daemon) | 15 | 15 | U#1, U#3 | `cargo test -p mosoo-daemon` |
-| `cli/src/main.rs` | `mosoo-cli` | Unit (CLI Driver) | 3 | 3 | U#2, U#5 | `cargo test -p mosoo-cli` |
+| `cli/src/main.rs` | `mosoo-cli` | Unit (CLI Driver) | 4 | 4 | U#2, U#5 | `cargo test -p mosoo-cli` |
 | Rust Documentation Tests | Workspace | Doc-Tests | 3 | 3 | U#4 | `cargo test --doc` |
 | `contracts/test/MosooLocker.t.sol` | Solidity (Foundry) | EVM Contract Tests | 16 | 16 | Research / Sepolia Locker | `forge test -vvv` |
-| **TOTAL** | **Entire Workspace** | **All Categories** | **332** | **332** | **Full RFP-021 Suite** | `cargo test --workspace && forge test` |
+| **TOTAL** | **Entire Workspace** | **All Categories** | **334** | **334** | **Full RFP-021 Suite** | `cargo test --workspace && forge test` |
 
 ---
 
@@ -107,7 +107,7 @@ The 74 VerifiedStatement consumer-integration tests are distributed across:
 - `mosoo-core/tests/e2e_consumer_tests.rs` (2 tests)
 - `mosoo-core/tests/sequencer_e2e_tests.rs` (4 tests)
 - `mosoo-core/src/predicate.rs` (3 tests)
-**Total: 74 tests.** They are **already counted** in the table above and do NOT add to the 332 total.
+**Total: 74 tests.** They are **already counted** in the table above and do NOT add to the 334 total.
 
 ---
 

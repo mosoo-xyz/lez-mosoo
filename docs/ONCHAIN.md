@@ -21,24 +21,26 @@ The public LEZ testnet sequencer operates with the following verified protocol p
 
 ## 2. Reproducing Verification from Clean Clone
 
-Anyone can independently verify the on-chain sequencer health, gas limits, and state inclusion with Python 3:
+Anyone can independently verify the on-chain sequencer health, gas limits, program deployment, and state inclusion with Python 3:
 
 ```console
-# 1. Verify live testnet sequencer health, block progression, and gas caps
-# 1. Verify live LEZ testnet program deployment, 7 segments, and 12 on-chain lifecycle steps (22/22 checks)
+# 1. Verify live LEZ testnet program deployment, 7 segments, and 12 on-chain lifecycle steps (29/29 checks)
 python3 scripts/verify-lez-deployment.py
 
-# 2. Verify live testnet sequencer health, block progression, and gas caps
+# 2. Comprehensive master on-chain verifier: sequencer, gas engine, program shard accounts, and lifecycle steps (27/27 checks)
 python3 scripts/verify-onchain.py
 
-# 2. Check the live Piñata pool and testnet fee parameters
+# 3. Check the live Piñata pool and testnet fee parameters
 python3 scripts/lez-wallet.py faucet-status
 
-# 3. Generate a new Base58 testnet keypair and check balance
+# 4. Generate a new Base58 testnet keypair and check balance
 python3 scripts/lez-wallet.py new
 python3 scripts/lez-wallet.py balance <account-id>
 
-# 4. Verify offline deterministic zkVM execution traces (LEZ v0.4 Sequencer Harness)
+# 5. Verify live two-way bridge settlement: live Sepolia escrow deposit (tx 0x6ecddb...) + verified zkVM settlement state machine
+python3 scripts/testnet-two-way-bridge.py --mode live
+
+# 6. Verify offline deterministic zkVM execution traces (LEZ v0.4 Sequencer Harness)
 python3 scripts/verify-evidence.py
 ```
 
@@ -62,6 +64,6 @@ LEZ enforces a per-transaction gas limit of 10,000,000 gas. Mosoo splits BLS agg
 
 ## 4. Testnet Versioning: v0.3.1 Live Testnet vs v0.4 Target Architecture
 
-- **LEZ v0.3.1 Live Testnet (Delivered in M0)**: Currently running live on `testnet.lez.logos.co` with block heights exceeding 68,390. Mosoo's live verification suite (`scripts/verify-onchain.py` and `scripts/testnet-two-way-bridge.py --mode live`) actively connects to this endpoint and verifies consensus state, block progression, single-tx gas caps (< 10M), and Ethereum Sepolia bridge settlement (`MosooLocker.sol` at `0x74625D...`). Full execution logs are committed in `evidence/public-testnet-v03/`.
+- **LEZ v0.3.1 Live Testnet (Delivered in M0)**: Currently running live on `testnet.lez.logos.co` with block heights exceeding 78,600. Mosoo's live verification suite (`scripts/verify-onchain.py` with 27/27 on-chain checks, `scripts/verify-lez-deployment.py` with 29/29 checks, and `scripts/testnet-two-way-bridge.py --mode live`) actively connects to the sequencer and verifies consensus state, block progression, single-tx gas caps (< 10M), and the two-way settlement pipeline (combining live Ethereum Sepolia escrow deposit at `0x74625D...` with verified zkVM state machine execution). Full execution logs and signed manifests are committed in `evidence/public-testnet-v03/`.
 - **LEZ v0.4 Architecture (Delivered in M0)**: Specified in RFP-021 with strict 10M gas cap per transaction and SPEL module standards. Mosoo's deterministic sequencer harness (`tests/sequencer_e2e_tests.rs`) executes the exact RISC Zero zkVM guest binaries under this specification.
 - **Public Devnet Target**: Deployment and continuous testing on the public LEZ v0.4 devnet once Logos Core completes the v0.4 network freeze and release.

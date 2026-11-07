@@ -36,7 +36,7 @@ cargo build --workspace --release
 
 ---
 
-## 3. Running the Test Suite (332 Total Tests)
+## 3. Running the Test Suite (334 Total Tests)
 
 Every test executes deterministically from a clean checkout without flaky behavior or network dependencies:
 
@@ -57,7 +57,7 @@ python scripts/verify-evidence.py
 - **Adversarial Mutation Tests:** 50 tests covering 42 attack vectors (invalid BLS signatures, sub-threshold quorums, non-monotonic slots, tampered MPT proofs).
 - **Security Hardening Tests:** 58 tests validating audit regression invariants.
 - **Foundry Reference Suite:** 16 tests in `MosooLocker.t.sol` testing consumer rate-limiting, timelocks, and guardian veto.
-- **Grand Total Automated Tests:** **332 tests**.
+- **Grand Total Automated Tests:** **334 tests**.
 
 ---
 

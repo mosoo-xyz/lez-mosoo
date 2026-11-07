@@ -5,9 +5,9 @@ Target Chain ID     : 11155111
 ================================================================================
 
 --- [Phase 1/5] LEZ Testnet Sequencer Health Check ---
-  [+] Connected to live LEZ Sequencer node at block height: 78469
+  [+] Connected to live LEZ Sequencer node at block height: 78632
   [+] Sequencer Gas Cap: 10000000 (Strictly 10,000,000 gas limit)
-  [+] Connected to live Ethereum RPC at block height: 12083035
+  [+] Connected to live Ethereum RPC at block height: 12084834
   [+] Live Ethereum RPC Chain ID: 11155111
 
 --- [Phase 2/5] Ethereum Vault Deposit (MosooLocker.sol) ---
