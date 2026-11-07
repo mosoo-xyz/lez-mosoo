@@ -10,8 +10,10 @@ All on-chain LEZ deployments and consumer contract verification routines anchor 
 
 | Identifier | Value | Notes |
 | :--- | :--- | :--- |
-| **RISC0 ImageID (Hex)** | `0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4` | Root of the execution binary committed on LEZ |
-| **ImageID (u32 Array)** | `[0x5e149f7a, 0x334dc182, 0x6e2247b8, 0xfa3d1590, 0x4fbe0188, 0x2687315c, 0x7304c9aa, 0xb4d82e51]` | Little-endian RISC0 words |
+| **RISC0 ImageID (Hex - Harness)** | `0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4` | Root of the execution binary committed in offline sequencer harness |
+| **ImageID (u32 Array - Harness)** | `[0x5e149f7a, 0x334dc182, 0x6e2247b8, 0xfa3d1590, 0x4fbe0188, 0x2687315c, 0x7304c9aa, 0xb4d82e51]` | Little-endian RISC0 words |
+| **Live LEZ v0.3.1 Program ID** | `DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf` | Base58 Program Header on live testnet (`https://testnet.lez.logos.co`) |
+| **Live LEZ v0.3.1 ImageID (Hex)** | `0xad6fbedb983da6b6d75b287da354ce3041905d152d4e576ec318871eddfaa928` | Committed in Header shard on-chain at block 78002 |
 | **Target Architecture** | `riscv32im-risc0-zkvm-elf` (zkVM) / `x86_64-pc-windows-msvc` | Host-profile & zkVM guest targets |
 | **Compiled Release Binary SHA-256** | `01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` | Non-empty compiled release binary digest (103,424 bytes) |
 | **LEZ Program Account** | `0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` | Deterministic program address matching compiled binary digest |
