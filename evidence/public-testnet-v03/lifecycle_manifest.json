@@ -1,0 +1,257 @@
+{
+  "init": {
+    "label": "init",
+    "op": "init",
+    "expected": "applied",
+    "verdict": "applied",
+    "block": 78005,
+    "tx": "a352523ad8b71309d5cde995dd68bc1448037d57c10840be2e0839d20bc549e9",
+    "tx_bytes": 26229,
+    "attempts": [
+      "a352523ad8b71309d5cde995dd68bc1448037d57c10840be2e0839d20bc549e9"
+    ],
+    "precheck": {
+      "gas": 1833662
+    },
+    "gas_limit": 2017028,
+    "block_gas_exec": 2017028,
+    "block_gas_stor": 26229,
+    "payer_balance_before": "95005440",
+    "payer_balance_after": "78659384",
+    "state_changed": true
+  },
+  "init-again": {
+    "label": "init-again",
+    "op": "init",
+    "expected": "refused",
+    "verdict": "reverted",
+    "block": 78006,
+    "tx": "ca4ce883ea1956c3037edf19d1fe753a59bec72b7af53f7d6035ba0bb45f1b6d",
+    "tx_bytes": 26229,
+    "attempts": [
+      "ca4ce883ea1956c3037edf19d1fe753a59bec72b7af53f7d6035ba0bb45f1b6d"
+    ],
+    "precheck": {
+      "refused": "E7291: an instance already exists at this id; choose another id"
+    },
+    "gas_limit": 2017028,
+    "block_gas_exec": 2017028,
+    "block_gas_stor": 26229,
+    "payer_balance_before": "78659384",
+    "payer_balance_after": "62313328",
+    "state_changed": false
+  },
+  "attest-checkpoint-transfer-log": {
+    "label": "attest-checkpoint-transfer-log",
+    "op": "attest",
+    "expected": "applied",
+    "verdict": "applied",
+    "block": 78007,
+    "tx": "06786e483da40a3ff611d16faedccc9e677ba78885553d26becfd108a3e6fc1d",
+    "tx_bytes": 1680,
+    "attempts": [
+      "06786e483da40a3ff611d16faedccc9e677ba78885553d26becfd108a3e6fc1d"
+    ],
+    "precheck": {
+      "gas": 91173
+    },
+    "gas_limit": 100290,
+    "block_gas_exec": 100290,
+    "block_gas_stor": 2051,
+    "payer_balance_before": "62313328",
+    "payer_balance_after": "61497568",
+    "state_changed": false
+  },
+  "attest-checkpoint-weth-balance": {
+    "label": "attest-checkpoint-weth-balance",
+    "op": "attest",
+    "expected": "applied",
+    "verdict": "applied",
+    "block": 78008,
+    "tx": "d069fe6c1b0e02e1d633c99d52a2c29abf13a230208cd878027129b59ec955ca",
+    "tx_bytes": 7276,
+    "attempts": [
+      "d069fe6c1b0e02e1d633c99d52a2c29abf13a230208cd878027129b59ec955ca"
+    ],
+    "precheck": {
+      "gas": 304267
+    },
+    "gas_limit": 334693,
+    "block_gas_exec": 334693,
+    "block_gas_stor": 7276,
+    "payer_balance_before": "61497568",
+    "payer_balance_after": "58761816",
+    "state_changed": false
+  },
+  "attest-wrong-chain": {
+    "label": "attest-wrong-chain",
+    "op": "attest",
+    "expected": "refused",
+    "verdict": "reverted",
+    "block": 78009,
+    "tx": "84ae77362a9e19660ecea529f7be5bb3d428946a0b8d10c5e419675cd3d3cf9f",
+    "tx_bytes": 1680,
+    "attempts": [
+      "84ae77362a9e19660ecea529f7be5bb3d428946a0b8d10c5e419675cd3d3cf9f"
+    ],
+    "precheck": {
+      "refused": "E7209: chain-ID mismatch: the record belongs to another chain's instance"
+    },
+    "gas_limit": 100290,
+    "block_gas_exec": 100290,
+    "block_gas_stor": 1680,
+    "payer_balance_before": "58761816",
+    "payer_balance_after": "57946056",
+    "state_changed": false
+  },
+  "attest-predicate-false": {
+    "label": "attest-predicate-false",
+    "op": "attest",
+    "expected": "refused",
+    "verdict": "reverted",
+    "block": 78010,
+    "tx": "e5671b213e43bfb1013af78281415cff5be4a67bf424c94275a9d94afe798c94",
+    "tx_bytes": 1680,
+    "attempts": [
+      "e5671b213e43bfb1013af78281415cff5be4a67bf424c94275a9d94afe798c94"
+    ],
+    "precheck": {
+      "refused": "E7208: predicate not satisfied by the attested state"
+    },
+    "gas_limit": 100290,
+    "block_gas_exec": 100290,
+    "block_gas_stor": 1680,
+    "payer_balance_before": "57946056",
+    "payer_balance_after": "57130296",
+    "state_changed": false
+  },
+  "attest-slot-not-covered": {
+    "label": "attest-slot-not-covered",
+    "op": "attest",
+    "expected": "refused",
+    "verdict": "reverted",
+    "block": 78012,
+    "tx": "7a4e262a178a6bfd3816cd219d9f472aa435619c0d4dc1aa6ff2f4e5ee999290",
+    "tx_bytes": 7276,
+    "attempts": [
+      "7a4e262a178a6bfd3816cd219d9f472aa435619c0d4dc1aa6ff2f4e5ee999290"
+    ],
+    "precheck": {
+      "refused": "E7207: inclusion proof invalid against the recorded header's root"
+    },
+    "gas_limit": 334693,
+    "block_gas_exec": 334693,
+    "block_gas_stor": 7276,
+    "payer_balance_before": "57130296",
+    "payer_balance_after": "54394544",
+    "state_changed": false
+  },
+  "attest-unrecorded-header": {
+    "label": "attest-unrecorded-header",
+    "op": "attest",
+    "expected": "refused",
+    "verdict": "reverted",
+    "block": 78014,
+    "tx": "b4e4adef997942a306d7d75434d96c06f3f10877525e88585103e1f87e7ecd00",
+    "tx_bytes": 1680,
+    "attempts": [
+      "b4e4adef997942a306d7d75434d96c06f3f10877525e88585103e1f87e7ecd00"
+    ],
+    "precheck": {
+      "refused": "E7292: no header recorded at this slot"
+    },
+    "gas_limit": 100290,
+    "block_gas_exec": 100290,
+    "block_gas_stor": 1680,
+    "payer_balance_before": "54394544",
+    "payer_balance_after": "53478494",
+    "state_changed": false
+  },
+  "u1-begin": {
+    "label": "u1-begin",
+    "op": "begin",
+    "expected": "applied",
+    "verdict": "applied",
+    "block": 78017,
+    "tx": "17cc899ac12ac8745a61a282704870ddcb417a5633ac10baf53795f7ede5f08a",
+    "tx_bytes": 52519,
+    "attempts": [
+      "17cc899ac12ac8745a61a282704870ddcb417a5633ac10baf53795f7ede5f08a"
+    ],
+    "precheck": {
+      "gas": 5473086
+    },
+    "gas_limit": 5600000,
+    "block_gas_exec": 5600000,
+    "block_gas_stor": 52890,
+    "payer_balance_before": "53478494",
+    "payer_balance_after": "8258342",
+    "state_changed": true
+  },
+  "u1-finish-before-miller": {
+    "label": "u1-finish-before-miller",
+    "op": "finish",
+    "expected": "refused",
+    "verdict": "reverted",
+    "block": 78022,
+    "tx": "b6b226e496a29c336f433dce8eaf5bb5499a31d0010febd04a1a014dd0022890",
+    "tx_bytes": 1111,
+    "attempts": [
+      "b6b226e496a29c336f433dce8eaf5bb5499a31d0010febd04a1a014dd0022890"
+    ],
+    "precheck": {
+      "refused": "E7295: the Miller step of this job has not run: send Miller"
+    },
+    "gas_limit": 4145066,
+    "block_gas_exec": 4145066,
+    "block_gas_stor": 1111,
+    "payer_balance_before": "100000000",
+    "payer_balance_after": "66830584",
+    "state_changed": false,
+    "payer": "DWXnVbbBtcZfEZuqynDXU1xEzPwnkmArFP5m2QzkKhkU"
+  },
+  "u1-miller": {
+    "label": "u1-miller",
+    "op": "miller",
+    "expected": "applied",
+    "verdict": "applied",
+    "block": 78023,
+    "tx": "db6ac30bcd8eec14796a83bd2fa059d83e9b9266fd55911b7293de3f1bc66854",
+    "tx_bytes": 355,
+    "attempts": [
+      "db6ac30bcd8eec14796a83bd2fa059d83e9b9266fd55911b7293de3f1bc66854"
+    ],
+    "precheck": {
+      "gas": 4217572
+    },
+    "gas_limit": 4269747,
+    "block_gas_exec": 4269747,
+    "block_gas_stor": 355,
+    "payer_balance_before": "66830584",
+    "payer_balance_after": "32669768",
+    "state_changed": true,
+    "payer": "DWXnVbbBtcZfEZuqynDXU1xEzPwnkmArFP5m2QzkKhkU"
+  },
+  "u1-finish": {
+    "label": "u1-finish",
+    "op": "finish",
+    "expected": "applied",
+    "verdict": "applied",
+    "block": 78025,
+    "tx": "8f9638f936c47fbacbd6c35c492234102c4bb52f63798ae60be3e36700fd6f6f",
+    "tx_bytes": 1111,
+    "attempts": [
+      "8f9638f936c47fbacbd6c35c492234102c4bb52f63798ae60be3e36700fd6f6f"
+    ],
+    "precheck": {
+      "gas": 3768242
+    },
+    "gas_limit": 3815924,
+    "block_gas_exec": 3815924,
+    "block_gas_stor": 1111,
+    "payer_balance_before": "100000000",
+    "payer_balance_after": "69463720",
+    "state_changed": true,
+    "payer": "6e978J6nNbfzjApzkKXJnVX2SHCw2Zvt4dZZJin1LCNf"
+  }
+}
