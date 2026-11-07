@@ -15,7 +15,8 @@ This directory contains live on-chain execution logs, sequencer consensus traces
 - **Verified Vault Deposits:**
   - **Deposit 1:** [`0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882`](https://sepolia.etherscan.io/tx/0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882) (0.005 ETH, Block 11990019, Nonce 1)
   - **Deposit 2:** [`0x3ab00f69885de9df25408eeeb1dbe1df0c8a20558a5de11337e297cfc80eeef2`](https://sepolia.etherscan.io/tx/0x3ab00f69885de9df25408eeeb1dbe1df0c8a20558a5de11337e297cfc80eeef2) (0.010 ETH, Block 12012373, Nonce 2)
-- **Current Total Locked ETH in Vault:** `0.0150 ETH`
+  - **Deposit 3:** [`0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913`](https://sepolia.etherscan.io/tx/0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913) (0.010 ETH, Block 12082214, Nonce 3)
+- **Current Total Locked ETH in Vault:** `0.0250 ETH`
 
 ---
 
@@ -31,6 +32,8 @@ This directory contains live on-chain execution logs, sequencer consensus traces
    - 1:1 synthetic `mETH` minting and peer-to-peer transfer on LEZ.
    - Invariant match: `Locked ETH == Active mETH`.
    - Replay-protected burn receipt generation and Ethereum unlock execution.
+3. **`deployment_manifest.json` & `lifecycle_manifest.json`**:
+   Full on-chain deployment and 12 lifecycle transaction manifests for independently verifying Mosoo's program deployment (`DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf`, ImageID `ad6fbedb983da6b6...`) via `python3 scripts/verify-lez-deployment.py`.
 
 ---
 
@@ -39,9 +42,12 @@ This directory contains live on-chain execution logs, sequencer consensus traces
 Anyone can independently reproduce these public testnet results with a single command:
 
 ```bash
-# 1. Verify live LEZ testnet sequencer
+# 1. Verify deployed program and 12 lifecycle transactions on public LEZ testnet (29 checks)
+python3 scripts/verify-lez-deployment.py
+
+# 2. Verify live LEZ testnet sequencer protocol parameters
 python3 scripts/verify-onchain.py
 
-# 2. Run live cross-chain two-way bridge pipeline
+# 3. Run live cross-chain two-way bridge pipeline
 python3 scripts/testnet-two-way-bridge.py --mode live
 ```
