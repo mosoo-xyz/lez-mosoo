@@ -124,13 +124,19 @@ fn test_lez_v04_logos_core_proxy_conformance() {
 
     // Path 2 [DEV MODE]: Direct unverified RPC fallback endpoint derivation
     let dev_direct_rpc = "https://sepolia.infura.io/v3/TEST_KEY";
-    assert!(!dev_direct_rpc.contains("logos/core/proxy"), "Direct fallback routes outside verified proxy");
+    assert!(
+        !dev_direct_rpc.contains("logos/core/proxy"),
+        "Direct fallback routes outside verified proxy"
+    );
 
     // Path 3 [FAIL-CLOSED]: Strict error when finalized block is missing and allow_unfinalized is false
     let is_finalized_available = false;
     let allow_unfinalized = false;
     let should_fail_closed = !is_finalized_available && !allow_unfinalized;
-    assert!(should_fail_closed, "System MUST fail closed when finalized header is unavailable to prevent reorg attacks");
+    assert!(
+        should_fail_closed,
+        "System MUST fail closed when finalized header is unavailable to prevent reorg attacks"
+    );
 }
 
 #[test]

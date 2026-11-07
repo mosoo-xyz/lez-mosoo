@@ -81,7 +81,10 @@ fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
 
     // Audit Failed Claim: Excessive threshold must reject and leave state 100% UNTOUCHED
     let failed_claim_result = claim(&statement, &mut nullifiers, 10_000_000);
-    assert!(failed_claim_result.is_err(), "Over-threshold claim must fail");
+    assert!(
+        failed_claim_result.is_err(),
+        "Over-threshold claim must fail"
+    );
     assert_eq!(
         nullifiers, state_before,
         "Failed claim MUST produce exactly empty state diff (zero byte modifications)"
@@ -137,7 +140,8 @@ fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
     );
 
     // Successful claim on Native ETH records ONLY 32-byte nullifier
-    let eth_minted = claim_ether(&eth_statement, &mut eth_nullifiers, 500).expect("claim ether succeeds");
+    let eth_minted =
+        claim_ether(&eth_statement, &mut eth_nullifiers, 500).expect("claim ether succeeds");
     assert_eq!(eth_minted, 5_000_000);
     assert!(eth_nullifiers.is_used(&eth_statement.statement_id));
     assert_ne!(&eth_statement.statement_id[..20], &eth_user[..]);
@@ -282,7 +286,10 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     stmt.statement_id = stmt.derive_canonical_id();
 
     // 1. Unshielded private internal statement retains provenance for consumer verification
-    assert_eq!(stmt.binding, StatementBinding::Account { address: user_addr });
+    assert_eq!(
+        stmt.binding,
+        StatementBinding::Account { address: user_addr }
+    );
 
     // 2. Shield statement for public event emission (RFP-021 F#8 privacy gate)
     let public_statement = stmt.shield();
@@ -301,7 +308,9 @@ fn test_privacy_adversary_cannot_correlate_statements() {
     // Verify structured string representation does NOT leak hex or decimal array encodings
     let user_hex = hex::encode(user_addr);
     assert!(
-        !public_statement_str.to_lowercase().contains(&user_hex.to_lowercase()),
+        !public_statement_str
+            .to_lowercase()
+            .contains(&user_hex.to_lowercase()),
         "Hex Ethereum address MUST NOT appear in public statement JSON string"
     );
     assert!(
@@ -391,21 +400,22 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
 
     // Serialize the shielded statement into JSON bytes and string
     let serialized_statement = serde_json::to_vec(&public_statement).expect("serializes");
-    let serialized_statement_str = serde_json::to_string(&public_statement).expect("serializes to str");
+    let serialized_statement_str =
+        serde_json::to_string(&public_statement).expect("serializes to str");
 
     // Serialize nullifier set state (recording statement nullifier)
     let serialized_nullifier_hex = hex::encode(public_statement.statement_id);
 
     // 1. Assert sender address (20 bytes) NEVER appears in shielded statement bytes or string
     assert!(
-        !serialized_statement
-            .windows(20)
-            .any(|w| w == sender),
+        !serialized_statement.windows(20).any(|w| w == sender),
         "Ethereum sender address bytes MUST NOT appear in emitted statement event"
     );
     let sender_hex = hex::encode(sender);
     assert!(
-        !serialized_statement_str.to_lowercase().contains(&sender_hex.to_lowercase()),
+        !serialized_statement_str
+            .to_lowercase()
+            .contains(&sender_hex.to_lowercase()),
         "Ethereum sender address hex MUST NOT appear in emitted statement JSON"
     );
     assert!(
@@ -422,7 +432,9 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
     );
     let contract_hex = hex::encode(token_contract);
     assert!(
-        !serialized_statement_str.to_lowercase().contains(&contract_hex.to_lowercase()),
+        !serialized_statement_str
+            .to_lowercase()
+            .contains(&contract_hex.to_lowercase()),
         "Ethereum contract address hex MUST NOT appear in emitted statement JSON"
     );
     assert!(
@@ -432,14 +444,14 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
 
     // 3. Assert recipient (32 bytes) NEVER appears in shielded statement bytes or string
     assert!(
-        !serialized_statement
-            .windows(32)
-            .any(|w| w == recipient),
+        !serialized_statement.windows(32).any(|w| w == recipient),
         "Recipient bytes MUST NOT appear in emitted statement event"
     );
     let recipient_hex = hex::encode(recipient);
     assert!(
-        !serialized_statement_str.to_lowercase().contains(&recipient_hex.to_lowercase()),
+        !serialized_statement_str
+            .to_lowercase()
+            .contains(&recipient_hex.to_lowercase()),
         "Recipient hex MUST NOT appear in emitted statement JSON"
     );
 
