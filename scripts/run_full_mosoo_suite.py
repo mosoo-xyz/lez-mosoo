@@ -32,9 +32,6 @@ from pathlib import Path
 import base58
 
 ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-
 RPC_URL = "https://testnet.lez.logos.co"
 PROGRAM_ID_B58 = "DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf"
 PROGRAM_ID_BYTES = base58.b58decode(PROGRAM_ID_B58)
@@ -178,14 +175,15 @@ def get_payer_balance(payer_b58: str) -> int:
     return res.get('result', 0)
 
 def main():
-    wallet_file = Path(r'C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\scripts\wallet.json')
+    script_dir = Path(__file__).resolve().parent
+    wallet_file = script_dir / 'wallet.json'
     wallet = json.loads(wallet_file.read_text())
     payer_sk = bytes.fromhex(wallet['privateKeyHex'].removeprefix('0x'))
     payer_pk, _ = pubkey_gen(payer_sk)
     payer_id_bytes = hashlib.sha256(b'/LEE/v0.3/AccountId/Public/\x00\x00\x00\x00\x00' + payer_pk).digest()
     payer_b58 = base58.b58encode(payer_id_bytes).decode()
 
-    templates_file = Path(r'C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\scripts\templates.json')
+    templates_file = script_dir / 'templates.json'
     templates = json.loads(templates_file.read_text())
 
     # Derived PDAs:
@@ -195,7 +193,7 @@ def main():
     job_id = bytes.fromhex('fee199670bb0a662ea894361e38207501f38f5338be20d2ab61011138a745c0a')
     job_raw, job_b58 = pda(PROGRAM_ID_BYTES, hashlib.sha256(b'job' + INSTANCE_ID + job_id).digest())
 
-    state_path = Path(r'C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\scripts\lifecycle_state.json')
+    state_path = script_dir / 'lifecycle_state.json'
     state = {}
     if state_path.exists():
         state = json.loads(state_path.read_text())

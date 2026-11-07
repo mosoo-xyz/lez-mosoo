@@ -18,9 +18,6 @@ PINATA_ACCOUNT = "EfQhKQAkX2FJiwNii2WFQsGndjvF1Mzd7RuVe7QdPLw7"
 FEE_PROGRAM = "2TsGdKDWTY92X4vSBZzjzemZpThhyqNEdZJj3xBrQ9AZ"
 
 ctx = ssl.create_default_context()
-ctx.check_hostname = False
-ctx.verify_mode = ssl.CERT_NONE
-
 def b58encode(b: bytes) -> str:
     n = int.from_bytes(b, "big")
     chars = []

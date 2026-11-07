@@ -77,13 +77,9 @@ GAS_CREATE_HEADER = 500_000   # conservative limit for header creation
 GAS_CAP           = 10_000_000
 
 # ---------------------------------------------------------------------------
-# TLS context (testnet uses self-signed)
+# TLS context (strict certificate verification)
 # ---------------------------------------------------------------------------
 _ctx = ssl.create_default_context()
-_ctx.check_hostname = False
-_ctx.verify_mode    = ssl.CERT_NONE
-
-
 # ---------------------------------------------------------------------------
 # JSON-RPC helpers
 # ---------------------------------------------------------------------------
