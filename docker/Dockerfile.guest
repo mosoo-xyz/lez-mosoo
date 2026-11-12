@@ -26,7 +26,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
 
 # Install rzup + RISC0 C++ cross-compiler + RISC0 custom Rust toolchain for riscv32im-risc0-zkvm-elf
-RUN curl --proto '=https' --tlsv1.2 -sSf https://risczero.com/install | bash \
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://risczero.com/install | bash \
     && if [ -n "${GITHUB_TOKEN}" ]; then export GITHUB_TOKEN="${GITHUB_TOKEN}"; fi \
     && rzup install cpp \
     && rzup install rust
