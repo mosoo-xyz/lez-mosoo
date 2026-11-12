@@ -1,15 +1,17 @@
-# Mosoo Performance Baseline & Gas Analysis
+# Mosoo Performance Baseline & Modeled Gas Analysis
 
-## Measurement Environment
-- **Architecture**: x86_64 / RISC-V 32IM target
-- **zkVM**: RISC Zero v1.2+
-- **Cryptography Engine**: `blst` v0.3.17 (hardware accelerated)
+## Environment & Scope
+- **Architecture**: x86_64 host CPU (empirical `mosoo-cli` timings) / `riscv32im-risc0-zkvm-elf` guest target (modeled cycle budget)
+- **zkVM**: RISC Zero `1.0` (`risc0-zkvm = "1.0"` in `Cargo.toml`)
+- **Cryptography Engine**: `blst` v0.3 (`min_pk`)
+
+> **Important:** Native host nanosecond timings are measured directly by `cargo run -p mosoo-cli -- benchmarks` (`benchmarks/raw_crypto_benchmarks.json`). The zkVM cycle counts and comparative `zkcrypto/bls12_381` figures below are modeled reference estimates rather than local physical `cargo-risczero` prover measurements (see [`docs/BLS_LIBRARY_ANALYSIS.md`](../docs/BLS_LIBRARY_ANALYSIS.md)).
 
 ---
 
-## 1. BLS12-381 Verification Cycle Breakdown
+## 1. Modeled BLS12-381 Verification Cycle Breakdown
 
-Comparison between RISC0-accelerated `blst` and unaccelerated `zkcrypto`:
+Reference cycle comparison between `blst` split pairing and pure-Rust `zkcrypto` baseline estimates:
 
 | Operation | `blst` (RISC0 Accelerated) | `zkcrypto/bls12_381` | Speedup |
 | :--- | :---: | :---: | :---: |

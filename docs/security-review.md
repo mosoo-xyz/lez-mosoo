@@ -1,318 +1,56 @@
-# Mosoo Security Architecture, Invariant Testing & Threat Model
+# Mosoo Security Architecture & Threat Review
 
-This document specifies the cryptographic threat model, core protocol invariants, adversarial test suite, and independent audit plan for the **Mosoo Ethereum Consensus & State Attestation Module** on the Logos Execution Zone (LEZ).
-
-> [!NOTE]
-> **Security & Verification Status:**
-> - **Internal Hardening & Test Suite:** Internal adversarial invariant hardening, protocol boundary enforcement, 42 mutation attack tests (`tests/adversarial_mutation_tests.rs`), 58 security hardening regression tests (`tests/audit_oct26_hardening_tests.rs`), 22 two-way cross-chain bridge security tests (`tests/two_way_bridge_tests.rs`), 16 Foundry EVM tests, and a total of 336 tests (320 Rust + 16 Foundry) passing in CI with 0 compiler or Clippy warnings (`-D warnings`).
-> - **Independent External Audit:** Planned formal third-party security audit engagement prior to mainnet release.
+This document describes the core security invariants enforced by Mosoo (`mosoo-core`, consumer crates, `mosoo-daemon`, and `contracts/MosooLocker.sol`), their test coverage across the workspace, and current audit boundaries.
 
 ---
 
-## 1. Threat Model & Trust Assumptions
+## Core Protocol Invariants
 
-Mosoo operates as an on-chain Ethereum consensus verification engine and state prover inside the RISC Zero zkVM on LEZ. The security architecture addresses the following threat vectors:
-
-### Consensus Layer Assumptions & Cryptographic Thresholds
-- **Safety Threshold (>= 342 / 512 Signers):** The light client enforces Ethereum's 2/3 aggregate participation threshold (>= 342 of 512 sync committee validators). Under the standard Ethereum consensus security model, an adversary cannot forge a valid BLS aggregate signature over an invalid or fabricated block header unless Byzantine actors control at least 342 validators (a >= 2/3 Byzantine supermajority).
-- **Liveness Threshold (<= 170 / 512 Byzantine / Offline Validators):** If more than 170 validators (> 1/3 of the 512 sync committee) fail to participate or are Byzantine, the remaining honest validators (< 342) cannot reach the 2/3 quorum. In this scenario, header updates temporarily stall until validator participation recovers or the committee rotates at the next period boundary (~8,192 slots / ~27.3 hours). This is a liveness halt, not a safety violation (no invalid headers can be accepted).
-- **Sync Committee Rotation Period (8,192 Slots / 256 Epochs):** The 512-validator sync committee rotates every 256 epochs (8,192 slots, ~27.3 hours). The next sync committee is authenticated via Merkle branch against the attested state root at fork-aware generalized indices (55 for Altair/Deneb, 87 for Electra/Fulu, 2946 for Gloas).
-- **Weak-Subjectivity Freshness Window (54,000 Canonical Slots / 1,728,000 Slots Ceiling):** In Ethereum PoS, weak subjectivity defines the period within which an offline light client must sync or obtain a trusted checkpoint to remain safe against long-range consensus forks. Mosoo implements a two-tier defense: a canonical operational window of 54,000 slots (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, ~7.5 days at 12s/slot) for routine sync updates, and a hard consensus ceiling of 1,728,000 slots (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, 54,000 epochs / ~240 days) on bootstrap checkpoints and historical leaps (`WeakSubjectivityExpired`). Per RFP-021 Functionality #13, verified instances are strictly immutable and cannot be rewritten in-place. Stale instances stalled past this window are retired and replaced by initializing a fresh instance with a current trusted checkpoint per Functionality #10. Updates asserting slot numbers retrogressive to the tracked checkpoint are rejected by monotonicity checks (`StaleUpdate`).
-
-### Untrusted Prover & Environment Assumptions
-- **Byzantine Operator / Host VM:** The zkVM guest code makes zero assumptions about the honesty of the transaction submitter or the LEZ host VM. All Merkle branches, signatures, and RLP encodings are validated in-guest.
-- **Untrusted Consumer Caller:** Consumer smart contracts cannot trust caller-supplied claims. State inclusion proofs and predicate evaluations execute directly against an authenticated `HeaderRecord` committed by Mosoo.
-- **Replay & Double-Spend Attacks:** Any state claim (e.g. token deposit, event log emission) must be claimable exactly once across all transactions, slots, and fork boundaries.
-
----
-
-## 2. Core Protocol Invariants & Boundary Hardening
-
-During protocol design and engineering, we identified and hardened eight critical boundary conditions:
-
-### Invariant 1: Quorum & Sync Aggregate Strictness
-**Vulnerability:** Altair sync committees consist of 512 validators represented as a 64-byte bitfield and a 96-byte aggregate BLS signature. If bitfield length is not strictly enforced, an attacker could supply trailing bytes with set bits. With 341 valid signers, adding an extraneous bit would bypass the 342/512 threshold without corresponding to any validator in the committee.  
-**Enforcement:** `verify_sync_aggregate_lengths()` strictly asserts `bits.len() == 64` and `signature.len() == 96`:
-```rust
-pub const SYNC_COMMITTEE_BITS_BYTES: usize = 64;
-pub const BLS_SIGNATURE_BYTES: usize = 96;
-
-pub fn verify_sync_aggregate_lengths(bits: &[u8], signature: &[u8]) -> Result<(), MosooError> {
-    if bits.len() != SYNC_COMMITTEE_BITS_BYTES {
-        return Err(MosooError::InvalidSyncCommitteeBitsLength {
-            actual: bits.len(),
-            expected: SYNC_COMMITTEE_BITS_BYTES,
-        });
-    }
-    if signature.len() != BLS_SIGNATURE_BYTES {
-        return Err(MosooError::InvalidSyncCommitteeSignatureLength {
-            actual: signature.len(),
-            expected: BLS_SIGNATURE_BYTES,
-        });
-    }
-    Ok(())
-}
-```
-*Validated in:* `test_sync_committee_bits_strict_64_bytes_enforcement` and `test_mutation_attack_2_sub_threshold_quorum_rejected`.
+1. **Consensus Domain Separation & Fork Binding:** `compute_signing_root` binds `DOMAIN_SYNC_COMMITTEE` (`0x07000000`), chain-specific fork versions, and `genesis_validators_root`. Cross-chain or cross-fork signatures fail pairing checks.
+2. **Fork-Aware Execution Payload Merkleization:** Pre-Deneb headers pad to 16 SSZ leaves (depth 4); Deneb, Electra, Fulu, and Gloas headers pad to 32 leaves (depth 5) with length-mixed `extra_data` hashing so `execution_state_root` and `receipts_root` match Ethereum consensus layouts without silent truncation.
+3. **Bootstrap Committee Authentication:** `handle_initialize` verifies initial sync committees against `bootstrap_header.state_root` via generalized index `54` / `86` (`current`) and `55` / `87` (`next`), rejecting tampered committee roots before any state is written.
+4. **Historical Block Accumulator Anchoring:** Proofs referencing historical slots use fork-aware generalized indices (`(37 << 13) | (slot % 8192)` for Altair–Deneb; `(69 << 13) | (slot % 8192)` for Electra–Fulu) anchored in the authenticated `BeaconState.block_roots` accumulator rather than unverified caller headers.
+5. **Cross-Stage 3-Tx Pipeline Binding (`update_digest`):** `JobAccount` PDAs derive deterministically from `(instance_id, job_id)` and record `update_digest = sha256(slot || attested_root || finalized_root || bits || signature)`. Both `handle_miller_update` and `handle_finish_update` reject updates whose digest, chain, instance, or stage mismatches.
+6. **Store-Backed Authenticity & Atomic Consumer Verification:** Consumers load `InstanceAccount` and `HeaderRecord` from program-owned storage (`store.get_account_owner == MOSOO_PROGRAM_ID`) rather than caller memory, pin trusted instances and lockers via `TrustedBridgeConfig`, and execute state/receipt verification atomically inside `claim_atomic` / `claim_ether_atomic`.
+7. **Collision-Resistant Log Payloads & Nullifiers:** Log data above 32 bytes is domain-hashed (`keccak256("MOSOO_EVENT_PAYLOAD_HASH:" || data)`), while event subject keys bind `block_hash || slot || tx_index || log_index || emitter || topic0`.
+8. **Strict Merkle Branch Depth Validation:** `compute_branch_root_checked` enforces exact SSZ branch depth `branch.len() == (63 - gindex.leading_zeros())`, preventing path-extension or truncation malleability.
+9. **Instance Immutability & Weak-Subjectivity Caps:** Initialized light client instances cannot have genesis checkpoints rewritten in place. Freshness enforces an operational window (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS = 54,000` slots, ~7.5 days) and a hard dormancy ceiling (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS = 1,728,000` slots, ~240 days).
+10. **Canonical V2 Statement IDs:** `derive_statement_id_v2` computes `sha256("mosoo_statement_v2" || chain_id || genesis_validators_root || subject_key || proof_type_tag || verified_value)` independently of predicate thresholds (`AtLeast`, `Equal`, etc.), blocking predicate-tweaked replay claims. Consumers reject mismatched caller-supplied IDs with `StatementIdMismatch`.
+11. **Escrow-Backed Asset Minting Separation:** Minting wrapped assets (`MethLedger::mint_meth_atomic`, `Erc20Ledger` atomic deposits) requires `StatementBinding::NativeEthDeposit` or verified ERC-20 `MosooLocker` deposit receipts, rejecting unbacked account-balance proofs (`DepositBackingRequired`) and untrusted locker addresses.
+12. **Persistent PDA Nullifiers:** Consumed claim IDs persist in deterministic PDA records (`["mosoo_nullifier", statement_id]`) with atomic state rollback if ledger updates fail.
 
 ---
 
-### Invariant 2: Multi-Fork SSZ Compatibility (Deneb 32 Leaves)
-**Vulnerability:** Pre-Deneb execution payload headers contain 14 or 15 fields, padding to 16 leaves (depth 4). Deneb introduced `blob_gas_used` and `excess_blob_gas`, bringing the field count to 17. Merkleizing 17 fields into a 16-leaf tree silently corrupts the computed root. Additionally, SSZ `ByteList[32]` for `extra_data` requires hashing the 32-byte chunk mixed with length bytes.  
-**Enforcement:** Dynamic Merkleization pads to 16 leaves for Bellatrix/Capella and 32 leaves (depth 5) for Deneb/Electra/Gloas, with length-mixed `extra_data` hashing:
-```rust
-let mut chunk = [0u8; 32];
-chunk[..header.extra_data.len()].copy_from_slice(&header.extra_data);
-let mut len_bytes = [0u8; 32];
-len_bytes[..8].copy_from_slice(&(header.extra_data.len() as u64).to_le_bytes());
-let mut h = Sha256::new();
-h.update(chunk);
-h.update(len_bytes);
-let extra_data_root: [u8; 32] = h.finalize().into();
-```
-*Validated in:* `test_deneb_execution_payload_header_32_leaves` and `test_sepolia_gloas_and_hoodi_fork_boundary_and_domain_separation`.
+## Off-Chain Daemon & Two-Way Bridge Guards
+
+- **Local Transaction Signing (`mosoo-daemon` & `mosoo-cli`):** Private keys stay inside `alloy::signers::local::PrivateKeySigner`; only caller addresses and signatures cross RPC boundaries, never raw secrets.
+- **Fail-Closed Period Transitions:** Syncing across 8,192-slot sync-committee periods requires `/light_client/updates` with `next_sync_committee` proof branches; the daemon refuses fallback to `/light_client/finality_update` without committee handoff data.
+- **Escrow Vault Hardening (`contracts/MosooLocker.sol`):**
+  - Contract-scoped EIP-712 `DOMAIN_SEPARATOR` (`chainId` + `verifyingContract`) and `M-of-N` quorum signatures (Sepolia v2 commissioned at `2-of-2`) with EIP-2 low-`s` enforcement and non-zero signer checks.
+  - Default-enabled token allowlist (`tokenAllowlistEnabled = true`), fee-on-transfer balance-delta verification, and safe staticcall balance checks.
+  - `executedBurns` and permanent `cancelledBurns` nullifier mappings.
+  - Rolling 24-hour withdrawal caps with bounded cleanup (`MAX_CLEANUP_BATCH = 32`), 24-hour queue + Guardian veto (`>= 10 ETH`), 24-hour `attesterAuthority` delay, two-step ownership handover, and 48-hour multisig governance timelocks (`GOVERNANCE_TIMELOCK_DELAY = 2 days`).
 
 ---
 
-### Invariant 3: Bootstrap Checkpoint Committee Authentication
-**Vulnerability:** If `initial_next_committee` is supplied during bootstrap initialization (`handle_initialize`), storing it without verifying its Merkle proof allows an attacker to plant a malicious sync committee that activates upon the next period boundary.  
-**Enforcement:** `InitializeArgs` requires `initial_next_committee_branch`. When provided, it is cryptographically verified at generalized index 55 against `bootstrap_header.state_root`.  
-*Validated in:* `test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forgery_rejection`.
+## Automated Security Test Coverage
 
----
-
-### Invariant 4: Historical Block Root Accumulator Anchoring
-**Vulnerability:** Proving past Ethereum blocks against `instance.current_header_hash` fails because the beacon block header hash is not the beacon state root.  
-**Enforcement:** Historical block proofs compute fork-aware generalized indices: `(37 << 13) | (slot % 8192)` (depth 18) for Altair..Deneb, or `(69 << 13) | (slot % 8192)` (depth 19) for Electra..Fulu, and verify the branch directly against the `BeaconState.block_roots` accumulator anchored in `instance.current_state_root`.  
-*Validated in:* `test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection`.
-
----
-
-### Invariant 5: Cross-Stage Pipeline Binding (`update_digest`)
-**Vulnerability:** Splitting BLS pairing verification into 3 transactions (`begin_update` -> `miller_update` -> `finish_update`) coordinates through an on-chain `JobAccount` PDA. Without cryptographic binding between stages, an attacker could tamper with `job.update` between stages 2 and 3.  
-**Enforcement:** `JobAccount` records `update_digest`:
-```text
-update_digest = sha256(slot || attested_root || finalized_root || bits || signature)
-```
-Both `handle_miller_update` and `handle_finish_update` recompute and verify this digest.  
-*Validated in:* `test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejected`.
-
----
-
-### Invariant 6: Atomic Same-Transaction Consumer Settlement
-**Vulnerability:** If reference consumers accept caller-supplied statements out-of-band, an attacker could fabricate a statement struct without valid consensus backing.  
-**Enforcement:** `claim_atomic` in `erc20-receiver` and `claim_ether_atomic` in `ether-receiver` execute state proof verification directly against the light client's authenticated `HeaderRecord` within the consuming transaction. Any forged proof or invalid header causes the entire transaction to revert atomically.  
-*Validated in:* `test_claim_atomic_receipt_log_succeeds`, `test_claim_ether_atomic_account_balance_succeeds`, and negative rejection tests in both consumer crates.
-
----
-
-### Invariant 7: Collision-Resistant Event & Statement Nullifiers
-**Vulnerability:** Variable-length event logs with identical trailing bytes could collide if naively truncated to 32 bytes. Identical transfers in different blocks could also produce colliding nullifiers.  
-**Enforcement:** Event payloads > 32 bytes use domain-separated Keccak-256 hashing: `keccak256("MOSOO_EVENT_PAYLOAD_HASH:" || data)`. Event subject keys explicitly bind `block_hash || slot || tx_index || log_index || emitter || topic0`.  
-*Validated in:* `test_variable_length_log_data_prevents_silent_truncation_collision` and `test_mutation_attack_9_cross_block_event_nullifier_uniqueness`.
-
----
-
-### Invariant 8: Strict Merkle Proof Depth Validation
-**Vulnerability:** Accepting variable-length Merkle branches without enforcing depth permits path malleability attacks.  
-**Enforcement:** `compute_branch_root_checked()` verifies that branch length exactly matches tree depth: `branch.len() == (63 - gindex.leading_zeros())`.  
-*Validated in:* `test_branch_depth_strict_validation` and `test_mutation_attack_4_forged_committee_branch_rejected`.
-
----
-
-### Invariant 9: Genesis Bootstrap Weak-Subjectivity Boundary & Authority Provenance
-**Vulnerability:** Bootstrapping a light client from a stale or attacker-controlled initial state allows long-range fork attacks.
-**Enforcement:** In alignment with Ethereum PoS specification (`sync-protocol.md`), initial sync committees are verified at generalized index 54/86 against `bootstrap_header.state_root`. A mandatory `trusted_head_slot` ensures weak-subjectivity freshness ($\le 1,728,000$ slots / ~240 days). Once initialized, the instance is permanently immutable, and all future updates require BLS quorum ($\ge 342/512$) with zero operator trust.  
-*Validated in:* `test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected` and `test_weak_subjectivity_and_stale_instance_recovery`.
-
----
-
-### Invariant 10: Canonical Statement ID Integrity & Decoupled State Derivation
-**Vulnerability:** If consuming contracts simply trust a caller-supplied `statement_id`, an attacker can modify the identifier to bypass nullifiers while pointing to the same underlying state.  
-**Enforcement:** Consumers strictly recompute `statement.derive_canonical_id()` from the canonical state tuple:
-$$\text{statement\_id} = \text{sha256}(\text{"mosoo\_statement\_v1"} \parallel \text{chain\_id} \parallel \text{subject\_key} \parallel \text{proof\_type} \parallel \text{value})$$
-Any mismatch triggers an immediate fail-closed `StatementIdMismatch` error.  
-*Validated in:* `test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected` and `test_erc20_claim_rejects_statement_id_tampering`.
-
----
-
-### Invariant 11: Economic Separation of Read-Only Attestation vs Escrow-Backed Asset Minting
-**Vulnerability:** Allowing ordinary Ethereum account balance proofs (`StatementBinding::Account`) to mint synthetic `mETH` on LEZ enables infinite unbacked minting without real collateral.  
-**Enforcement:** Dual-interface separation: read-only access gating (`claim_ether`) allows balance proofs, while bridge minting (`MethLedger::mint_meth_atomic`) strictly enforces `StatementBinding::NativeEthDeposit` from verified `MosooLocker.sol` escrow receipts, rejecting unbacked balance claims with `DepositBackingRequired`.  
-*Validated in:* `test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_rejected` and `test_meth_ledger_mint_atomic_rejects_unbacked_account_balance`.
-
----
-
-### Invariant 12: LEZ PDA-Backed Nullifier Persistence & Recovery
-**Vulnerability:** In-memory nullifier sets lose state upon contract upgrades or node restarts, allowing replay of historic claims.  
-**Enforcement:** Nullifiers are modeled as deterministic LEZ runtime PDA accounts (`["mosoo_nullifier", canonical_statement_id]`) with exportable/restorable state structures (`export_pda_records` / `restore_pda_records`), guaranteeing crash persistence across LEZ block boundaries.  
-*Validated in:* `test_erc20_nullifier_pda_derivation_and_restart_persistence` and `test_ether_nullifier_pda_derivation_and_restart_persistence`.
-
----
-
-## 3. Automated Adversarial Test Harness
-
-The adversarial test harness implements 50 automated test functions covering 42 distinct mutation attack scenarios in `mosoo-core/tests/adversarial_mutation_tests.rs`:
-
-| Test Name | Attack Scenario Tested | Expected Rejection |
+| Suite | Location | Scope |
 | :--- | :--- | :--- |
-| `test_mutation_attack_1` | Fabricated beacon header with forged signing root | `MosooError::InvalidSignature` |
-| `test_mutation_attack_2` | Sub-threshold quorum (< 342/512 validators) | `MosooError::InsufficientParticipation` |
-| `test_mutation_attack_3` | Non-64-byte sync committee bitfield | `MosooError::InvalidSyncCommitteeBitsLength` |
-| `test_mutation_attack_4` | Forged next sync committee branch at gindex 55 | `MosooError::SyncCommitteeBranchInvalid` |
-| `test_mutation_attack_5` | Non-monotonic slot updates (stale / retrogressive) | `MosooError::StaleUpdate` |
-| `test_mutation_attack_6` | Cross-chain replay across Mainnet and Sepolia | `MosooError::DomainSeparationFailed` |
-| `test_mutation_attack_7` | Corrupted MPT receipts & double-claim replay | `MosooError::InvalidTrieProof` / `AlreadyClaimed` |
-| `test_mutation_attack_8` | State proof against unauthenticated header record | `MosooError::UnauthenticatedHeaderRecord` |
-| `test_mutation_attack_9` | Cross-block event nullifier collision attempt | Unique statement IDs asserted |
-| `test_mutation_attack_10`| Cross-stage job parameter tampering | `MosooError::JobDigestMismatch` |
-| `test_mutation_attack_11`| Bootstrap unauthenticated next sync committee | `MosooError::BootstrapNextCommitteeBranchInvalid` |
-| `test_mutation_attack_12`| Forged historical block accumulator root | `MosooError::UnauthenticatedHeaderRecord` |
-| `test_security_audit_attack_13` | Repeat transfers between identical parties | Distinct nullifiers asserted & replay rejected |
-| `test_security_audit_attack_14` | Silent arithmetic overflow / high-bit u64 truncation | Checked conversion error on values > u64::MAX |
-| `test_security_audit_attack_15` | Malformed / truncated RLP length bounds | Fail-closed RLP decode error (zero panics) |
-| `test_security_audit_attack_16` | Circular ring buffer slot aliasing beyond 8,192 slots | `MosooError::Internal` guard rejection |
-| `test_security_audit_attack_17` | Replay invocation on terminated `Done` job stage | `MosooError::WrongJobStage` rejection |
-| `test_security_audit_attack_18` | Statement ID tampering to bypass nullifier tracking | Catch by expected subject key validation |
-| `test_security_audit_attack_19` | Backward slot rollback or expired checkpoint rewrite | Checkpoint immutability / `WeakSubjectivityExpired` |
-| `test_security_audit_attack_20` | Reverted / failed transaction receipt (status = 0) | Reverted status check rejection |
-| `test_security_audit_attack_21` | Out-of-order header slots (attested < finalized) | Temporal consistency rejection |
-| `test_security_audit_attack_22` | Deeply nested predicate tree stack overflow DOS | Recursion depth limit (16 max) rejection |
-| `test_security_audit_attack_23` | Mandatory weak-subjectivity freshness bounds | Fail-closed rejection on zero or expired slot |
-| `test_security_audit_attack_24` | Unsatisfied condition predicate fail-closed behavior | `MosooError::PredicateFailed` (no statement) |
-| `test_security_audit_attack_25` | Sync committee period jump > 1 period ($P_{sig} > P_{store} + 1$) | `MosooError::SyncCommitteePeriodSkip` |
-| `test_security_audit_attack_26` | Period $P+1$ signature with missing next committee | `MosooError::MissingCommitteeBranch` |
-| `test_security_audit_attack_27` | Previous-committee (period $P$) key used for period $P+1$ | `MosooError::InvalidSignature` |
-| `test_security_audit_attack_28` | Committee rotation across period boundary | Verified rotation to `next_sync_committee` |
-| `test_security_audit_attack_29` | Gloas ePBS tampered state/receipts roots | `MosooError::ExecutionPayloadBranchInvalid` |
-| `test_security_audit_attack_30` | Gloas RLP execution header hash mismatch | `MosooError::GloasExecutionRlpMismatch` |
-| `test_security_audit_attack_31` | Authentic beacon root with tampered execution roots | `MosooError::UnauthenticatedHeaderRecord` |
-| `test_security_audit_attack_32` | Sequential multi-update boundary rotation invariant | Verified multi-update boundary progression |
-| `test_security_audit_attack_33` | Predicate variation replay on identical Ethereum state | Enforce canonical state fact binding; invariant statement ID rejects altered predicate replay |
-| `test_security_audit_attack_34` | Cross-instance job injection on same chain (RFP-021 #15) | Job PDA keying binds `instance_id` & `chain_id`; rejected with `JobInstanceMismatch` |
-| `test_security_audit_attack_35` | Historical header proof closure & branch tampering (RFP-021 #6) | Fail-closed rejection across slot mismatches, window expiration, domain mismatch, and corrupted branches |
-| `test_security_audit_attack_36` | Unbacked Ethereum account balance bridge minting attempt | Rejected with `EtherReceiverError::DepositBackingRequired`; zero unbacked synthetic mETH minted |
-| `test_security_audit_attack_37` | Tampered statement ID nullifier bypass attempt | Consumers recalculate canonical statement ID; strictly rejected with `StatementIdMismatch` |
-| `test_security_audit_attack_38` | Fabricated / uninitialized InstanceAccount attestation attempt | Rejected with `MosooError::NotInitialized` or `MosooError::InvalidBootstrap` |
-| `test_mutation_attack_40` | Consumer claims referencing unpinned or unvetted instance account | Rejected with `MosooError::UnpinnedInstanceAccount` |
-| `test_mutation_attack_41` | AccountStore state load from untrusted/unowned account | Rejected with `MosooError::InvalidAccountOwner` |
-| `test_mutation_attack_42` | Checkpoint verification on caller-supplied memory struct rather than store | Checked on canonical store-loaded instance; caller spoofing rejected |
-| `test_mutation_attack_46` | Dual nullifier atomic rollback on partial store failure | Atomic state rollback verified; zero orphaned nullifiers |
+| Security Hardening (`58`) | `mosoo-core/tests/security_hardening_tests/` | Account ownership checks, pinned instances/check-points, deposit separation, fork adapters, freshness bounds (`guest_and_store`, `privacy_and_instance`, `deposit_and_forks`, `freshness_and_adapter`) |
+| Adversarial Mutation (`50`) | `mosoo-core/tests/adversarial_mutation_tests/` | Forged signatures, quorum deficits, period skips, Gloas RLP tampering, replay attacks, cross-stage job tampering, storage poisoning (`consensus_and_branches`, `state_and_replay`, `pipeline_and_storage`, `instance_and_config`) |
+| Two-Way Bridge (`23`) | `mosoo-core/tests/two_way_bridge_tests.rs` | Burn ID integrity, EIP-712 cross-contract replay rejection, rate limits, guardian veto paths |
+| Privacy & Correlation (`6`) | `mosoo-core/tests/privacy_and_correlation_tests.rs` | Confidential commitment blinding and `DepositCommitted` unlinkability guarantees |
+| Solidity Escrow (`20`) | `contracts/test/MosooLocker.t.sol` | Foundry unit & fuzz tests against live EVM semantics |
+| Evidence Mutation (`7`) | `scripts/test-evidence-mutation.py` | Tampered hashes, cycle caps, and missing artifacts rejected by `verify-evidence.py` |
 
-### 3.1 Two-Way Bridge Security & Escrow Defense Harness
-
-Tested in `tests/two_way_bridge_tests.rs`:
-- **Tampered Burn Receipt Defense (`test_two_way_bridge_adversarial_tampered_burn_id_rejected`):** Rejects forged burn identifiers or tampered recipients.
-- **Strict EIP-712 Cross-Contract Replay Protection (Invariant 13) (`test_eip712_cross_contract_replay_protection`):**
-  Binds `verifyingContract: address(this)` and `chainId: block.chainid` into EIP-712 structured data hashes (`BurnETH` / `BurnERC20`). An attester authority signature crafted for Locker contract A is cryptographically rejected if submitted to Locker contract B, preventing cross-deployment signature replay. Legacy un-namespaced `eth_sign` fallback has been completely removed.
-- **Fail-Closed Token Allowlist (Invariant 14) (`test_token_allowlist_enforcement`):**
-  The token allowlist is enabled by default (`tokenAllowlistEnabled = true`), preventing unvetted rebasing, fee-on-transfer, or adversarial ERC-20 tokens from being escrowed into the vault on initial deployment.
-- **Inviolable Timelocked Authority Upgrades (Invariant 15) (`test_attester_authority_timelock_pipeline`):**
-  Direct setters have been eliminated; all attester authority updates must pass through `proposeAttesterAuthority` with a mandatory 24-hour timelock delay before execution via `executeAttesterAuthority`.
-  Enforces a mandatory 24-hour delay (`AUTHORITY_CHANGE_DELAY = 1 days`) between proposing a new `attesterAuthority` and executing the upgrade (`proposeAttesterAuthority` / `executeAttesterAuthority`), preventing instant unilateral authority key takeovers.
-- **Rolling Daily Withdrawal Limits (Invariant 20) (`test_mosoo_locker_daily_withdrawal_limit_enforced`):**
-  Enforces rolling 24-hour aggregate withdrawal volume limits for both ETH (`dailyWithdrawalLimitETH`) and ERC-20 tokens (`dailyWithdrawalLimitERC20`). Any withdrawal attempting to breach the 24-hour volume cap reverts with `DailyWithdrawalLimitExceeded()`, bounding maximum capital outflow velocity.
-- **Large Withdrawal Timelock Queue & Permanent Guardian Veto (Invariant 21) (`test_mosoo_locker_large_withdrawal_queue_and_guardian_veto`, `test_mosoo_locker_proactive_guardian_veto_rejects_withdrawal`):**
-  Withdrawals equal to or exceeding `LARGE_WITHDRAWAL_THRESHOLD_ETH` (default 10 ETH) or equivalent ERC-20 thresholds cannot be settled immediately. They are placed into an on-chain queue with a mandatory 24-hour challenge delay (`LARGE_WITHDRAWAL_DELAY = 1 days`). During this window, contract guardians or owners can execute `cancelQueuedWithdrawal(burnId)` or `cancelBurn(burnId)`. This permanently marks `cancelledBurns[burnId] = true`. Any subsequent attempt by a relayer or attacker to re-queue or unlock reverts immediately with `BurnCancelled()`, preventing bypass.
-- **Ethereum Escrow Contract Security (`contracts/MosooLocker.sol`):**
-  - Strict EIP-2 upper-bound on $s$-values ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$).
-  - Non-zero signer check (`recovered != address(0)`).
-  - Nullifier tracking (`executedBurns[burnId]`).
-  - Permanent cancellation tracking (`cancelledBurns[burnId]`).
-  - Fee-on-transfer balance differential verification on token deposits.
-  - Safe token balance query (`_getTokenBalance` reverts with `BalanceQueryFailed()` on staticcall failure or short returns).
-  - Two-step ownership handover (`transferOwnership` + `acceptOwnership`).
-  - Foundry test harness (`contracts/test/MosooLocker.t.sol`, `foundry.toml`) for direct EVM execution and fuzzing.
-
-- **Local Transaction Signing & Secret Isolation (Invariant 16):**
-  The daemon and CLI parse operator private keys locally inside `alloy::signers::local::PrivateKeySigner`. The JSON-RPC envelope transmits only `from` and `signature` over RPC. Raw private key material is strictly prohibited from JSON parameters, HTTP payloads, error logs, and format strings (verified in `test_daemon_raw_private_key_never_sent_in_rpc_payload`).
-
-- **Fail-Closed Period-Crossing Beacon Synchronization (Invariant 17):**
-  Light client transitions crossing 8,192-slot period boundaries require `next_sync_committee` and its Merkle authentication branch. If `/light_client/updates` fails, the daemon fails closed immediately with an explicit error, refusing fallback to `/light_client/finality_update` which lacks committee handoff material.
-
-- **Persistent AccountStore Nullifier Replay Defense (Invariant 18):**
-  Consumer nullifiers are stored atomically in persistent `AccountStore` PDA records (`[b"nullifier", statement_id]` and `[b"ether_nullifier", statement_id]`). In-guest and host runtime execution verifies persistent account state, guaranteeing that replays are strictly rejected across full node restarts (verified in `test_sequencer_persistent_nullifier_atomic_claim_across_restart`).
-
-- **InstanceAccount Provenance & PDA Authentication (Invariant 19):**
-  Attestation verification verifies that instance accounts are loaded from authentic persistent PDA addresses (`["mosoo_instance", chain_id, instance_id]`) with verified non-zero instance IDs and valid bootstrap anchors, preventing fabricated instance injection (verified in `test_sequencer_fabricated_instance_account_rejected`).
+For exact suite counts and execution commands, see [`docs/TESTING.md`](TESTING.md).
 
 ---
 
-## 4. Privacy & Zero-Correlation Guarantees
+## Privacy & Known Audit Boundaries
 
-Mosoo shields claimant identity on LEZ via deterministic nullifiers:
-- **Zero Address Leakage:** Claimant Ethereum addresses and signature bytes are not written to consumer contract state diffs.
-- **Unlinkability:** Statement IDs act as one-way cryptographic nullifiers derived strictly from verified Ethereum state facts (ADR-006, RFP-021 Functionality #6):
-  ```text
-  statement_id = sha256("mosoo_statement_v2" || chain_id || genesis_validators_root || subject_key || proof_type_tag || verified_value)
-  ```
-- **Caveat:** Network-level traffic analysis (transaction timing, deposit amounts) remains observable on public chains.
-
-Automated in [`mosoo-core/tests/privacy_and_correlation_tests.rs`](../mosoo-core/tests/privacy_and_correlation_tests.rs) (5 tests verifying zero address leakage and memory state diff shielding).
-
----
-
-## 5. Independent Security Audit Plan
-
-A formal third-party audit is planned prior to mainnet deployment:
-- **Target Timeline:** Following public devnet deployment
-- **Candidate Audit Firms:** Veridise, Trail of Bits, or Least Authority
-- **Audit Scope:** In-guest `blst` pairing split, MPT trie verification logic, SPEL IDL deserialization safety, and consumer nullifier persistence.
-
-
----
-
-## 6. Supply Chain & Transitive Dependency Risk Analysis (RUSTSEC)
-
-In accordance with our strict dependency auditing policy, CI runs `cargo audit` to monitor known vulnerabilities across the entire dependency graph. Two transitive dependency advisories are actively tracked with cryptographic risk analyses:
-
-```text
-Authoritative Dependency Trees (cargo tree verification):
-$ cargo tree -i crypto-bigint@0.5.5
-crypto-bigint v0.5.5
-└── elliptic-curve v0.13.8
-    ├── alloy-signer v0.4.2 -> alloy -> mosoo-cli, mosoo-daemon
-    └── k256 v0.13.4 -> alloy-primitives -> alloy-trie -> mosoo-core (MPT hashing only)
-
-$ cargo tree -i tracing-subscriber@0.2.25
-tracing-subscriber v0.2.25
-└── ark-relations v0.4.0
-    └── ark-crypto-primitives -> ark-groth16 -> risc0-groth16 -> risc0-zkvm -> mosoo-guest
-```
-
-### RUSTSEC-2026-0387: `crypto-bigint 0.5.5` (via `alloy` -> `k256` -> `elliptic-curve`)
-- **Vulnerability Summary:** Certain constant-time modular arithmetic operations in older versions of `crypto-bigint` may execute secret-dependent timing branches under specific CPU/compiler optimizations.
-- **Downstream Cryptographic Risk in Mosoo: ZERO.**
-  - **Core Light Client Verifier Isolation (`mosoo-core`, `methods/guest`):** The core verifier processes exclusively public Ethereum consensus artifacts: validator sync committee public keys, aggregate BLS signatures, Merkle-Patricia Trie nodes, and public execution headers. The verifier runtime holds zero private keys or secret exponents, eliminating timing leakage in verification.
-  - **Relayer & Operator Signing Isolation (`cli`, `daemon`):** When operators use the relayer daemon or CLI to dispatch envelopes to the LEZ sequencer, local transaction signing uses `PrivateKeySigner` (via `alloy-signer-local`). Signing operations execute strictly within the operator's local, process-isolated memory using standard operating system entropy (`getrandom`). Mosoo relayer nodes are autonomous background clients, not multi-tenant public RPC endpoints, and never accept unauthenticated external signing queries. Consequently, network-based timing side-channels cannot be mounted against relayer keys.
-- **Remediation Plan:** Upstream `alloy` and `k256` crates are tracking the upgrade to `crypto-bigint 0.7.6`. Mosoo will adopt the patched dependency in the next routine workspace bump.
-
-### RUSTSEC-2025-0055: `tracing-subscriber 0.2.25` (via `risc0-zkvm` -> `risc0-groth16` -> `ark-relations`)
-- **Vulnerability Summary:** Untrusted log message formatting in older `tracing-subscriber` releases could permit ANSI escape sequence injection into interactive terminal emulators.
-- **Downstream Cryptographic Risk in Mosoo: ZERO.**
-  - `tracing-subscriber 0.2.25` is an internal telemetry dependency pulled exclusively by `ark-relations` during Groth16 circuit definition.
-  - Mosoo uses standard structured error types (`MosooError`) and JSON-RPC outputs.
-  - Untrusted external network strings are never piped through interactive ANSI terminal log formatters.
-- **Remediation Plan:** RISC Zero is upgrading its circuit backend in the upcoming toolchain release, which removes the legacy `ark-relations` dependency.
-
----
-
-## 7. Cross-Chain Bridge Governance & Multi-Signer Quorum Enforcement
-
-The `MosooLocker.sol` smart contract on Ethereum L1 manages native ETH and ERC-20 token escrow for cross-chain settlement on LEZ.
-
-### Initial Bootstrap Configuration vs. Production Multicall
-- **Testnet Bootstrap (1-of-1):** Fresh deployments initialize with `attesterCount = 1` and `requiredQuorum = 1` solely to facilitate automated deterministic bootstrapping and continuous integration on the Sepolia testnet.
-- **Commissioning Mode & Production Threshold Graduation:**
-  - `MosooLocker.sol` exposes `isCommissioned()` which checks `attesterCount >= 2 && requiredQuorum >= 2`.
-  - For atomic launch graduation without timelock latency during initial deployment, the owner can call `commissionLocker(address[] additionalAttesters, uint256 initialQuorum)`.
-  - Once `isCommissioned()` evaluates to true, legacy single-attester routes (`unlockETH`, `unlockERC20`) permanently revert with `LegacyRoutesDisabled()`, strictly enforcing multi-attester quorum (`unlockETHWithInstanceAndQuorum`, `unlockERC20WithInstanceAndQuorum`).
-- **Production Governance Pipeline (2-of-3 / 3-of-5):** Alternatively, the contract owner can execute a mandatory 3-step timelocked governance transition:
-  1. `proposeAddAttester(newAttester1)` -> wait 48-hour timelock -> `executeAddAttester()`
-  2. `proposeAddAttester(newAttester2)` -> wait 48-hour timelock -> `executeAddAttester()`
-  3. `proposeQuorum(2)`                 -> wait 48-hour timelock -> `executeQuorum()`
-
-### Elimination of Single-Key Administrative Takeover
-- Direct un-timelocked administration functions (`addAttester()`, `setQuorum()`) are **permanently deprecated** and revert with `DirectGovernanceDeprecated()`.
-- An attacker compromising the deployer private key cannot instantly lower the quorum or register malicious attesters; all governance alterations are subject to the immutable 48-hour timelock (`GOVERNANCE_TIMELOCK = 2 days`).
-- An independent emergency `guardian` (which strictly cannot be the contract owner) holds unilateral veto authority (`vetoQueuedWithdrawal`, `cancelPendingGovernanceAction`, `pause`) to neutralize rogue proposals or freeze compromised routes before the timelock elapses.
+- **Shielded L1 Deposits vs. Public LEZ Execution:** `MosooLocker` v2 (`depositShieldedETH` / `DepositCommitted`) omits plaintext `lezRecipient` from Ethereum logs, and `PrivacyMode::Confidential` blinds `StatementAccount` data with explicit caller salt. However, LEZ consumers still verify transaction receipts and Merkle proofs directly in Rust rather than inside an anonymous Groth16 circuit; hiding `tx_index`/`log_index` on public LEZ belongs to future RFP-022 work.
+- **Runtime Scopes:** Live immutable LEZ v0.3.1 `mosoo_lc` (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) runs the compiled `artifacts/programs/v0.3/mosoo_lc.bin` binary, and Sepolia `MosooLocker` v2 (`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`) is immutable on testnet. The `v0.4` target guest is verified against local/offline harnesses while public LEZ `v0.4` remains unreleased.
+- **Deprecated Legacy Entrypoints:** Historical unauthenticated helpers in `mosoo-core` and consumer crates carry `#[deprecated]` annotations to guard against accidental misuse; production callers must use `claim_atomic`, `claim_ether_atomic`, and strict `TrustedBridgeConfig` paths.
+- **External Security Audit:** Internal security hardening and mutation tests cover protocol boundaries documented here; an independent third-party audit has not yet been completed and is planned before mainnet deployment.

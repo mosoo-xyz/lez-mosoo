@@ -3,22 +3,22 @@
 This document records verifiable execution manifests, state transitions, gas consumption, and cryptographic test vectors for the **Mosoo Ethereum Consensus & State Attestation Module** simulated against the Logos Execution Zone (LEZ) v0.4 specifications.
 
 > [!NOTE]
-> **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../tests/sequencer_e2e_tests.rs). This harness models canonical LEZ v0.4 state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction).
+> **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's **offline** Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../mosoo-core/tests/sequencer_e2e_tests.rs). Public LEZ `v0.4` is **unreleased upstream** (`v0.3.1` is latest); this offline harness models target LEZ `v0.4` state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction).
 > 
-> In addition, Mosoo maintains **live on-chain verification** against the active public Logos Execution Zone testnet (`https://testnet.lez.logos.co`, v0.3.1) and Ethereum Sepolia (`MosooLocker.sol` at `0x74625D...`), executable via [`scripts/verify-onchain.py`](../scripts/verify-onchain.py) and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) with execution evidence in [`evidence/public-testnet-v03/`](../evidence/public-testnet-v03/). Migration to the upcoming public LEZ v0.4 devnet is scheduled upon network freeze by the Logos Core team.
+> In addition, [`scripts/verify-mosoo-lez.py`](../scripts/verify-mosoo-lez.py) verifies live `mosoo_lc` on public LEZ v0.3.1 (`https://testnet.lez.logos.co`, `Co5EYuBR...`), and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) queries live Ethereum Sepolia (`MosooLocker` v2 at `0xEFEf6dA5...`) paired with offline Steps 3–5 LEZ state-machine simulation. Deployment of `mosoo-guest` to LEZ `v0.4` awaits upstream public `v0.4` release.
 
 ---
 
 ## 1. Execution Environments & Deployment Roadmap
 
-RFP-021 requires verification conforming to Logos Execution Zone specifications. The table below outlines our active local verification harness and roadmap to public testnet deployment:
+RFP-021 requires verification conforming to Logos Execution Zone specifications. The table below outlines our active offline verification harness and roadmap to public testnet deployment:
 
-| Parameter | LEZ Standalone Sequencer Harness (CI) | Target Public Devnet (v0.4) |
+| Parameter | LEZ Standalone Sequencer Harness (Offline / CI) | Target Public Devnet (v0.4 — Unreleased Upstream) |
 | :--- | :--- | :--- |
-| **Environment** | Standalone In-Memory Sequencer & State Machine | Logos Public Testnet v0.4 |
-| **LEZ Spec Conformance** | `v0.4.0` CPI & PDA Conformance (`lez_v04_acceptance_tests.rs`) | Public v0.4 Testnet release by Logos Core |
-| **RPC / Runtime** | Deterministic Local Harness (`tests/sequencer_e2e_tests.rs`) | Official Logos public RPC |
-| **Mosoo Attester Program** | `0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` | Deployed upon public network release |
+| **Environment** | Offline In-Memory Sequencer & State Machine (`LezRuntimeAdapter`) | Logos Public Testnet v0.4 (awaiting upstream launch) |
+| **LEZ Spec Conformance** | Target `v0.4` CPI & PDA Conformance (`lez_v04_acceptance_tests.rs`) | Public v0.4 Testnet release by Logos Core |
+| **RPC / Runtime** | Deterministic Local Harness (`tests/sequencer_e2e_tests.rs`) | Future official Logos public v0.4 RPC |
+| **Mosoo Attester Program** | `0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` *(offline harness diagnostic ID)* | Deployed upon public v0.4 network release |
 | **BLS Execution Architecture** | In-guest 3-Tx split via optimized `blst` | In-guest 3-Tx split (zero host precompile dependency) |
 | **Single-Tx Gas Limit** | <= 10,000,000 gas (enforced by `test_lez_v04_transaction_envelope_and_gas_cap`) | <= 10,000,000 gas limit |
 
@@ -73,7 +73,7 @@ python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run
 # On Windows: py -3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
 ```
 
-These execution traces are validated via the Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`) modeling canonical LEZ v0.4 state transitions, opcode execution, and gas consumption. Live on-chain public LEZ v0.3.1 traces and Sepolia settlement are documented in [`evidence/public-testnet-v03/`](../evidence/public-testnet-v03/), and migration to the public LEZ v0.4 devnet will execute once Logos Core releases public v0.4 endpoints.
+These execution traces are validated via the Standalone Sequencer Test Harness (`tests/sequencer_e2e_tests.rs`) modeling canonical LEZ v0.4 state transitions, opcode execution, and gas consumption. Live LEZ v0.3.1 traces for `mosoo_lc` live in [`evidence/mosoo-testnet-v03/`](../evidence/mosoo-testnet-v03/README.md), and migration to public LEZ v0.4 will execute once Logos Core releases public v0.4 endpoints.
 
 ### Manifest 1: Instance Initialization (`handle_initialize`) [Harness Simulation]
 
@@ -131,7 +131,7 @@ Crucially, the guest strictly validates:
 
 - **Transaction Hash:** `0x1626ff854cdbb1b3255d45fbff15c07b1ab35df672816992fa3beed40dc3aa11`
 - **Block Number:** `500,004`
-- **LEZ Gas Used:** `850,000` (< 10M Gas Cap)
+- **LEZ Gas Used:** `852,400` (`780,400` compute + `72,000` storage; < 10M Gas Cap)
 - **Event Identifier (Collision-Free):** Incorporates `execution_block_hash`, `slot`, `tx_index = 42`, `log_index = 1`, `emitter`, `topic0`.
 - **Output:** `VerifiedStatement { chain_id: 1, attester_program_id: 0x01ab..., statement_id: 0x..., predicate_holds: true, verified_value: 0x..., subject_key: 0x..., proof_type_tag: 4, binding: ... }`.
 
@@ -153,17 +153,17 @@ Crucially, the guest strictly validates:
 
 ---
 
-## 4. Sepolia Testnet Recorded Manifests (Gloas Hard Fork, Slot 7,077,888)
+## 4. Sepolia Testnet Simulated Sequencer Manifests (Harness Reference)
 
-Recorded manifests from the Standalone Sequencer harness (`test_sequencer_sepolia_gloas_lifecycle_e2e`) verifying the **Sepolia Gloas** hard fork activation (slot `7,077,888`, epoch `221,184`, activated October 6, 2026):
+Recorded manifests from the Standalone Sequencer harness (`test_sequencer_sepolia_gloas_lifecycle_e2e`):
 
 | Transaction | Instruction | Transaction Hash | Block | LEZ Gas | State Diff / Action |
 | :--- | :--- | :--- | :---: | :---: | :--- |
-| **Tx 1** | `handle_initialize` | `0xf96f7304b0617bcf24d4de2fa948f91d862ca1cd1d140b129af380ed9e4f1960` | 500,000 | 1,420,000 | Bootstrapped Sepolia Instance PDA (`chain_id: 11155111`, slot `7,077,888`) |
-| **Tx 2A** | `handle_begin_update` | `0x7ce17c4fcd66e7b7c65b5986e2df692cf9947d1b2cde04b6e3b9ad76f5de3023` | 500,001 | 5,380,000 | Validated quorum under Sepolia Gloas domain `0x90000077`, created `JobAccount` |
+| **Tx 1** | `handle_initialize` | `0xf96f7304b0617bcf24d4de2fa948f91d862ca1cd1d140b129af380ed9e4f1960` | 500,000 | 1,420,000 | Bootstrapped Sepolia Instance PDA (`chain_id: 11155111`, slot `11,296,768`) |
+| **Tx 2A** | `handle_begin_update` | `0x7ce17c4fcd66e7b7c65b5986e2df692cf9947d1b2cde04b6e3b9ad76f5de3023` | 500,001 | 5,380,000 | Validated quorum under Sepolia Gloas domain `0x90000076`, created `JobAccount` |
 | **Tx 2B** | `handle_miller_update` | `0x3d92f9891d29333ab34e006cb59a67c3bcf8ba78a58a339affe804ea2f41485e` | 500,002 | 4,180,000 | Evaluated dual Miller loops `e(sig, G1) * e(msg, agg_pk)^-1` |
-| **Tx 2C** | `handle_finish_update` | `0x7726dd23303897714f36e9d58c566d7915159c336929c8fabe4bb95d4b51f04c` | 500,003 | 3,740,000 | Written `HeaderRecord` PDA for slot `7,077,920`, advanced Sepolia head |
-| **Tx 3** | `handle_attest_state` | `0xf691fefabfafcb194152cb7e5b4fb07908b8fc1cd6cc358257d699c223031eff` | 500,004 | 850,000 | Verified event log, emitted Sepolia `VerifiedStatement` nullifier |
+| **Tx 2C** | `handle_finish_update` | `0x7726dd23303897714f36e9d58c566d7915159c336929c8fabe4bb95d4b51f04c` | 500,003 | 3,740,000 | Written `HeaderRecord` PDA for slot `11,296,800`, advanced Sepolia head |
+| **Tx 3** | `handle_attest_state` | `0xf691fefabfafcb194152cb7e5b4fb07908b8fc1cd6cc358257d699c223031eff` | 500,004 | 852,400 | Verified event log, emitted Sepolia `VerifiedStatement` nullifier |
 
 ### Cross-Chain Rejection Verification
 When the Sepolia `VerifiedStatement` is submitted to a Mainnet receiver contract, it is strictly rejected:
@@ -173,12 +173,11 @@ Mainnet ERC-20 Claim: Err(WrongChain(11155111)) [REJECTED]
 
 ---
 
-## 5. Hoodi Testnet Verification Vectors (Gloas Era, Slot 786,432)
+## 5. Hoodi Testnet Consensus Schedule (`chain_id = 560048`)
 
-- **Network Chain ID:** `560048`
-- **Gloas Activation Slot:** `786,432` (Epoch `24,576`, activating October 26, 2026)
-- **Pre-Gloas Fork Version:** `[0x10, 0x00, 0x09, 0x00]` (Hoodi Fulu)
-- **Post-Gloas Fork Version:** `[0x10, 0x00, 0x09, 0x10]` (Hoodi Gloas)
+- **Network Chain ID:** `560048` (`genesis_validators_root = 0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f`)
+- **Electra Activation Slot:** `65,536` (Epoch `2,048`, fork version `[0x60, 0x00, 0x09, 0x10]`)
+- **Fulu Activation Slot:** `1,622,016` (Epoch `50,688`, fork version `[0x70, 0x00, 0x09, 0x10]`)
 - **Domain Separation Proof:** `test_sepolia_gloas_and_hoodi_fork_boundary_and_domain_separation` proves that Hoodi, Sepolia, and Mainnet domains produce pairwise distinct signing roots with zero collision risk.
 
 ---

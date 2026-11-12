@@ -21,5 +21,5 @@ The guest program entrypoint is [`methods/guest/src/main.rs`](src/main.rs). It r
 - **Production zkVM Target:** `riscv32im-risc0-zkvm-elf` (compiled via `docker/Dockerfile.guest` or `cargo risczero build`).
 - **Host Test Mock:** Host target (compiled via `cargo test -p mosoo-guest` or `cargo build -p mosoo-guest`).
 
-For complete reproducible build instructions, see [docs/BUILD_REPRODUCIBILITY.md](../../docs/BUILD_REPRODUCIBILITY.md).
-For testnet deployment provenance, see [docs/PROVENANCE.md](../../docs/PROVENANCE.md).
+For reproducible build instructions, see [docs/REPRODUCE.md](../../docs/REPRODUCE.md).
+For deployment IDs and provenance, see [docs/DEPLOYMENTS.md](../../docs/DEPLOYMENTS.md).

@@ -6,8 +6,7 @@
 FROM ubuntu:22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV RUST_VERSION=1.78.0
-ENV RZUP_VERSION=0.1.0
+ENV RUST_VERSION=1.88.0
 ENV CARGO_HOME=/root/.cargo
 ENV RUSTUP_HOME=/root/.rustup
 ENV PATH="/root/.cargo/bin:/root/.risc0/bin:${PATH}"
@@ -23,20 +22,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install pinned Rust toolchain
+# Install pinned Rust toolchain (>= 1.88.0 required by icu_collections 2.3.0 in Cargo.lock)
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain ${RUST_VERSION}
 
-# Install rzup and RISC0 zkVM toolchain
-RUN (curl --proto '=https' --tlsv1.2 -sSf https://raw.githubusercontent.com/risc0/risc0/v1.0.5/install | bash || curl --proto '=https' --tlsv1.2 -sSf https://risczero.com/install | bash) \
-    && rzup install cargo-risczero 1.0.5 \
+# Install rzup and RISC0 zkVM toolchain matching Cargo.lock (risc0-zkvm / risc0-build 1.2.6)
+RUN curl --proto '=https' --tlsv1.2 -sSf https://risczero.com/install | bash \
+    && rzup install cargo-risczero 1.2.6 \
     && rzup install cpp
 
 WORKDIR /workspace
 
-# Copy workspace sources
+# Copy complete workspace sources so Cargo.toml member resolution succeeds cleanly
 COPY Cargo.toml Cargo.lock ./
 COPY mosoo-core/ mosoo-core/
 COPY methods/ methods/
+COPY daemon/ daemon/
+COPY consumers/ consumers/
+COPY cli/ cli/
 
 # Build guest deterministically
 RUN cargo risczero build --manifest-path methods/guest/Cargo.toml --release

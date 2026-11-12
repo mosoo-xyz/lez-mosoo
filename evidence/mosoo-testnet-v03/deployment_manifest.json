@@ -1,0 +1,98 @@
+{
+  "rpc_url": "https://testnet.lez.logos.co",
+  "program_id": "Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg",
+  "image_id_hex": "961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0",
+  "image_id_u32": [
+    310254230,
+    4120195735,
+    994322647,
+    2796479310,
+    3768392723,
+    2762674481,
+    2907793166,
+    3758327214
+  ],
+  "immutable": true,
+  "segment_count": 6,
+  "user_elf_bytes": 569468,
+  "binary_bytes": 601892,
+  "binary_sha256": "0fc6ce723be2c507124f8e0fc6d0fab2b7c4454fdb4a1aa7b755667acb3e2bac",
+  "payer_account": "6e978J6nNbfzjApzkKXJnVX2SHCw2Zvt4dZZJin1LCNf",
+  "payer_pre_balance_lepta": 110263720,
+  "payer_post_balance_lepta": 105677992,
+  "total_fee_paid_lepta": 4585728,
+  "header_tx_hash": "2058a48a7863585236fc3310dfcde5bcdee5e34088e056ecb8a21528ac89ebe9",
+  "header_block_id": 81148,
+  "funding_consolidations": [
+    {
+      "from": "3yJGpr3WjN3Tf9BpxdwdroAzgZDNBJtA8cCssGR4Rrmi",
+      "to": "6e978J6nNbfzjApzkKXJnVX2SHCw2Zvt4dZZJin1LCNf",
+      "amount_lepta": 8200000,
+      "tx_hash": "071c98272d091a19759421edd61c58d2e18e7da3178ec27febcbe07028d2451f",
+      "block_id": 81139
+    },
+    {
+      "from": "DWXnVbbBtcZfEZuqynDXU1xEzPwnkmArFP5m2QzkKhkU",
+      "to": "6e978J6nNbfzjApzkKXJnVX2SHCw2Zvt4dZZJin1LCNf",
+      "amount_lepta": 32600000,
+      "tx_hash": "2be47aa0360d9fc7eec47c0dab09e4410e66ce1f028876832e153272a888114b",
+      "block_id": 81141
+    }
+  ],
+  "segments": [
+    {
+      "index": 0,
+      "account_id": "9X1hF5tUia6crKRGLPCic4m2m74VFzCRGeFE4SSeFhhR",
+      "next_segment": "6UBAq65BjXSJDLqo3fkuSFcWKYSuyepN9fNXM3dZZKRC",
+      "bytes": 98304,
+      "tx_hash": "e90ff06439cc1400da356f85e8c72e7eeac5cd0dc07d991c176958ec54913d68",
+      "block_id": 81147,
+      "fee_paid_lepta": 790464
+    },
+    {
+      "index": 1,
+      "account_id": "6UBAq65BjXSJDLqo3fkuSFcWKYSuyepN9fNXM3dZZKRC",
+      "next_segment": "Ji3hDgfbLgkBtKooKEGjZhH5kGmBNiL6CrckGQAh2jT",
+      "bytes": 98304,
+      "tx_hash": "262c710f61205764337a05fe6108943744c86fb067ab6ab267072d988cfbb373",
+      "block_id": 81146,
+      "fee_paid_lepta": 790464
+    },
+    {
+      "index": 2,
+      "account_id": "Ji3hDgfbLgkBtKooKEGjZhH5kGmBNiL6CrckGQAh2jT",
+      "next_segment": "BJRPojpue2RboYzRrnio7eAejt1ixAPsvoLYb9MY4EoG",
+      "bytes": 98304,
+      "tx_hash": "18425324272ecc44bf1ca9ea68f4c9011df184e9f74a7b26d6d1465b1c33b232",
+      "block_id": 81145,
+      "fee_paid_lepta": 790464
+    },
+    {
+      "index": 3,
+      "account_id": "BJRPojpue2RboYzRrnio7eAejt1ixAPsvoLYb9MY4EoG",
+      "next_segment": "6FkoVKKBfkvWaxvYeXCH5tRJZekshTWsXxwuMd2UYUmr",
+      "bytes": 98304,
+      "tx_hash": "e8bb03fe7253fd6a3d4e77fc2520205dd637c2986976eb4ea0406e7546633392",
+      "block_id": 81144,
+      "fee_paid_lepta": 790464
+    },
+    {
+      "index": 4,
+      "account_id": "6FkoVKKBfkvWaxvYeXCH5tRJZekshTWsXxwuMd2UYUmr",
+      "next_segment": "CrTgQoTPYP1Zv9brXrMBE36UFjBxY8MTvmjahhZFeyph",
+      "bytes": 98304,
+      "tx_hash": "a8a6dbb5e0adca95336820ec235dbf6cdaaa69223221412eba4a66be0a6c196b",
+      "block_id": 81143,
+      "fee_paid_lepta": 790464
+    },
+    {
+      "index": 5,
+      "account_id": "CrTgQoTPYP1Zv9brXrMBE36UFjBxY8MTvmjahhZFeyph",
+      "next_segment": null,
+      "bytes": 77948,
+      "tx_hash": "188ba3b61af7f453bdc21f8239dc7839ab98e15dbb820f93940f90160470f2fd",
+      "block_id": 81142,
+      "fee_paid_lepta": 626848
+    }
+  ]
+}

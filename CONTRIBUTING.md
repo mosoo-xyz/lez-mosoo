@@ -6,7 +6,7 @@ Thank you for your interest in contributing to Mosoo.
 
 ### Prerequisites
 
-- Rust 1.78+ (`rustup default stable`)
+- Rust 1.88+ (`rustup default stable`, required by `Cargo.lock` v4 and `icu_collections 2.3.0`)
 - Git
 
 ### Building and Testing

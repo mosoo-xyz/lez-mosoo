@@ -11,7 +11,7 @@
 
 | Requirement | Details |
 | :--- | :--- |
-| **Rust** | `1.78+` (`rustup default stable`) |
+| **Rust** | `1.88+` (`Cargo.lock` v4 + `icu_collections 2.3.0` requirement; `rustup default stable`) |
 | **Ethereum Beacon Node** | Any Ethereum Beacon REST API-compatible node (Lodestar, Lighthouse, Prysm, Nimbus, Teku) |
 | **Ethereum Execution Node** | Any EL JSON-RPC endpoint (Geth, Erigon, Nethermind, or provider such as Infura / Alchemy) |
 | **LEZ Wallet** | A funded LEZ account for paying transaction gas (≈13.3M total LEZ gas / consensus update cycle) |
@@ -31,9 +31,9 @@ mosoo-daemon [OPTIONS]
 | :--- | :--- | :--- | :--- |
 | `--logos-ethereum-core-rpc <URL>` | `LOGOS_ETHEREUM_CORE_RPC` | `https://ethereum-core.logos.co` | **Canonical RFP-Compliant Endpoint:** Logos Ethereum Core verified consensus proxy |
 | `--eth-consensus-rpc <URL>` | `ETH_CONSENSUS_RPC` | `https://lodestar-sepolia.chainsafe.io` | *Devnet Fallback:* Direct Beacon Node REST API (offline bootstrap only) |
-| `--eth-execution-rpc <URL>` | `ETH_EXECUTION_RPC` | `https://gateway.tenderly.co/public/sepolia` | *Devnet Fallback:* Execution Layer JSON-RPC (offline bootstrap only) |
-| `--eth-chain-id <ID>` | `ETH_CHAIN_ID` | `11155111` | EIP-155 chain ID (`1` = Mainnet, `11155111` = Sepolia, `560048` = Hoodi) |
-| `--lez-rpc-url <URL>` | `LEZ_RPC_URL` | `https://testnet.lez.logos.co` | LEZ JSON-RPC sequencer URL |
+| `--eth-execution-rpc <URL>` | `ETH_EXECUTION_RPC` | `https://rpc.sepolia.org` | *Devnet Fallback:* Execution Layer JSON-RPC (direct fallback) |
+| `--eth-chain-id <ID>` | `ETH_CHAIN_ID` | `11155111` | EIP-155 chain ID (`1` = Mainnet, `11155111` = Sepolia, `560048` = Hoodi, `17000` = Holesky) |
+| `--lez-rpc-url <URL>` | `LEZ_RPC_URL` | `http://127.0.0.1:8545` | LEZ JSON-RPC sequencer URL (target public v0.4 RPC once released upstream) |
 | `--lez-private-key <HEX>` | `LEZ_PRIVATE_KEY` | — | Hex-encoded private key for gas payments |
 | `--poll-interval-secs <N>` | `POLL_INTERVAL_SECS` | `60` | Base polling interval in seconds |
 | `--log-format <FORMAT>` | `LOG_FORMAT` | `json` | Structured logs: `json` (production) or `pretty` |
@@ -71,15 +71,15 @@ cargo run -p mosoo-daemon --release -- \
   --log-format json
 ```
 
-### 3.1 Canonical RFP-Compliant Operation: Logos Ethereum Core Verified Proxy
+### 3.3 Canonical RFP-Compliant Operation: Logos Ethereum Core Verified Proxy
 
-In production, Ethereum consensus interactions route through the official **Logos Ethereum Core** verified consensus proxy module (--logos-ethereum-core-rpc). This provides consensus verification directly at the Logos node boundary without trusting third-party RPC providers:
+In production, Ethereum consensus interactions route through the official **Logos Ethereum Core** verified consensus proxy module (`--logos-ethereum-core-rpc`). This provides consensus verification directly at the Logos node boundary without trusting third-party RPC providers (note: live LEZ program broadcast targets public LEZ v0.4 release):
 
 ```sh
-# Production Configuration (Logos Ethereum Core Verified Proxy)
+# Target Production Configuration (Logos Ethereum Core Verified Proxy + LEZ v0.4)
 export LOGOS_ETHEREUM_CORE_RPC="https://ethereum-core.logos.co"
 export ETH_CHAIN_ID="1"
-export LEZ_RPC_URL="https://testnet.lez.logos.co"
+export LEZ_RPC_URL="http://127.0.0.1:8545"
 export LEZ_PRIVATE_KEY="0xYOUR_PRIVATE_KEY_HERE"
 
 cargo run -p mosoo-daemon --release -- \
@@ -93,16 +93,16 @@ When `--logos-ethereum-core-rpc` is configured, consensus layer requests route t
 {LOGOS_ETHEREUM_CORE_RPC}/v1/ethereum-core/consensus/{path}
 ```
 
-### 3.2 Local Devnet Fallback: Direct Beacon Endpoint (Offline Bootstrap Only)
+### 3.4 Local Devnet Fallback: Direct Beacon Endpoint (Offline Bootstrap Only)
 
 For isolated local testnets or offline development before the Logos Core catalog is mounted locally, operators can provide a fallback direct beacon endpoint:
 
 ```sh
 # Local Devnet Fallback (Isolated developer environment only)
 export ETH_CONSENSUS_RPC="https://lodestar-sepolia.chainsafe.io"
-export ETH_EXECUTION_RPC="https://gateway.tenderly.co/public/sepolia"
+export ETH_EXECUTION_RPC="https://rpc.sepolia.org"
 export ETH_CHAIN_ID="11155111"
-export LEZ_RPC_URL="https://testnet.lez.logos.co"
+export LEZ_RPC_URL="http://127.0.0.1:8545"
 export LEZ_PRIVATE_KEY="0xYOUR_PRIVATE_KEY_HERE"
 
 cargo run -p mosoo-daemon --release -- \
@@ -202,5 +202,5 @@ If two daemon operators submit `BeginUpdate` simultaneously (race condition), th
 | **Private key exposure** | Use `LEZ_PRIVATE_KEY` env var, not `--lez-private-key` flag (avoids shell history) |
 | **RPC endpoint trust** | Beacon API responses are cryptographically verified in-guest — daemon cannot forge updates |
 | **Competing submissions** | Idempotent LEZ program + jitter delay prevents duplicate gas waste |
-| **Long-range reorganizations** | Weak-subjectivity window enforced (1,728,000 slots) — stale instances require re-init |
+| **Long-range reorganizations** | Operational weak-subjectivity window (`54,000` slots / ~7.5 days) and hard consensus ceiling (`1,728,000` slots) enforced — stale instances require re-init |
 | **Key management** | For production: use Logos Core wallet keystore rather than raw hex key flag |

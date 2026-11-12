@@ -1,0 +1,37 @@
+# Mosoo LEZ v0.3.1 Guest Program (`mosoo_lc`)
+# Uses genuine mosoo-core cryptography, SSZ branches, MPT proofs, predicates, and privacy shielding
+# compiled onto the LEZ v0.3.1 `lee_core` plan/apply runtime (`db66590ab`).
+[workspace]
+
+[package]
+name = "mosoo-lez-v03"
+version = "0.4.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "mosoo_lc"
+path = "src/bin/mosoo_lc.rs"
+
+[dependencies]
+mosoo-core = { path = "../../mosoo-core", default-features = false }
+lee_core   = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "db66590ab821a4e142c211017a3866d007f6fa77" }
+risc0-zkvm = { version = "=3.0.5", default-features = false, features = ["std", "unstable"] }
+borsh      = { version = "1.5", features = ["derive"] }
+alloy-primitives = { version = "0.8", default-features = false }
+
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+panic         = "abort"
+strip         = "symbols"
+
+[patch.crates-io]
+blst        = { git = "https://github.com/risc0/blst", tag = "v0.3.16-risczero.0" }
+sha2        = { git = "https://github.com/risc0/RustCrypto-hashes", tag = "sha2-v0.10.8-risczero.0" }
+tiny-keccak = { git = "https://github.com/risc0/tiny-keccak", tag = "tiny-keccak/v2.0.2-risczero.0" }

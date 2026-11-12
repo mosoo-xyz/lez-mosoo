@@ -8,7 +8,7 @@ use crate::types::{Predicate, VerifiedStatement};
 
 /// Evaluate a `Predicate` over a `VerifiedValue` and produce a `VerifiedStatement`.
 ///
-/// The `statement_id` is derived deterministically strictly from verified Ethereum state facts (RFP-021 Functionality #6, ADR-006):
+/// The `statement_id` is derived deterministically from verified Ethereum state facts:
 /// `sha256("mosoo_statement_v1" || chain_id_le8 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`
 /// or in V2:
 /// `sha256("mosoo_statement_v2" || chain_id_le8 || genesis_validators_root_32 || subject_key_32 || proof_type_tag_u8 || verified_value_32)`.
@@ -86,7 +86,7 @@ pub fn evaluate_with_binding(
 }
 
 /// Evaluate a `Predicate` over a `VerifiedValue` cryptographically bound to a source light-client instance
-/// and consensus genesis validators root (Finding 3 / RFP Functionality #15).
+/// and consensus genesis validators root.
 #[allow(clippy::too_many_arguments)]
 pub fn evaluate_with_binding_v2(
     predicate: &Predicate,
@@ -329,6 +329,32 @@ pub fn derive_erc20_deposit_subject_key(
     h.update(token_contract);
     h.update(sender);
     h.update(recipient);
+    h.finalize().into()
+}
+
+/// Derives a collision-resistant subject key for an RFP-022 shielded commitment deposit.
+/// Deliberately binds zero Ethereum sender and zero LEZ recipient.
+#[allow(clippy::too_many_arguments)]
+pub fn derive_shielded_deposit_subject_key(
+    execution_block_hash: &[u8; 32],
+    slot: u64,
+    tx_index: u64,
+    log_index: usize,
+    locker_contract: &[u8; 20],
+    token_contract: &[u8; 20],
+    commitment: &[u8; 32],
+    nonce: u64,
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"MOSOO_SHIELDED_DEPOSIT_V1:");
+    h.update(execution_block_hash);
+    h.update(slot.to_be_bytes());
+    h.update(tx_index.to_be_bytes());
+    h.update((log_index as u64).to_be_bytes());
+    h.update(locker_contract);
+    h.update(token_contract);
+    h.update(commitment);
+    h.update(nonce.to_be_bytes());
     h.finalize().into()
 }
 

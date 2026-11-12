@@ -1,0 +1,28 @@
+=== 1. Local V03State program_loader deployment (6 segments) ===
+  WriteSegment[5] bytes=78356 reserve=1026848 cycles=0
+  WriteSegment[4] bytes=98808 reserve=1190464 cycles=0
+  WriteSegment[3] bytes=98808 reserve=1190464 cycles=0
+  WriteSegment[2] bytes=98808 reserve=1190464 cycles=0
+  WriteSegment[1] bytes=98808 reserve=1190464 cycles=0
+  WriteSegment[0] bytes=98808 reserve=1190464 cycles=0
+  CreateHeader bytes=820 reserve=406560 cycles=0
+  Verified local deployed header=48ZRWawVe1VphfLZqHR4nfT6rWaybzB5H9RYWQnhifBj, image_id=961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0
+=== 2. Executing Mosoo lifecycle & negative refusals under 10M cycle cap ===
+  [PASS] Init (slot=15632288): cycles=927806 (<10M=true) bytes=26124
+  [REFUSED OK] Duplicate Init rejected: Failed to execute program: Guest panicked: E7391: an instance already exists at this id
+  [REFUSED OK] Begin rejected corrupted finality branch
+  [PASS] Begin (slot->15632352): cycles=2558057 (<10M=true) bytes=29795
+  [REFUSED OK] Finish rejected before Miller ran (E7395)
+  [PASS] Miller: cycles=4568088 (<10M=true) bytes=355
+  [PASS] Finish (block #26392691): cycles=3705545 (<10M=true) bytes=1131
+  [REFUSED OK] Forged BLS signature rejected by Finish final_exponentiation
+  [PASS] Attest (WETH Balance): cycles=229129 bytes=4320
+  [PASS] Attest (WETH Storage): cycles=362755 bytes=7359
+  [PASS] Attest (USDC Receipt): cycles=200594 bytes=4737
+  [PASS] Attest (Confidential Shielded): cycles=212812 bytes=4769
+  [REFUSED OK] Attest rejected wrong chain_id (11155111 != 1)
+  [REFUSED OK] Attest rejected wrong predicate (E7311)
+  [REFUSED OK] Attest rejected tampered receipt RLP (E7312)
+
+=== SIMULATION SUMMARY (10M MAX_GAS_EXEC GATE) ===
+Init=927806 Begin=2558057 Miller=4568088 Finish=3705545 AttestBal=229129 AttestStor=362755 AttestRcpt=200594 AttestConf=212812

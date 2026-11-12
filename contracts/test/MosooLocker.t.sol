@@ -767,7 +767,7 @@ contract MosooLockerTest is Test {
             revert("unlockERC20 MUST revert when legacy routes disabled");
         } catch {}
 
-        // 7. Permanently retire legacy routes (Finding 4 / P2)
+        // 7. Permanently retire legacy routes
         assertFalse(locker.legacyRoutesPermanentlyDisabled(), "should not be permanently disabled initially");
         locker.permanentlyRetireLegacyRoutes();
         assertTrue(locker.legacyRoutesPermanentlyDisabled(), "should be permanently disabled");
@@ -776,6 +776,152 @@ contract MosooLockerTest is Test {
         // 8. Attempting to re-enable legacy routes MUST revert with LegacyRoutesPermanentlyRetired
         try locker.setLegacyRoutesEnabled(true) {
             revert("setLegacyRoutesEnabled(true) MUST revert once permanently retired");
+        } catch {}
+    }
+
+    function test_shielded_eth_and_erc20_commitments_zero_leak() public {
+        bytes32 cEth = keccak256("shielded_eth_commitment_1");
+        vm.prank(user);
+        (uint32 ethIdx, bytes32 ethRoot) = locker.depositShieldedETH{value: 1 ether}(cEth);
+        assertEq(uint256(ethIdx), 0, "first commitment leaf index must be 0");
+        assertEq(locker.nextCommitmentIndex(), 1, "nextCommitmentIndex must increment");
+        assertTrue(locker.commitments(cEth), "ETH commitment must be recorded");
+        assertTrue(locker.knownDepositRoots(ethRoot), "ETH root must be known");
+        assertEq(locker.currentCommitmentRoot(), ethRoot, "currentCommitmentRoot mismatch");
+        assertEq(locker.totalLockedETH(), 1 ether, "totalLockedETH mismatch");
+
+        bytes32 cErc20 = keccak256("shielded_erc20_commitment_2");
+        vm.prank(user);
+        token.approve(address(locker), 100 ether);
+        vm.prank(user);
+        (uint32 ercIdx, bytes32 ercRoot) = locker.depositShieldedERC20(address(token), 100 ether, cErc20);
+        assertEq(uint256(ercIdx), 1, "second commitment leaf index must be 1");
+        assertTrue(locker.commitments(cErc20), "ERC-20 commitment must be recorded");
+        assertTrue(locker.knownDepositRoots(ethRoot), "historical ETH root must remain valid");
+        assertTrue(locker.knownDepositRoots(ercRoot), "new ERC-20 root must be known");
+        assertEq(locker.totalLockedERC20(address(token)), 100 ether, "totalLockedERC20 mismatch");
+    }
+
+    function test_shielded_merkle_tree_inclusion_and_root_history() public {
+        bytes32 c0 = keccak256("leaf_0");
+        bytes32 c1 = keccak256("leaf_1");
+
+        vm.prank(user);
+        (uint32 idx0, bytes32 root0) = locker.depositShieldedETH{value: 1 ether}(c0);
+        assertEq(uint256(idx0), 0, "idx0 mismatch");
+
+        bytes32[20] memory siblings0AtRoot0;
+        for (uint32 i = 0; i < 20; i++) {
+            siblings0AtRoot0[i] = locker.emptyHashAtLevel(i);
+        }
+        assertTrue(
+            locker.verifyCommitmentInclusion(c0, 0, siblings0AtRoot0, root0),
+            "leaf 0 must verify against root0"
+        );
+
+        vm.prank(user);
+        (uint32 idx1, bytes32 root1) = locker.depositShieldedETH{value: 1 ether}(c1);
+        assertEq(uint256(idx1), 1, "idx1 mismatch");
+
+        bytes32[20] memory siblings0AtRoot1;
+        bytes32[20] memory siblings1AtRoot1;
+        siblings0AtRoot1[0] = c1;
+        siblings1AtRoot1[0] = c0;
+        for (uint32 i = 1; i < 20; i++) {
+            bytes32 emptyLvl = locker.emptyHashAtLevel(i);
+            siblings0AtRoot1[i] = emptyLvl;
+            siblings1AtRoot1[i] = emptyLvl;
+        }
+        assertTrue(
+            locker.verifyCommitmentInclusion(c0, 0, siblings0AtRoot1, root1),
+            "leaf 0 must verify against updated root1"
+        );
+        assertTrue(
+            locker.verifyCommitmentInclusion(c1, 1, siblings1AtRoot1, root1),
+            "leaf 1 must verify against updated root1"
+        );
+        assertEq(
+            locker.computeCommitmentPair(c0, c1),
+            locker.computeCommitmentPair(c0, c1),
+            "computeCommitmentPair must be deterministic"
+        );
+    }
+
+    function test_shielded_duplicate_commitment_and_strict_denomination_reverts() public {
+        bytes32 c0 = keccak256("unique_commitment");
+        vm.prank(user);
+        locker.depositShieldedETH{value: 1 ether}(c0);
+
+        // Zero commitment must revert
+        vm.prank(user);
+        try locker.depositShieldedETH{value: 1 ether}(bytes32(0)) {
+            revert("Zero commitment MUST revert");
+        } catch {}
+
+        // Duplicate commitment must revert
+        vm.prank(user);
+        try locker.depositShieldedETH{value: 1 ether}(c0) {
+            revert("Duplicate commitment MUST revert");
+        } catch {}
+
+        // Enable strict fixed denomination mode (0.01, 0.1, 1, 10 ETH pre-registered)
+        locker.setStrictFixedDenominationMode(true);
+        assertTrue(locker.strictFixedDenominationMode(), "strict denomination mode must be enabled");
+
+        bytes32 cOdd = keccak256("odd_amount_commitment");
+        vm.prank(user);
+        try locker.depositShieldedETH{value: 0.42 ether}(cOdd) {
+            revert("Non-standard denomination MUST revert under strict mode");
+        } catch {}
+
+        bytes32 cStd = keccak256("standard_10_eth_commitment");
+        vm.prank(user);
+        locker.depositShieldedETH{value: 10 ether}(cStd);
+        assertTrue(locker.commitments(cStd), "standard 10 ETH commitment must succeed");
+    }
+
+    function test_shielded_only_mode_and_shielded_outbound_unlock() public {
+        locker.setShieldedDepositsOnly(true);
+        assertTrue(locker.shieldedDepositsOnly(), "shieldedDepositsOnly must be true");
+
+        // Legacy public depositETH revealing lezRecipient MUST revert
+        vm.prank(user);
+        try locker.depositETH{value: 1 ether}(bytes32(uint256(0xAA))) {
+            revert("depositETH MUST revert when shieldedDepositsOnly is active");
+        } catch {}
+
+        // Shielded deposit succeeds without leaking lezRecipient
+        bytes32 depCommitment = keccak256("shielded_deposit_outbound_test");
+        vm.prank(user);
+        locker.depositShieldedETH{value: 1 ether}(depCommitment);
+
+        // Shielded outbound unlock reveals no lezOwner, burnNonce, or lezSlot
+        bytes32 burnNullifier = keccak256("shielded_burn_nullifier_1");
+        bytes32 sourceInstance = bytes32(uint256(0x9999));
+        uint256 unlockAmt = 0.5 ether;
+        address payable recipient = payable(user);
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                locker.SHIELDED_BURN_ETH_TYPEHASH(),
+                burnNullifier,
+                sourceInstance,
+                recipient,
+                unlockAmt
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = abi.encodePacked(r, s, v);
+
+        locker.unlockShieldedETH(burnNullifier, sourceInstance, unlockAmt, recipient, sigs);
+        assertTrue(locker.executedBurns(burnNullifier), "burnNullifier must be marked spent");
+        assertEq(locker.totalUnlockedETH(), unlockAmt, "totalUnlockedETH mismatch");
+
+        // Replay MUST revert
+        try locker.unlockShieldedETH(burnNullifier, sourceInstance, unlockAmt, recipient, sigs) {
+            revert("Shielded burn nullifier replay MUST revert");
         } catch {}
     }
 }

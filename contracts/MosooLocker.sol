@@ -142,6 +142,15 @@ contract MosooLocker {
         "BurnERC20V2(bytes32 burnId,bytes32 sourceInstance,address token,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
     );
 
+    // --- RFP-022 Shielded Outbound Unlock Typehashes (no lezOwner/burnNonce/lezSlot leaked on L1) ---
+    bytes32 public constant SHIELDED_BURN_ETH_TYPEHASH = keccak256(
+        "ShieldedBurnETH(bytes32 burnNullifier,bytes32 sourceInstance,address recipient,uint256 amount)"
+    );
+
+    bytes32 public constant SHIELDED_BURN_ERC20_TYPEHASH = keccak256(
+        "ShieldedBurnERC20(bytes32 burnNullifier,bytes32 sourceInstance,address token,address recipient,uint256 amount)"
+    );
+
     function DOMAIN_SEPARATOR() public view returns (bytes32) {
         return keccak256(
             abi.encode(
@@ -159,6 +168,18 @@ contract MosooLocker {
     uint256 private constant _ENTERED = 2;
     uint256 private _status;
 
+    // --- RFP-022 Privacy-Preserving Shielded Commitment Pool & Incremental Merkle Tree ---
+    uint32 public constant MERKLE_TREE_DEPTH = 20;
+    bytes32 public constant EMPTY_LEAF_HASH = keccak256("mosoo_empty_leaf_v1");
+    uint32 public nextCommitmentIndex;
+    bytes32[20] private _filledSubtrees;
+    bytes32 public currentCommitmentRoot;
+    mapping(bytes32 => bool) public knownDepositRoots;
+    mapping(bytes32 => bool) public commitments;
+    bool public shieldedDepositsOnly;
+    bool public strictFixedDenominationMode;
+    mapping(uint256 => bool) public isStandardDenomination;
+
     // --- Events ---
 
     event DepositETH(
@@ -174,6 +195,35 @@ contract MosooLocker {
         bytes32 indexed lezRecipient,
         uint256 amount,
         uint64 nonce
+    );
+
+    /// @notice Privacy-preserving RFP-022 deposit commitment event.
+    /// @dev Deliberately omits both Ethereum `sender` and target `lezRecipient` so
+    ///      no observer can link an Ethereum deposit to its LEZ mint destination.
+    event DepositCommitted(
+        bytes32 indexed commitment,
+        address indexed token,
+        uint256 amount,
+        uint32 indexed leafIndex,
+        bytes32 newRoot,
+        uint64 nonce
+    );
+
+    event ShieldedDepositsOnlyToggled(bool enabled);
+    event StrictDenominationModeToggled(bool enabled);
+    event StandardDenominationUpdated(uint256 denomination, bool allowed);
+
+    event UnlockedShieldedETH(
+        bytes32 indexed burnNullifier,
+        address indexed recipient,
+        uint256 amount
+    );
+
+    event UnlockedShieldedERC20(
+        bytes32 indexed burnNullifier,
+        address indexed token,
+        address indexed recipient,
+        uint256 amount
     );
 
     event UnlockedETH(
@@ -252,6 +302,11 @@ contract MosooLocker {
     error LegacyRoutesDisabled();
     error LegacyRoutesArePermanentlyRetired();
     error AmountExceedsUint192();
+    error ZeroCommitment();
+    error CommitmentAlreadyExists();
+    error MerkleTreeFull();
+    error ShieldedDepositsOnlyActive();
+    error InvalidDenomination(uint256 amount);
 
     // --- Modifiers ---
 
@@ -337,6 +392,21 @@ contract MosooLocker {
         dailyWithdrawalLimitERC20[sepoliaUSDC] = 50_000 * 10**6; // 50,000 USDC per 24h
         dailyWithdrawalLimitERC20[sepoliaUSDT] = 50_000 * 10**6; // 50,000 USDT per 24h
 
+        // Initialize Depth-20 incremental commitment Merkle tree zeros (RFP-022 shielded pool)
+        bytes32 currentZero = EMPTY_LEAF_HASH;
+        for (uint32 i = 0; i < MERKLE_TREE_DEPTH; i++) {
+            _filledSubtrees[i] = currentZero;
+            currentZero = _hashPair(currentZero, currentZero);
+        }
+        currentCommitmentRoot = currentZero;
+        knownDepositRoots[currentZero] = true;
+
+        // Pre-register standard fixed denominations for RFP-022 amount-uniformity pools
+        isStandardDenomination[0.01 ether] = true;
+        isStandardDenomination[0.1 ether] = true;
+        isStandardDenomination[1 ether] = true;
+        isStandardDenomination[10 ether] = true;
+
         _status = _NOT_ENTERED;
         emit OwnershipTransferred(address(0), msg.sender);
         emit GuardianUpdated(address(0), guardian);
@@ -363,6 +433,7 @@ contract MosooLocker {
         nonReentrant
         returns (uint64 nonce)
     {
+        if (shieldedDepositsOnly) revert ShieldedDepositsOnlyActive();
         if (msg.value == 0) revert ZeroAmount();
         if (lezRecipient == bytes32(0)) revert ZeroAddress();
 
@@ -371,6 +442,36 @@ contract MosooLocker {
         totalLockedETH += msg.value;
 
         emit DepositETH(msg.sender, lezRecipient, msg.value, nonce);
+    }
+
+    /**
+     * @notice Deposit native ETH privately into the RFP-022 shielded commitment pool.
+     * @dev No `lezRecipient` or depositor identity is emitted on Ethereum; the user claims
+     *      on LEZ against an attested DepositCommitted receipt log or commitment Merkle root.
+     * @param commitment Domain-separated commitment `sha256("mosoo_shielded_deposit_v1" || ...)` or keccak commitment.
+     * @return leafIndex Index in the Depth-20 incremental Merkle tree.
+     * @return newRoot Updated incremental commitment tree root.
+     */
+    function depositShieldedETH(bytes32 commitment)
+        external
+        payable
+        whenNotPaused
+        nonReentrant
+        returns (uint32 leafIndex, bytes32 newRoot)
+    {
+        if (msg.value == 0) revert ZeroAmount();
+        if (commitment == bytes32(0)) revert ZeroCommitment();
+        if (strictFixedDenominationMode && !isStandardDenomination[msg.value]) {
+            revert InvalidDenomination(msg.value);
+        }
+
+        depositNonce += 1;
+        uint64 nonce = depositNonce;
+        totalLockedETH += msg.value;
+
+        (leafIndex, newRoot) = _insertCommitment(commitment);
+
+        emit DepositCommitted(commitment, address(0), msg.value, leafIndex, newRoot, nonce);
     }
 
     /**
@@ -387,6 +488,7 @@ contract MosooLocker {
         nonReentrant
         returns (uint64 nonce)
     {
+        if (shieldedDepositsOnly) revert ShieldedDepositsOnlyActive();
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || lezRecipient == bytes32(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();
@@ -402,6 +504,115 @@ contract MosooLocker {
         totalLockedERC20[token] += actualAmount;
 
         emit DepositERC20(token, msg.sender, lezRecipient, actualAmount, nonce);
+    }
+
+    /**
+     * @notice Deposit standard ERC-20 tokens privately into the RFP-022 shielded commitment pool.
+     * @dev Uses before/after balance differential for fee-on-transfer safety and emits zero `lezRecipient` data.
+     * @param token The ERC-20 contract address on Ethereum.
+     * @param amount The token amount to deposit.
+     * @param commitment Shielded deposit commitment (non-zero, unique).
+     * @return leafIndex Index in the Depth-20 incremental Merkle tree.
+     * @return newRoot Updated incremental commitment tree root.
+     */
+    function depositShieldedERC20(address token, uint256 amount, bytes32 commitment)
+        external
+        whenNotPaused
+        nonReentrant
+        returns (uint32 leafIndex, bytes32 newRoot)
+    {
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0)) revert ZeroAddress();
+        if (commitment == bytes32(0)) revert ZeroCommitment();
+        if (token.code.length == 0) revert ZeroAddress();
+        if (tokenAllowlistEnabled && !isTokenAllowed[token]) revert TokenNotAllowed();
+
+        uint256 balanceBefore = _getTokenBalance(token, address(this));
+        _safeTransferFrom(token, msg.sender, address(this), amount);
+        uint256 actualAmount = _getTokenBalance(token, address(this)) - balanceBefore;
+        if (actualAmount == 0) revert ZeroAmount();
+        if (strictFixedDenominationMode && !isStandardDenomination[actualAmount]) {
+            revert InvalidDenomination(actualAmount);
+        }
+
+        depositNonce += 1;
+        uint64 nonce = depositNonce;
+        totalLockedERC20[token] += actualAmount;
+
+        (leafIndex, newRoot) = _insertCommitment(commitment);
+
+        emit DepositCommitted(commitment, token, actualAmount, leafIndex, newRoot, nonce);
+    }
+
+    // --- Incremental Commitment Merkle Tree Helpers (RFP-022 Privacy Pool) ---
+
+    function computeCommitmentPair(bytes32 left, bytes32 right) public pure returns (bytes32) {
+        return _hashPair(left, right);
+    }
+
+    function emptyHashAtLevel(uint32 level) public pure returns (bytes32) {
+        bytes32 zeroHash = EMPTY_LEAF_HASH;
+        for (uint32 i = 0; i < level; i++) {
+            zeroHash = _hashPair(zeroHash, zeroHash);
+        }
+        return zeroHash;
+    }
+
+    function verifyCommitmentInclusion(
+        bytes32 commitment,
+        uint32 leafIndex,
+        bytes32[20] calldata siblings,
+        bytes32 root
+    ) external view returns (bool) {
+        if (commitment == bytes32(0) || !knownDepositRoots[root]) {
+            return false;
+        }
+        uint32 currentIndex = leafIndex;
+        bytes32 currentHash = commitment;
+        for (uint32 i = 0; i < MERKLE_TREE_DEPTH; i++) {
+            if (currentIndex % 2 == 0) {
+                currentHash = _hashPair(currentHash, siblings[i]);
+            } else {
+                currentHash = _hashPair(siblings[i], currentHash);
+            }
+            currentIndex /= 2;
+        }
+        return currentHash == root;
+    }
+
+    function _hashPair(bytes32 left, bytes32 right) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("mosoo_merkle_v1", left, right));
+    }
+
+    function _insertCommitment(bytes32 commitment)
+        internal
+        returns (uint32 leafIndex, bytes32 newRoot)
+    {
+        if (commitments[commitment]) revert CommitmentAlreadyExists();
+        leafIndex = nextCommitmentIndex;
+        if (leafIndex >= (uint32(1) << MERKLE_TREE_DEPTH)) revert MerkleTreeFull();
+
+        commitments[commitment] = true;
+        nextCommitmentIndex = leafIndex + 1;
+
+        uint32 currentIndex = leafIndex;
+        bytes32 currentHash = commitment;
+        bytes32 zeroHash = EMPTY_LEAF_HASH;
+
+        for (uint32 i = 0; i < MERKLE_TREE_DEPTH; i++) {
+            if (currentIndex % 2 == 0) {
+                _filledSubtrees[i] = currentHash;
+                currentHash = _hashPair(currentHash, zeroHash);
+            } else {
+                currentHash = _hashPair(_filledSubtrees[i], currentHash);
+            }
+            currentIndex /= 2;
+            zeroHash = _hashPair(zeroHash, zeroHash);
+        }
+
+        currentCommitmentRoot = currentHash;
+        knownDepositRoots[currentHash] = true;
+        newRoot = currentHash;
     }
 
     // --- Unlock Functions (LEZ -> ETH) ---
@@ -901,6 +1112,117 @@ contract MosooLocker {
         _safeTransfer(token, recipient, amount);
 
         emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+    }
+
+    /**
+     * @notice Release locked native ETH privately without revealing LEZ burner identity, burnNonce, or lezSlot on L1 (RFP-022).
+     * @dev Binds only the opaque `burnNullifier`, `sourceInstance`, `recipient`, and `amount` under EIP-712 quorum verification.
+     */
+    function unlockShieldedETH(
+        bytes32 burnNullifier,
+        bytes32 sourceInstance,
+        uint256 amount,
+        address payable recipient,
+        bytes[] calldata signatures
+    ) external whenNotPaused nonReentrant {
+        if (burnNullifier == bytes32(0)) revert InvalidBurnProof();
+        if (amount == 0) revert ZeroAmount();
+        if (recipient == address(0)) revert ZeroAddress();
+        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        if (executedBurns[burnNullifier]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnNullifier]) revert BurnCancelled();
+        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SHIELDED_BURN_ETH_TYPEHASH,
+                burnNullifier,
+                sourceInstance,
+                recipient,
+                amount
+            )
+        );
+        if (!_verifyFlexibleSignatures(structHash, signatures)) {
+            revert InvalidBurnProof();
+        }
+
+        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
+            uint256 unlockTime = queuedWithdrawalUnlockTime[burnNullifier];
+            if (unlockTime == 0) {
+                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
+                queuedWithdrawalUnlockTime[burnNullifier] = unlockTime;
+                emit WithdrawalQueued(burnNullifier, recipient, amount, unlockTime);
+                return;
+            }
+            if (block.timestamp < unlockTime) {
+                revert LargeWithdrawalPending(unlockTime);
+            }
+        }
+
+        _checkAndRecordRollingWithdrawalETH(amount);
+
+        executedBurns[burnNullifier] = true;
+        totalUnlockedETH += amount;
+        totalLockedETH -= amount;
+
+        (bool sent, ) = recipient.call{value: amount}("");
+        if (!sent) revert ETHTransferFailed();
+
+        emit UnlockedShieldedETH(burnNullifier, recipient, amount);
+    }
+
+    /**
+     * @notice Release locked ERC-20 tokens privately without revealing LEZ burner identity, burnNonce, or lezSlot on L1 (RFP-022).
+     */
+    function unlockShieldedERC20(
+        bytes32 burnNullifier,
+        bytes32 sourceInstance,
+        address token,
+        uint256 amount,
+        address recipient,
+        bytes[] calldata signatures
+    ) external whenNotPaused nonReentrant {
+        if (burnNullifier == bytes32(0)) revert InvalidBurnProof();
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
+        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        if (token.code.length == 0) revert ZeroAddress();
+        if (executedBurns[burnNullifier]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnNullifier]) revert BurnCancelled();
+        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                SHIELDED_BURN_ERC20_TYPEHASH,
+                burnNullifier,
+                sourceInstance,
+                token,
+                recipient,
+                amount
+            )
+        );
+        if (!_verifyFlexibleSignatures(structHash, signatures)) {
+            revert InvalidBurnProof();
+        }
+
+        _checkAndRecordRollingWithdrawalERC20(token, amount);
+
+        executedBurns[burnNullifier] = true;
+        totalLockedERC20[token] -= amount;
+
+        _safeTransfer(token, recipient, amount);
+
+        emit UnlockedShieldedERC20(burnNullifier, token, recipient, amount);
+    }
+
+    function _verifyFlexibleSignatures(
+        bytes32 structHash,
+        bytes[] calldata signatures
+    ) internal view returns (bool) {
+        if (signatures.length == 1 && requiredQuorum == 1) {
+            return _verifyBurnSignature(structHash, signatures[0]);
+        }
+        return _verifyQuorumSignatures(structHash, signatures);
     }
 
     function unlockETHWithQuorum(
@@ -1410,7 +1732,7 @@ contract MosooLocker {
 
     function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
         if (token.code.length == 0) revert ZeroAddress();
-        bytes memory data = abi.encodeWithSelector(0x23b87266, from, to, amount);
+        bytes memory data = abi.encodeWithSelector(0x23b872dd, from, to, amount);
         (bool success, bytes memory returnData) = token.call(data);
         if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
             revert ERC20TransferFailed();
@@ -1633,6 +1955,22 @@ contract MosooLocker {
     function setTokenAllowlistEnabled(bool enabled) external onlyOwner {
         tokenAllowlistEnabled = enabled;
         emit TokenAllowlistToggled(enabled);
+    }
+
+    function setShieldedDepositsOnly(bool enabled) external onlyOwner {
+        shieldedDepositsOnly = enabled;
+        emit ShieldedDepositsOnlyToggled(enabled);
+    }
+
+    function setStrictFixedDenominationMode(bool enabled) external onlyOwner {
+        strictFixedDenominationMode = enabled;
+        emit StrictDenominationModeToggled(enabled);
+    }
+
+    function setStandardDenomination(uint256 denomination, bool allowed) external onlyOwner {
+        if (denomination == 0) revert ZeroAmount();
+        isStandardDenomination[denomination] = allowed;
+        emit StandardDenominationUpdated(denomination, allowed);
     }
 
     function proposeGuardian(address _newGuardian) external onlyOwner {

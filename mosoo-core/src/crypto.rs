@@ -5,6 +5,7 @@
 
 use blst::min_pk::{AggregatePublicKey, PublicKey, Signature};
 use blst::BLST_ERROR;
+use serde::{Deserialize, Serialize};
 
 use crate::error::MosooError;
 use crate::types::{
@@ -87,6 +88,183 @@ pub fn aggregate_participating_pubkeys(
         AggregatePublicKey::aggregate(&refs, false).map_err(|_| MosooError::AggregationFailed)?;
 
     Ok(agg.to_public_key().to_bytes())
+}
+
+/// Uncompressed affine G1 witness enabling zkVM-efficient sync-committee subset
+/// verification via complement addition (`agg_pk + sum(non_signers) == committee.aggregate_pubkey`)
+/// without 512 field square-root decompressions inside `rv32im`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ComplementKeyWitness {
+    /// Uncompressed 96-byte `(x || y)` big-endian G1 point for the participating aggregate key.
+    pub agg_pk_uncompressed: Vec<u8>,
+    /// Uncompressed 96-byte `(x || y)` points for every non-participating validator (`!bit[i]`),
+    /// ordered strictly by ascending validator index `0..512`.
+    pub non_signer_pks_uncompressed: Vec<Vec<u8>>,
+}
+
+fn serialize_compressed_p1_to_uncompressed(compressed: &[u8]) -> Result<Vec<u8>, MosooError> {
+    if compressed.len() != 48 {
+        return Err(MosooError::InvalidPublicKey(format!(
+            "compressed G1 pubkey must be 48 bytes, got {}",
+            compressed.len()
+        )));
+    }
+    let mut aff = blst::blst_p1_affine::default();
+    let err = unsafe { blst::blst_p1_uncompress(&mut aff, compressed.as_ptr()) };
+    if err != BLST_ERROR::BLST_SUCCESS {
+        return Err(MosooError::InvalidPublicKey(format!(
+            "blst_p1_uncompress failed: {err:?}"
+        )));
+    }
+    let mut proj = blst::blst_p1::default();
+    let mut out = vec![0u8; 96];
+    unsafe {
+        blst::blst_p1_from_affine(&mut proj, &aff);
+        blst::blst_p1_serialize(out.as_mut_ptr(), &proj);
+    }
+    Ok(out)
+}
+
+fn parse_uncompressed_on_curve_p1(bytes: &[u8]) -> Result<blst::blst_p1_affine, MosooError> {
+    if bytes.len() != 96 {
+        return Err(MosooError::InvalidPublicKey(format!(
+            "uncompressed G1 point must be 96 bytes, got {}",
+            bytes.len()
+        )));
+    }
+    let mut aff = blst::blst_p1_affine::default();
+    let err = unsafe { blst::blst_p1_deserialize(&mut aff, bytes.as_ptr()) };
+    if err != BLST_ERROR::BLST_SUCCESS {
+        return Err(MosooError::InvalidPublicKey(format!(
+            "blst_p1_deserialize failed: {err:?}"
+        )));
+    }
+    unsafe {
+        if blst::blst_p1_affine_is_inf(&aff) || !blst::blst_p1_affine_on_curve(&aff) {
+            return Err(MosooError::InvalidPublicKey(
+                "uncompressed G1 point is infinity or off-curve".into(),
+            ));
+        }
+    }
+    Ok(aff)
+}
+
+/// Build an uncompressed [`ComplementKeyWitness`] on the host for `committee` & `participation` bits.
+pub fn build_complement_key_witness(
+    committee: &SyncCommittee,
+    participation: &[u8],
+) -> Result<ComplementKeyWitness, MosooError> {
+    if participation.len() != SYNC_COMMITTEE_BITS_BYTES {
+        return Err(MosooError::InvalidSyncCommitteeBitsLength {
+            actual: participation.len(),
+            expected: SYNC_COMMITTEE_BITS_BYTES,
+        });
+    }
+    if committee.pubkeys.len() != 512 {
+        return Err(MosooError::InvalidSyncCommitteeLength {
+            actual: committee.pubkeys.len(),
+            expected: 512,
+        });
+    }
+    let agg_compressed = aggregate_participating_pubkeys(committee, participation)?;
+    let agg_pk_uncompressed = serialize_compressed_p1_to_uncompressed(&agg_compressed)?;
+    let mut non_signer_pks_uncompressed = Vec::new();
+    for (i, pk_vec) in committee.pubkeys.iter().enumerate() {
+        if !validator_participated(participation, i) {
+            non_signer_pks_uncompressed.push(serialize_compressed_p1_to_uncompressed(pk_vec)?);
+        }
+    }
+    Ok(ComplementKeyWitness {
+        agg_pk_uncompressed,
+        non_signer_pks_uncompressed,
+    })
+}
+
+/// Verify an aggregate public key against an authenticated `SyncCommittee` using complement
+/// witness points: confirms each non-participating validator's uncompressed point compresses to
+/// `committee.pubkeys[i]`, verifies `agg_pk + sum(non_signers) == committee.aggregate_pubkey`,
+/// and returns the canonical 48-byte compressed aggregate public key.
+pub fn verify_complement_aggregate_pubkey(
+    committee: &SyncCommittee,
+    participation: &[u8],
+    witness: &ComplementKeyWitness,
+) -> Result<[u8; 48], MosooError> {
+    if participation.len() != SYNC_COMMITTEE_BITS_BYTES {
+        return Err(MosooError::InvalidSyncCommitteeBitsLength {
+            actual: participation.len(),
+            expected: SYNC_COMMITTEE_BITS_BYTES,
+        });
+    }
+    if committee.pubkeys.len() != 512 {
+        return Err(MosooError::InvalidSyncCommitteeLength {
+            actual: committee.pubkeys.len(),
+            expected: 512,
+        });
+    }
+    if committee.aggregate_pubkey.len() != 48 {
+        return Err(MosooError::InvalidPublicKey(format!(
+            "committee aggregate_pubkey must be 48 bytes, got {}",
+            committee.aggregate_pubkey.len()
+        )));
+    }
+
+    let agg_aff = parse_uncompressed_on_curve_p1(&witness.agg_pk_uncompressed)?;
+    let mut agg_compressed = [0u8; 48];
+    unsafe {
+        blst::blst_p1_affine_compress(agg_compressed.as_mut_ptr(), &agg_aff);
+    }
+
+    let mut non_signer_indices = Vec::new();
+    for i in 0..512 {
+        if !validator_participated(participation, i) {
+            non_signer_indices.push(i);
+        }
+    }
+    if witness.non_signer_pks_uncompressed.len() != non_signer_indices.len() {
+        return Err(MosooError::InvalidPublicKey(format!(
+            "complement witness count mismatch: expected {}, got {}",
+            non_signer_indices.len(),
+            witness.non_signer_pks_uncompressed.len()
+        )));
+    }
+
+    if non_signer_indices.is_empty() {
+        if agg_compressed.as_slice() != committee.aggregate_pubkey.as_slice() {
+            return Err(MosooError::AggregationFailed);
+        }
+        return Ok(agg_compressed);
+    }
+
+    let mut acc = blst::blst_p1::default();
+    unsafe {
+        blst::blst_p1_from_affine(&mut acc, &agg_aff);
+    }
+
+    for (pos, &val_idx) in non_signer_indices.iter().enumerate() {
+        let ns_aff = parse_uncompressed_on_curve_p1(&witness.non_signer_pks_uncompressed[pos])?;
+        let mut ns_compressed = [0u8; 48];
+        unsafe {
+            blst::blst_p1_affine_compress(ns_compressed.as_mut_ptr(), &ns_aff);
+        }
+        if ns_compressed.as_slice() != committee.pubkeys[val_idx].as_slice() {
+            return Err(MosooError::InvalidPublicKey(format!(
+                "complement witness non-signer {val_idx} key mismatch"
+            )));
+        }
+        unsafe {
+            blst::blst_p1_add_or_double_affine(&mut acc, &acc, &ns_aff);
+        }
+    }
+
+    let mut sum_compressed = [0u8; 48];
+    unsafe {
+        blst::blst_p1_compress(sum_compressed.as_mut_ptr(), &acc);
+    }
+    if sum_compressed.as_slice() != committee.aggregate_pubkey.as_slice() {
+        return Err(MosooError::AggregationFailed);
+    }
+
+    Ok(agg_compressed)
 }
 
 /// Compute the BLS signing root for a beacon block header with optional network configuration.
@@ -222,8 +400,8 @@ pub fn fork_version(chain_id: u64, slot: u64) -> [u8; 4] {
                                          // CAPELLA_FORK_EPOCH = 194048 (slot 6,209,536)
             } else if slot >= 6_209_536 {
                 [0x03, 0x00, 0x00, 0x00] // CAPELLA_FORK_VERSION
-                                         // BELLATRIX_FORK_EPOCH = 146176 (slot 4,677,632)
-            } else if slot >= 4_677_632 {
+                                         // BELLATRIX_FORK_EPOCH = 144896 (slot 4,636,672)
+            } else if slot >= 4_636_672 {
                 [0x02, 0x00, 0x00, 0x00] // BELLATRIX_FORK_VERSION
                                          // ALTAIR_FORK_EPOCH = 74240 (slot 2,375,680)
             } else if slot >= 2_375_680 {
@@ -234,22 +412,40 @@ pub fn fork_version(chain_id: u64, slot: u64) -> [u8; 4] {
         }
         // Sepolia Testnet (Chain ID 11155111)
         11_155_111 => {
-            // SEPOLIA_GLOAS_FORK_EPOCH = 353024 (slot 11,296,768, official EF Glamsterdam activation Oct 6, 2026)
+            // SEPOLIA_GLOAS_FORK_EPOCH = 353024 (slot 11,296,768)
             if slot >= 11_296_768 {
-                [0x90, 0x00, 0x00, 0x77] // SEPOLIA_GLOAS_FORK_VERSION
-            } else if slot >= 6_189_056 {
-                [0x90, 0x00, 0x00, 0x75] // SEPOLIA_ELECTRA_FORK_VERSION
+                [0x90, 0x00, 0x00, 0x76] // SEPOLIA_GLOAS_FORK_VERSION
+                                         // SEPOLIA_FULU_FORK_EPOCH = 272640 (slot 8,724,480)
+            } else if slot >= 8_724_480 {
+                [0x90, 0x00, 0x00, 0x75] // SEPOLIA_FULU_FORK_VERSION
+                                         // SEPOLIA_ELECTRA_FORK_EPOCH = 222464 (slot 7,118,848)
+            } else if slot >= 7_118_848 {
+                [0x90, 0x00, 0x00, 0x74] // SEPOLIA_ELECTRA_FORK_VERSION
+                                         // SEPOLIA_DENEB_FORK_EPOCH = 132608 (slot 4,243,456)
             } else if slot >= 4_243_456 {
-                [0x90, 0x00, 0x00, 0x74] // SEPOLIA_DENEB_FORK_VERSION
-            } else if slot >= 112_640 {
-                [0x90, 0x00, 0x00, 0x73] // SEPOLIA_CAPELLA_FORK_VERSION
-            } else {
+                [0x90, 0x00, 0x00, 0x73] // SEPOLIA_DENEB_FORK_VERSION
+                                         // SEPOLIA_CAPELLA_FORK_EPOCH = 56832 (slot 1,818,624)
+            } else if slot >= 1_818_624 {
+                [0x90, 0x00, 0x00, 0x72] // SEPOLIA_CAPELLA_FORK_VERSION
+                                         // SEPOLIA_BELLATRIX_FORK_EPOCH = 100 (slot 3,200)
+            } else if slot >= 3_200 {
+                [0x90, 0x00, 0x00, 0x71] // SEPOLIA_BELLATRIX_FORK_VERSION
+                                         // SEPOLIA_ALTAIR_FORK_EPOCH = 50 (slot 1,600)
+            } else if slot >= 1_600 {
                 [0x90, 0x00, 0x00, 0x70] // SEPOLIA_ALTAIR_FORK_VERSION
+            } else {
+                [0x90, 0x00, 0x00, 0x69] // SEPOLIA_GENESIS_FORK_VERSION
             }
         }
-        // Hoodi Testnet (Chain ID 560048) - Gloas upgrade postponed on Oct 22, 2026; remaining on Fulu until official replacement schedule
+        // Hoodi Testnet (Chain ID 560048) - Deneb at epoch 0, Electra at epoch 2048, Fulu at epoch 50688; Gloas unscheduled
         560_048 => {
-            [0x10, 0x00, 0x09, 0x00] // HOODI_FULU_FORK_VERSION
+            if slot >= 1_622_016 {
+                [0x70, 0x00, 0x09, 0x10] // HOODI_FULU_FORK_VERSION (epoch 50688)
+            } else if slot >= 65_536 {
+                [0x60, 0x00, 0x09, 0x10] // HOODI_ELECTRA_FORK_VERSION (epoch 2048)
+            } else {
+                [0x50, 0x00, 0x09, 0x10] // HOODI_DENEB_FORK_VERSION (epoch 0)
+            }
         }
         // Holesky Testnet (Chain ID 17000 - Deprecated)
         17_000 => {
@@ -296,6 +492,8 @@ pub const EXECUTION_BLOCK_HASH_GINDEX_GLOAS: u64 = 2856;
 
 pub const BLOCK_ROOTS_GINDEX_PREFIX_ALTAIR: u64 = 37;
 pub const BLOCK_ROOTS_GINDEX_PREFIX_ELECTRA: u64 = 69;
+/// Generalized index prefix of `BeaconState.block_roots` in Gloas ProgressiveContainer (field index 5, gindex 352 = 0b101100000).
+pub const BLOCK_ROOTS_GINDEX_PREFIX_GLOAS: u64 = 352;
 
 /// Returns the active Ethereum consensus fork for a given network and slot.
 pub fn ethereum_fork(chain_id: u64, slot: u64) -> EthereumFork {
@@ -309,7 +507,7 @@ pub fn ethereum_fork(chain_id: u64, slot: u64) -> EthereumFork {
                 EthereumFork::Deneb
             } else if slot >= 6_209_536 {
                 EthereumFork::Capella
-            } else if slot >= 4_677_632 {
+            } else if slot >= 4_636_672 {
                 EthereumFork::Bellatrix
             } else if slot >= 2_375_680 {
                 EthereumFork::Altair
@@ -320,18 +518,32 @@ pub fn ethereum_fork(chain_id: u64, slot: u64) -> EthereumFork {
         11_155_111 => {
             if slot >= 11_296_768 {
                 EthereumFork::Gloas
-            } else if slot >= 6_189_056 {
+            } else if slot >= 8_724_480 {
+                EthereumFork::Fulu
+            } else if slot >= 7_118_848 {
                 EthereumFork::Electra
             } else if slot >= 4_243_456 {
                 EthereumFork::Deneb
-            } else if slot >= 112_640 {
+            } else if slot >= 1_818_624 {
                 EthereumFork::Capella
-            } else {
+            } else if slot >= 3_200 {
+                EthereumFork::Bellatrix
+            } else if slot >= 1_600 {
                 EthereumFork::Altair
+            } else {
+                EthereumFork::Phase0
             }
         }
-        // Hoodi Testnet (Chain ID 560048) - Gloas postponed, remaining on Fulu
-        560_048 => EthereumFork::Fulu,
+        // Hoodi Testnet (Chain ID 560048) - Deneb at slot 0, Electra at 65,536, Fulu at 1,622,016 (Gloas unscheduled)
+        560_048 => {
+            if slot >= 1_622_016 {
+                EthereumFork::Fulu
+            } else if slot >= 65_536 {
+                EthereumFork::Electra
+            } else {
+                EthereumFork::Deneb
+            }
+        }
         17_000 => {
             if slot >= 2_000_000 {
                 EthereumFork::Fulu
@@ -383,9 +595,8 @@ pub fn execution_proof_gindex(chain_id: u64, slot: u64) -> u64 {
 /// Returns the SSZ generalized index for `block_roots[slot % 8192]` in `BeaconState`.
 pub fn historical_block_roots_gindex(chain_id: u64, state_slot: u64, target_slot: u64) -> u64 {
     let prefix = match ethereum_fork(chain_id, state_slot) {
-        EthereumFork::Gloas | EthereumFork::Electra | EthereumFork::Fulu => {
-            BLOCK_ROOTS_GINDEX_PREFIX_ELECTRA
-        }
+        EthereumFork::Gloas => BLOCK_ROOTS_GINDEX_PREFIX_GLOAS,
+        EthereumFork::Electra | EthereumFork::Fulu => BLOCK_ROOTS_GINDEX_PREFIX_ELECTRA,
         _ => BLOCK_ROOTS_GINDEX_PREFIX_ALTAIR,
     };
     (prefix << 13) | (target_slot % 8192)
@@ -397,12 +608,27 @@ pub fn is_supported_chain(chain_id: u64) -> bool {
 }
 
 /// Returns true if the chain ID is supported or provided with a valid explicit NetworkConfig.
-/// Enables network-agnostic operation for arbitrary consensus chains per RFP-021 Functionality #14.
+/// Enables network-agnostic operation for arbitrary consensus chains per RFP-021 Functionality #14,
+/// while rejecting mismatched `NetworkConfig` overrides against built-in canonical Ethereum chains.
 pub fn is_supported_chain_or_configured(
     chain_id: u64,
     config: Option<&crate::types::NetworkConfig>,
 ) -> bool {
     if is_supported_chain(chain_id) {
+        if let Some(cfg) = config {
+            let canonical_gvr = genesis_validators_root(chain_id);
+            let fork_fields_clear = cfg.altair_fork_version == [0u8; 4]
+                && cfg.bellatrix_fork_version == [0u8; 4]
+                && cfg.capella_fork_version == [0u8; 4]
+                && cfg.deneb_fork_version == [0u8; 4]
+                && cfg.electra_fork_version == [0u8; 4]
+                && cfg.fulu_fork_version == [0u8; 4]
+                && cfg.gloas_fork_version == [0u8; 4];
+            return cfg.chain_id == chain_id
+                && (cfg.genesis_validators_root == [0u8; 32]
+                    || cfg.genesis_validators_root == canonical_gvr)
+                && fork_fields_clear;
+        }
         return true;
     }
     if let Some(cfg) = config {
@@ -419,7 +645,7 @@ pub fn genesis_validators_root(chain_id: u64) -> [u8; 32] {
             hex_to_bytes32("d8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078")
         }
         560_048 => {
-            hex_to_bytes32("b9525c317f2272e5052309f451f28b7fae13a0c5c3619574ad1c4f4b9f27113e")
+            hex_to_bytes32("212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f")
         }
         17_000 => {
             hex_to_bytes32("9143aa7c615a7f7115e2b6aac319c03529df8242ae705fba9df39b79c59fa8b1")
@@ -480,6 +706,9 @@ pub fn hash_tree_root_beacon_header(header: &BeaconBlockHeader) -> [u8; 32] {
 /// Chunk 0: bytes 0..32
 /// Chunk 1: bytes 32..48 right-padded with 16 zero bytes to 32 bytes
 /// Root = sha256(chunk0 || chunk1)
+#[repr(C, align(4))]
+struct AlignedShaBlock([u8; 64]);
+
 pub fn hash_tree_root_bls_pubkey(pubkey: &[u8]) -> Result<[u8; 32], MosooError> {
     use sha2::{Digest, Sha256};
     if pubkey.len() != 48 {
@@ -488,51 +717,77 @@ pub fn hash_tree_root_bls_pubkey(pubkey: &[u8]) -> Result<[u8; 32], MosooError> 
             pubkey.len()
         )));
     }
-    let mut chunk1 = [0u8; 32];
-    chunk1[..16].copy_from_slice(&pubkey[32..48]);
+    let mut buf = AlignedShaBlock([0u8; 64]);
+    buf.0[..48].copy_from_slice(pubkey);
+    Ok(Sha256::digest(buf.0).into())
+}
 
-    let mut hasher = Sha256::new();
-    hasher.update(&pubkey[..32]);
-    hasher.update(chunk1);
-    Ok(hasher.finalize().into())
+fn fold_sync_committee_leaves(
+    mut leaves: [[u8; 32]; 512],
+    aggregate_pubkey: &[u8],
+) -> Result<[u8; 32], MosooError> {
+    use sha2::{Digest, Sha256};
+    let mut buf = AlignedShaBlock([0u8; 64]);
+    let mut len = 512usize;
+    while len > 1 {
+        let half = len / 2;
+        for i in 0..half {
+            buf.0[..32].copy_from_slice(&leaves[2 * i]);
+            buf.0[32..64].copy_from_slice(&leaves[2 * i + 1]);
+            leaves[i] = Sha256::digest(buf.0).into();
+        }
+        len = half;
+    }
+    let agg_root = hash_tree_root_bls_pubkey(aggregate_pubkey)?;
+    buf.0[..32].copy_from_slice(&leaves[0]);
+    buf.0[32..64].copy_from_slice(&agg_root);
+    Ok(Sha256::digest(buf.0).into())
+}
+
+/// Spec-compliant SSZ hash-tree-root over an iterator of 512 raw 48-byte BLS pubkeys.
+pub fn hash_tree_root_sync_committee_iter<'a, I>(
+    pubkeys: I,
+    aggregate_pubkey: &[u8],
+) -> Result<[u8; 32], MosooError>
+where
+    I: ExactSizeIterator<Item = &'a [u8]>,
+{
+    use sha2::{Digest, Sha256};
+    if pubkeys.len() != 512 {
+        return Err(MosooError::InvalidSyncCommitteeLength {
+            actual: pubkeys.len(),
+            expected: 512,
+        });
+    }
+    let mut leaves = [[0u8; 32]; 512];
+    let mut buf = AlignedShaBlock([0u8; 64]);
+    for (slot, pk) in leaves.iter_mut().zip(pubkeys) {
+        if pk.len() != 48 {
+            return Err(MosooError::InvalidPublicKey(format!(
+                "pubkey is {} bytes, expected 48",
+                pk.len()
+            )));
+        }
+        buf.0[..48].copy_from_slice(pk);
+        *slot = Sha256::digest(buf.0).into();
+    }
+    fold_sync_committee_leaves(leaves, aggregate_pubkey)
+}
+
+/// Spec-compliant SSZ hash-tree-root of a fixed-width SyncCommittee (`&[[u8; 48]]`).
+pub fn hash_tree_root_sync_committee_fixed(
+    pubkeys: &[[u8; 48]],
+    aggregate_pubkey: &[u8; 48],
+) -> Result<[u8; 32], MosooError> {
+    hash_tree_root_sync_committee_iter(pubkeys.iter().map(|pk| pk.as_slice()), aggregate_pubkey)
 }
 
 /// Spec-compliant SSZ hash-tree-root of a SyncCommittee (Vector[BLSPubkey, 512] + aggregate_pubkey).
 pub fn hash_tree_root_sync_committee(committee: &SyncCommittee) -> Result<[u8; 32], MosooError> {
-    use sha2::{Digest, Sha256};
-    if committee.pubkeys.len() != 512 {
-        return Err(MosooError::Internal(
-            "sync committee must have exactly 512 pubkeys".into(),
-        ));
-    }
-
-    let mut leaves = Vec::with_capacity(512);
-    for pk in &committee.pubkeys {
-        leaves.push(hash_tree_root_bls_pubkey(pk)?);
-    }
-
-    // Binary Merkleization over 512 leaves (depth 9)
-    let mut layer = leaves;
-    while layer.len() > 1 {
-        layer = layer
-            .chunks(2)
-            .map(|pair| {
-                let mut h = Sha256::new();
-                h.update(pair[0]);
-                h.update(pair[1]);
-                h.finalize().into()
-            })
-            .collect();
-    }
-    let pubkeys_root = layer[0];
-
-    // Aggregate pubkey root (ByteVector[48])
-    let agg_root = hash_tree_root_bls_pubkey(&committee.aggregate_pubkey)?;
-
-    let mut h = Sha256::new();
-    h.update(pubkeys_root);
-    h.update(agg_root);
-    Ok(h.finalize().into())
+    hash_tree_root_sync_committee_iter(
+        committee.pubkeys.iter().map(|pk| pk.as_slice()),
+        &committee.aggregate_pubkey,
+    )
 }
 
 /// Canonical SSZ ByteList[32] hash-tree-root for extra_data.
@@ -1193,49 +1448,60 @@ mod tests {
         // Sepolia Capella -> Deneb boundary (slot 4,243,456)
         assert_eq!(
             fork_version(11_155_111, 4_243_455),
-            [0x90, 0x00, 0x00, 0x73]
+            [0x90, 0x00, 0x00, 0x72]
         );
         assert_eq!(
             fork_version(11_155_111, 4_243_456),
-            [0x90, 0x00, 0x00, 0x74]
+            [0x90, 0x00, 0x00, 0x73]
         );
         assert_eq!(
             fork_version(11_155_111, 4_243_457),
+            [0x90, 0x00, 0x00, 0x73]
+        );
+
+        // Sepolia Deneb -> Electra boundary (slot 7,118,848, epoch 222,464)
+        assert_eq!(
+            fork_version(11_155_111, 7_118_847),
+            [0x90, 0x00, 0x00, 0x73]
+        );
+        assert_eq!(
+            fork_version(11_155_111, 7_118_848),
+            [0x90, 0x00, 0x00, 0x74]
+        );
+        assert_eq!(
+            fork_version(11_155_111, 7_118_849),
             [0x90, 0x00, 0x00, 0x74]
         );
 
-        // Sepolia Deneb -> Electra boundary (slot 6,189,056)
+        // Sepolia Electra -> Fulu boundary (slot 8,724,480, epoch 272,640)
         assert_eq!(
-            fork_version(11_155_111, 6_189_055),
+            fork_version(11_155_111, 8_724_479),
             [0x90, 0x00, 0x00, 0x74]
         );
         assert_eq!(
-            fork_version(11_155_111, 6_189_056),
-            [0x90, 0x00, 0x00, 0x75]
-        );
-        assert_eq!(
-            fork_version(11_155_111, 6_189_057),
+            fork_version(11_155_111, 8_724_480),
             [0x90, 0x00, 0x00, 0x75]
         );
 
-        // Sepolia Electra -> Gloas boundary (slot 11,296,768, official EF Glamsterdam activation Oct 6, 2026)
+        // Sepolia Fulu -> Gloas boundary (slot 11,296,768, epoch 353,024)
         assert_eq!(
             fork_version(11_155_111, 11_296_767),
             [0x90, 0x00, 0x00, 0x75]
         );
         assert_eq!(
             fork_version(11_155_111, 11_296_768),
-            [0x90, 0x00, 0x00, 0x77]
+            [0x90, 0x00, 0x00, 0x76]
         );
         assert_eq!(
             fork_version(11_155_111, 11_296_769),
-            [0x90, 0x00, 0x00, 0x77]
+            [0x90, 0x00, 0x00, 0x76]
         );
 
-        // Hoodi testnet (chain_id: 560048) remaining on Fulu (Gloas postponed on Oct 22, 2026)
-        assert_eq!(fork_version(560_048, 786_431), [0x10, 0x00, 0x09, 0x00]);
-        assert_eq!(fork_version(560_048, 786_432), [0x10, 0x00, 0x09, 0x00]);
-        assert_eq!(fork_version(560_048, 1_000_000), [0x10, 0x00, 0x09, 0x00]);
+        // Hoodi testnet (chain_id: 560048) Deneb -> Electra (65,536) -> Fulu (1,622,016)
+        assert_eq!(fork_version(560_048, 65_535), [0x50, 0x00, 0x09, 0x10]);
+        assert_eq!(fork_version(560_048, 65_536), [0x60, 0x00, 0x09, 0x10]);
+        assert_eq!(fork_version(560_048, 1_622_015), [0x60, 0x00, 0x09, 0x10]);
+        assert_eq!(fork_version(560_048, 1_622_016), [0x70, 0x00, 0x09, 0x10]);
     }
 
     #[test]
@@ -1253,5 +1519,95 @@ mod tests {
         assert_ne!(domain_deneb, domain_electra);
         assert_ne!(domain_electra, domain_fulu);
         assert_ne!(domain_deneb, domain_fulu);
+    }
+
+    #[test]
+    fn test_complement_key_witness_matches_aggregate_and_rejects_forgery() {
+        let mut pubkeys = Vec::with_capacity(512);
+        let mut pks = Vec::with_capacity(512);
+        for i in 0..512u32 {
+            let mut ikm = [0x42u8; 32];
+            ikm[..4].copy_from_slice(&i.to_le_bytes());
+            let sk = SecretKey::key_gen(&ikm, &[]).unwrap();
+            let pk = sk.sk_to_pk();
+            pubkeys.push(pk.to_bytes().to_vec());
+            pks.push(pk);
+        }
+        let pk_refs: Vec<&blst::min_pk::PublicKey> = pks.iter().collect();
+        let full_agg = AggregatePublicKey::aggregate(&pk_refs, false)
+            .unwrap()
+            .to_public_key()
+            .to_bytes()
+            .to_vec();
+        let committee = SyncCommittee {
+            pubkeys,
+            aggregate_pubkey: full_agg,
+        };
+
+        // 500 signers (bits 500..512 cleared -> 12 non-signers)
+        let mut bits = vec![0xffu8; 64];
+        for idx in 500..512usize {
+            bits[idx / 8] &= !(1 << (idx % 8));
+        }
+
+        let witness = build_complement_key_witness(&committee, &bits).unwrap();
+        let expected_agg = aggregate_participating_pubkeys(&committee, &bits).unwrap();
+        let verified_agg = verify_complement_aggregate_pubkey(&committee, &bits, &witness).unwrap();
+        assert_eq!(verified_agg, expected_agg);
+
+        // Tamper 1 bit in aggregate witness -> must fail
+        let mut bad_w = witness.clone();
+        bad_w.agg_pk_uncompressed[95] ^= 0x01;
+        assert!(verify_complement_aggregate_pubkey(&committee, &bits, &bad_w).is_err());
+
+        // Drop a non-signer -> must fail count mismatch
+        let mut missing_w = witness.clone();
+        missing_w.non_signer_pks_uncompressed.pop();
+        assert!(verify_complement_aggregate_pubkey(&committee, &bits, &missing_w).is_err());
+
+        // 512/512 full participation path
+        let all_bits = vec![0xffu8; 64];
+        let full_w = build_complement_key_witness(&committee, &all_bits).unwrap();
+        assert!(full_w.non_signer_pks_uncompressed.is_empty());
+        assert_eq!(
+            verify_complement_aggregate_pubkey(&committee, &all_bits, &full_w).unwrap(),
+            aggregate_participating_pubkeys(&committee, &all_bits).unwrap()
+        );
+    }
+
+    #[test]
+    fn test_spoofed_network_config_on_builtin_chain_rejected() {
+        let canonical_gvr = genesis_validators_root(1);
+        let valid_mainnet_cfg = crate::types::NetworkConfig {
+            chain_id: 1,
+            genesis_validators_root: canonical_gvr,
+            trusted_checkpoint_root: None,
+            altair_fork_version: [0; 4],
+            bellatrix_fork_version: [0; 4],
+            capella_fork_version: [0; 4],
+            deneb_fork_version: [0; 4],
+            electra_fork_version: [0; 4],
+            fulu_fork_version: [0; 4],
+            gloas_fork_version: [0; 4],
+        };
+        assert!(is_supported_chain_or_configured(
+            1,
+            Some(&valid_mainnet_cfg)
+        ));
+
+        // Spoofed GVR on built-in chain MUST fail
+        let mut bad_gvr = valid_mainnet_cfg.clone();
+        bad_gvr.genesis_validators_root = [0xAA; 32];
+        assert!(!is_supported_chain_or_configured(1, Some(&bad_gvr)));
+
+        // Mismatched chain_id inside NetworkConfig MUST fail
+        let mut bad_chain = valid_mainnet_cfg.clone();
+        bad_chain.chain_id = 999;
+        assert!(!is_supported_chain_or_configured(1, Some(&bad_chain)));
+
+        // Custom fork override on built-in Mainnet MUST fail
+        let mut bad_fork = valid_mainnet_cfg;
+        bad_fork.gloas_fork_version = [0xde, 0xad, 0xbe, 0xef];
+        assert!(!is_supported_chain_or_configured(1, Some(&bad_fork)));
     }
 }

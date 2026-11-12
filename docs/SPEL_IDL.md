@@ -32,6 +32,7 @@ Mosoo registers as a reusable system primitive within the Logos Execution Zone (
 ```spel
 module mosoo_ethereum_attester {
     version: "0.1.0"
+    // Offline sequencer harness diagnostic ID (production LEZ v0.4 ImageID assigned upon public deploy)
     program_id: "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c"
 
     // Initial weak-subjectivity bootstrap
@@ -76,12 +77,12 @@ module mosoo_ethereum_attester {
         0x01: InsufficientParticipation "Less than 2/3 sync committee quorum (requires >= 342)"
         0x02: BlsVerificationFailed     "Aggregate BLS12-381 signature verification failed"
         0x03: StaleUpdate               "Submitted slot is <= current finalized slot"
-        0x04: InvalidCommitteeBranch    "SSZ generalized index 54/55 Merkle proof failed"
-        0x05: MissingExecutionPayload   "Update omitted execution payload header or gindex 25 branch"
+        0x04: InvalidCommitteeBranch    "SSZ fork-aware committee Merkle proof failed (54/55 Altair..Deneb, 86/87 Electra..Fulu, 2945/2946 Gloas)"
+        0x05: MissingExecutionPayload   "Update omitted execution payload / gindex 25 (Altair..Fulu) or gindex 2856 + RLP (Gloas)"
         0x06: MptProofFailed            "Merkle-Patricia Trie proof failed verification"
         0x07: PredicateFailed           "Evaluated predicate condition returned false"
         0x08: NullifierAlreadySpent     "Statement nullifier has already been claimed (replay)"
-        0x09: WeakSubjectivityExpired   "Update slot exceeds weak-subjectivity window (1,728,000 slots)"
+        0x09: WeakSubjectivityExpired   "Update slot exceeds weak-subjectivity bound (54,000 operational / 1,728,000 hard ceiling)"
         0x0A: UnauthenticatedHeader     "HeaderRecord not authenticated by instance's finalized beacon root"
         0x0B: DomainSeparationFailed    "Header chain_id does not match instance chain_id"
         0x0C: WrongJobStage             "Instruction called out of pipeline sequence (Begin→Miller→Finish)"
@@ -99,8 +100,8 @@ Mosoo supports all major Ethereum networks with complete fork schedules:
 | Network | Chain ID | Fork Coverage | Notes |
 | :--- | :---: | :--- | :--- |
 | **Ethereum Mainnet** | `1` | Altair → Bellatrix → Capella → Deneb → Electra → **Fulu** | Active through slot 13,164,544+ |
-| **Sepolia Testnet** | `11155111` | Altair → Capella → Deneb → Electra → **Gloas** | Gloas activated slot 7,077,888 (Oct 6, 2026) |
-| **Hoodi Testnet** | `560048` | Fulu → **Gloas** | Gloas activating slot 786,432 (Oct 26, 2026) |
+| **Sepolia Testnet** | `11155111` | Altair → Capella → Deneb → Electra → Fulu → **Gloas** | Gloas (ePBS) activated slot `11,296,768` (Epoch `353,024`, fork version `0x90000076`) |
+| **Hoodi Testnet** | `560048` | Deneb → Electra → **Fulu** (Gloas unscheduled) | Verified in consensus/CLI/daemon (`vectors/hoodi/`); default consumer allowlist `is_supported_chain_id` covers `1`, `11155111`, `17000` unless registered via `NetworkConfig` |
 | **Holesky Testnet** | `17000` | Deneb → Electra → Fulu | Deprecated; supported for completeness |
 
 Each network uses cryptographically distinct `genesis_validators_root` and per-slot `fork_version`, ensuring that BLS signatures from any one network are mathematically invalid when evaluated on another.

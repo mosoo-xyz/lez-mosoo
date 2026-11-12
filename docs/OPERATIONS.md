@@ -78,9 +78,9 @@ Instances are **strictly immutable** and cannot be overwritten in place. To rest
 3. **Step 3: Execute Timelock**:
    Wait for the 2-step governance timelock delay (`GOVERNANCE_TIMELOCK_DELAY = 2 days`) to elapse. Execute the anchor update.
 4. **Step 4: Initialize New Instance**:
-   Submit `bootstrap_instance` with the new checkpoint header and sync committee proof:
+   Verify the new checkpoint via CLI (`mosoo-cli verify-checkpoint`) and initialize the fresh instance PDA (`handle_initialize` / `LezRuntimeAdapter`):
    ```bash
-   mosoo-cli bootstrap --chain-id 11155111 --checkpoint-slot $S_0 --checkpoint-root $ROOT
+   cargo run -p mosoo-cli -- verify-checkpoint --chain-id 11155111 --trusted-head-slot $S_0
    ```
 5. **Step 5: Pin New Instance**:
    Governance executes `register_trusted_instance(chain_id, new_instance_pda)`, retiring the old instance PDA from consumer whitelists.
@@ -116,17 +116,17 @@ Calls with an unauthorized caller key are rejected immediately with `MosooError:
 
 ## 5. Supported Networks & Chain IDs
 
-Mosoo core strictly validates chain IDs via `mosoo_core::types::is_supported_chain_id()`:
+Mosoo separates **default consumer settlement chain whitelisting** (`mosoo_core::types::is_supported_chain_id`) from **consensus/CLI/daemon fork-schedule support** (`mosoo_core::crypto::is_supported_chain`):
 
-| Network Name | Chain ID | Status | Consensus Fork Support |
-| :--- | :---: | :---: | :---: |
-| Ethereum Mainnet | `1` | Supported | Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas |
-| Ethereum Sepolia Testnet | `11155111` | Supported (Canonical) | Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas |
-| Ethereum Holesky Testnet | `17000` | Supported | Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas |
-| Hoodi (Deprecated) | `560048` | **REJECTED** | Fails closed (`is_supported_chain_id` returns `false`) |
+| Network Name | Chain ID | `types::is_supported_chain_id` (Default Consumer Settlement) | `crypto::is_supported_chain` (Consensus / CLI / Daemon) | Consensus Fork Support |
+| :--- | :---: | :---: | :---: | :---: |
+| Ethereum Mainnet | `1` | Supported (`true`) | Supported (`true`) | Altair -> Fulu (+ Gloas config) |
+| Ethereum Sepolia Testnet | `11155111` | Supported (`true`) | Supported (`true`) | Altair -> Fulu -> Gloas (slot `11,296,768`, real vectors tested) |
+| Ethereum Holesky Testnet | `17000` | Supported (`true`) | Supported (`true`) | Deneb -> Electra -> Fulu |
+| Ethereum Hoodi Testnet | `560048` | **Rejected (`false`)** — requires explicit `NetworkConfig` + `TrustedBridgeConfig` checkpoint registration for core verifier; no default consumer settlement | Supported (`true`) | Deneb (`0`) -> Electra (`65,536`) -> Fulu (`1,622,016`), real vectors tested |
 
-> [!WARNING]
-> The Hoodi testnet (chain ID `560048`) is deprecated. All daemons and CLI tools must target Holesky (`17000`), Sepolia (`11155111`), or Mainnet (`1`).
+> [!NOTE]
+> `daemon/src/main.rs`, `cli/src/main.rs`, `mosoo-core/src/crypto.rs`, and `vectors/hoodi/` support Hoodi (`560048`) consensus updates and Fulu vectors, whereas default consumer bridge settlement helpers (`erc20-receiver`, `ether-receiver`) and `types::is_supported_chain_id` currently whitelist only Mainnet (`1`), Sepolia (`11155111`), and Holesky (`17000`). Initializing Hoodi in the core verifier therefore requires passing an explicit non-zero `NetworkConfig` and registering its checkpoint in `TrustedBridgeConfig`.
 
 ---
 

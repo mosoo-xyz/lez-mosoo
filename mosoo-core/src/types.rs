@@ -8,10 +8,16 @@ pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
 pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const ETH_HOLESKY_CHAIN_ID: u64 = 17_000;
 
-/// Canonical Sepolia MosooLocker contract address (deployed at block 11989329, tx 0x1b49...b28b)
+/// Canonical Sepolia MosooLocker v1 contract address (deployed at block 11989329, tx 0x1b49...b28b)
 pub const CANONICAL_SEPOLIA_MOSOO_LOCKER: [u8; 20] = [
     0x74, 0x62, 0x5d, 0x14, 0x6b, 0x8d, 0x94, 0x13, 0xf3, 0xc3, 0x97, 0x6b, 0x32, 0x3d, 0x94, 0xa7,
     0x39, 0xbe, 0x78, 0x56,
+];
+
+/// Canonical Sepolia MosooLocker v2 commissioned shielded-pool contract address (deployed at block 12113191, tx 0xa13c...a999)
+pub const CANONICAL_SEPOLIA_MOSOO_LOCKER_V2: [u8; 20] = [
+    0xef, 0xef, 0x6d, 0xa5, 0xf8, 0x69, 0x0d, 0x6c, 0x1c, 0xe8, 0xea, 0x83, 0xc1, 0x9d, 0xfd, 0x72,
+    0xde, 0x62, 0x1b, 0x1b,
 ];
 
 /// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky).
@@ -158,7 +164,7 @@ pub struct TrustedBridgeConfig {
     pub trusted_lockers: HashMap<u64, [u8; 20]>,
     /// Strict token allowlist per chain ID (default-deny: tokens must be explicitly allowlisted)
     pub allowed_tokens: HashMap<u64, HashSet<[u8; 20]>>,
-    /// Approved light-client instance PDA per chain ID (Finding M-01: pins consumers to authentic light-client instances)
+    /// Approved light-client instance PDA per chain ID (pins consumers to authentic light-client instances)
     pub trusted_instances: HashMap<u64, [u8; 32]>,
     /// Approved root-of-trust beacon checkpoint root per chain ID (authenticates bootstrap header hash)
     pub trusted_checkpoints: HashMap<u64, [u8; 32]>,
@@ -350,6 +356,25 @@ impl TrustedBridgeConfig {
             return false;
         }
         self.trusted_lockers.get(&chain_id) == Some(candidate)
+    }
+
+    /// Returns true if candidate address is trusted for shielded `DepositCommitted` claims.
+    /// When Sepolia uses the default canonical v1 locker, the live commissioned Sepolia v2
+    /// (`CANONICAL_SEPOLIA_MOSOO_LOCKER_V2`) is also recognized alongside v1 so `DepositCommitted`
+    /// proofs pass under default `TrustedBridgeConfig::canonical()` while explicit overrides stay isolated.
+    pub fn is_trusted_shielded_locker(&self, chain_id: u64, candidate: &[u8; 20]) -> bool {
+        if *candidate == [0u8; 20] {
+            return false;
+        }
+        match self.trusted_lockers.get(&chain_id) {
+            Some(configured) => {
+                *configured == *candidate
+                    || (chain_id == ETH_SEPOLIA_CHAIN_ID
+                        && *configured == CANONICAL_SEPOLIA_MOSOO_LOCKER
+                        && *candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V2)
+            }
+            None => false,
+        }
     }
 
     /// Whitelists an ERC-20 token contract for a given chain ID.
@@ -792,7 +817,7 @@ pub fn compute_sync_committee_period(slot: u64) -> u64 {
 pub struct NetworkConfig {
     pub chain_id: u64,
     pub genesis_validators_root: [u8; 32],
-    /// Independently verified root-of-trust weak subjectivity checkpoint root anchor for this network (Finding 3 / P1).
+    /// Verified weak-subjectivity checkpoint root anchor for this network.
     #[serde(default)]
     pub trusted_checkpoint_root: Option<[u8; 32]>,
     #[serde(default)]
@@ -897,7 +922,7 @@ impl InstanceAccount {
     }
 
     /// Strictly authenticates this instance account against program-owned trusted bridge configuration,
-    /// verifying both the canonical checkpoint anchor and the canonical instance PDA (Finding 1 / P0).
+    /// checking both the canonical checkpoint anchor and canonical instance PDA.
     pub fn validate_authenticity_strict(
         &self,
         config: &TrustedBridgeConfig,
@@ -963,7 +988,7 @@ pub enum StoreError {
     Custom(String),
 }
 
-/// Account state snapshot before batch write mutation, enabling atomic rollback to pre-batch state (Finding 3).
+/// Account state snapshot prior to batch write mutation for atomic rollback.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountSnapshot {
     pub address: [u8; 32],
@@ -1004,7 +1029,7 @@ pub trait AccountStore {
     }
 
     /// Restores an account that previously had no recorded program owner (owner was None).
-    /// Prevents silent promotion of unowned accounts into MOSOO_PROGRAM_ID ownership upon rollback (Finding 5 / P2).
+    /// Prevents unowned accounts from inheriting MOSOO_PROGRAM_ID ownership on rollback.
     fn try_restore_account_unowned(
         &mut self,
         address: &[u8; 32],
@@ -1018,7 +1043,7 @@ pub trait AccountStore {
         })
     }
 
-    /// Transactional batch account write enforcing atomicity (Finding 3).
+    /// Transactional batch account write preserving atomicity on failure.
     /// If any write fails, all previously written accounts in the batch are immediately
     /// rolled back to their pre-batch state: restoring original data and owner for modified accounts,
     /// or removing newly created accounts to prevent orphaned/corrupted storage state.
@@ -1297,7 +1322,7 @@ pub struct JobAccount {
 
 impl JobAccount {
     /// Computes the corresponding InstanceAccount PDA address for this job,
-    /// strictly unified with [`derive_instance_pda`] including MOSOO_PROGRAM_ID (Finding 4 / Medium #4).
+    /// unified with [`derive_instance_pda`] and scoped by MOSOO_PROGRAM_ID.
     pub fn instance_pda(&self) -> [u8; 32] {
         derive_instance_pda(self.instance_chain_id, &self.instance_id)
     }
@@ -1512,6 +1537,7 @@ pub const PROOF_TYPE_RECEIPT_LOG: u8 = 2;
 pub const PROOF_TYPE_ETH_DEPOSIT: u8 = 3;
 pub const PROOF_TYPE_ERC20_TRANSFER: u8 = 4;
 pub const PROOF_TYPE_ERC20_DEPOSIT: u8 = 5;
+pub const PROOF_TYPE_SHIELDED_DEPOSIT: u8 = 6;
 
 /// Canonical on-chain provenance binding of an attested Ethereum state, event, or transfer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1561,6 +1587,21 @@ pub enum StatementBinding {
     Confidential {
         commitment: [u8; 32],
         value_commitment: [u8; 32],
+    },
+    /// Privacy-preserving RFP-022 shielded deposit commitment (`MosooLocker.depositShieldedETH` / `depositShieldedERC20`).
+    /// Deliberately omits both Ethereum depositor address and destination LEZ recipient address.
+    ShieldedCommitment {
+        execution_block_hash: [u8; 32],
+        slot: u64,
+        tx_index: u64,
+        log_index: usize,
+        locker_contract: [u8; 20],
+        /// `[0u8; 20]` for Native ETH deposits; non-zero ERC-20 token contract otherwise.
+        token_contract: [u8; 20],
+        commitment: [u8; 32],
+        leaf_index: u32,
+        new_root: [u8; 32],
+        nonce: u64,
     },
 }
 
@@ -1653,6 +1694,32 @@ impl StatementBinding {
                 hasher.update(recipient);
                 hasher.finalize().into()
             }
+            StatementBinding::ShieldedCommitment {
+                execution_block_hash,
+                slot,
+                tx_index,
+                log_index,
+                locker_contract,
+                token_contract,
+                commitment,
+                leaf_index,
+                new_root,
+                nonce,
+            } => {
+                let mut hasher = Sha256::new();
+                hasher.update(b"mosoo_shielded_commitment_binding:");
+                hasher.update(execution_block_hash);
+                hasher.update(slot.to_le_bytes());
+                hasher.update(tx_index.to_le_bytes());
+                hasher.update((*log_index as u64).to_le_bytes());
+                hasher.update(locker_contract);
+                hasher.update(token_contract);
+                hasher.update(commitment);
+                hasher.update(leaf_index.to_le_bytes());
+                hasher.update(new_root);
+                hasher.update(nonce.to_le_bytes());
+                hasher.finalize().into()
+            }
         }
     }
 
@@ -1664,7 +1731,7 @@ impl StatementBinding {
     }
 
     /// Compute a 32-byte salted cryptographic commitment (SHA-256) of the binding parameters
-    /// with an unguessable 256-bit blinding factor, preventing correlation of public Ethereum events (Finding 4).
+    /// with a 256-bit blinding factor so identical public events do not produce linkable keys.
     pub fn compute_salted_commitment(&self, salt: &[u8; 32]) -> [u8; 32] {
         let mut hasher = Sha256::new();
         hasher.update(b"mosoo_salted_commitment_v1:");
@@ -1687,10 +1754,107 @@ impl Default for StatementBinding {
     }
 }
 
+/// Derives deterministic per-deposit `(secret, nullifier_secret)` from a user wallet's 32-byte master seed
+/// and sequential `deposit_index` (enables seed-based shielded deposit recovery per RFP-022).
+pub fn derive_shielded_deposit_secrets(
+    master_seed: &[u8; 32],
+    deposit_index: u64,
+) -> ([u8; 32], [u8; 32]) {
+    let mut h_sec = Sha256::new();
+    h_sec.update(b"mosoo_rfp022_deposit_secret_v1:");
+    h_sec.update(master_seed);
+    h_sec.update(deposit_index.to_le_bytes());
+    let secret: [u8; 32] = h_sec.finalize().into();
+
+    let mut h_nul = Sha256::new();
+    h_nul.update(b"mosoo_rfp022_nullifier_secret_v1:");
+    h_nul.update(master_seed);
+    h_nul.update(deposit_index.to_le_bytes());
+    let nullifier_secret: [u8; 32] = h_nul.finalize().into();
+
+    (secret, nullifier_secret)
+}
+
+/// Derives the privacy-preserving RFP-022 deposit commitment submitted to `MosooLocker.depositShieldedETH`
+/// (`token_contract = [0u8; 20]`) or `MosooLocker.depositShieldedERC20`.
+///
+/// Deliberately excludes both the Ethereum depositor address and the destination LEZ recipient address
+/// so no observer can link an Ethereum deposit transaction to its subsequent LEZ mint claim.
+pub fn derive_shielded_commitment(
+    token_contract: &[u8; 20],
+    amount: &[u8; 32],
+    secret: &[u8; 32],
+    nullifier_secret: &[u8; 32],
+) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"mosoo_shielded_deposit_v1:");
+    h.update(token_contract);
+    h.update(amount);
+    h.update(secret);
+    h.update(nullifier_secret);
+    h.finalize().into()
+}
+
+/// Derives the unlinkable LEZ claim nullifier from `nullifier_secret`.
+pub fn derive_claim_nullifier(nullifier_secret: &[u8; 32]) -> [u8; 32] {
+    let mut h = Sha256::new();
+    h.update(b"mosoo_shielded_claim_nullifier_v1:");
+    h.update(nullifier_secret);
+    h.finalize().into()
+}
+
+/// Derives an unlinkable RFP-022 outbound burn nullifier for `MosooLocker.unlockShieldedETH` /
+/// `MosooLocker.unlockShieldedERC20` without leaking `lezOwner`, `burnNonce`, or `lezSlot` on L1.
+pub fn derive_shielded_burn_nullifier(
+    chain_id: u64,
+    source_instance: &[u8; 32],
+    token_contract: &[u8; 20],
+    amount: &[u8; 32],
+    burn_secret: &[u8; 32],
+) -> [u8; 32] {
+    let mut buf = Vec::with_capacity(22 + 8 + 32 + 20 + 32 + 32);
+    buf.extend_from_slice(b"mosoo_shielded_burn_v1");
+    buf.extend_from_slice(&chain_id.to_be_bytes());
+    buf.extend_from_slice(source_instance);
+    buf.extend_from_slice(token_contract);
+    buf.extend_from_slice(amount);
+    buf.extend_from_slice(burn_secret);
+    alloy_primitives::keccak256(&buf).0
+}
+
+/// Verifies Depth-20 incremental Merkle tree inclusion matching `MosooLocker.sol::_hashPair`
+/// (`keccak256("mosoo_merkle_v1" || left || right)`).
+pub fn verify_commitment_merkle_inclusion(
+    commitment: &[u8; 32],
+    leaf_index: u32,
+    siblings: &[[u8; 32]; 20],
+    expected_root: &[u8; 32],
+) -> bool {
+    if *commitment == [0u8; 32] || *expected_root == [0u8; 32] {
+        return false;
+    }
+    let mut idx = leaf_index;
+    let mut current = *commitment;
+    for sibling in siblings.iter() {
+        let mut packed = [0u8; 15 + 32 + 32];
+        packed[..15].copy_from_slice(b"mosoo_merkle_v1");
+        if idx.is_multiple_of(2) {
+            packed[15..47].copy_from_slice(&current);
+            packed[47..79].copy_from_slice(sibling);
+        } else {
+            packed[15..47].copy_from_slice(sibling);
+            packed[47..79].copy_from_slice(&current);
+        }
+        current = alloy_primitives::keccak256(packed).0;
+        idx /= 2;
+    }
+    current == *expected_root
+}
+
 /// The result emitted by the attestation module for consumer programs.
 ///
 /// `statement_id` is a collision-resistant nullifier derived deterministically
-/// from raw verified Ethereum state facts (ADR-010):
+/// from verified Ethereum state facts:
 /// - V2 (Instance-bound): `sha256("mosoo_statement_v2" || chain_id || gvr || source_instance_pda || subject_key || proof_type_tag || verified_value)`
 /// - V1 (Legacy): `sha256("mosoo_statement_v1" || chain_id || subject_key || proof_type_tag || verified_value)`
 ///
@@ -1704,13 +1868,13 @@ impl Default for StatementBinding {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VerifiedStatement {
     pub chain_id: u64,
-    /// Genesis validators root of the consensus network (Finding 3 / RFP compliance).
+    /// Genesis validators root of the consensus network.
     #[serde(default)]
     pub genesis_validators_root: [u8; 32],
-    /// Canonical source light client instance ID (Finding 3 / RFP Functionality #15).
+    /// Canonical source light client instance ID.
     #[serde(default)]
     pub source_instance_id: [u8; 32],
-    /// Canonical source light client instance PDA (Finding 3 / RFP Functionality #15).
+    /// Canonical source light client instance PDA.
     #[serde(default)]
     pub source_instance_pda: [u8; 32],
     /// LEZ program ID of the authentic Mosoo attester program that emitted this statement.
@@ -1757,7 +1921,7 @@ impl VerifiedStatement {
 
     /// Converts this verified statement into a shielded statement (RFP-021 Functionality #8),
     /// replacing the verbose provenance binding with its cryptographic commitment,
-    /// and blinding the subject key and nullifier to prevent correlation to public Ethereum events (Finding 4 / P1).
+    /// and blinding the subject key and nullifier against public Ethereum event correlation.
     pub fn shield(&self) -> Self {
         if matches!(self.binding, StatementBinding::Shielded { .. }) {
             return self.clone();
@@ -1794,7 +1958,7 @@ impl VerifiedStatement {
         )
     }
 
-    /// Converts this verified statement into a shielded statement with a secret 256-bit blinding salt (Finding 5),
+    /// Converts this verified statement into a shielded statement with a 256-bit blinding salt,
     /// blinding the verbose provenance binding, subject key, and statement ID (nullifier) to prevent observers
     /// of public Ethereum events from correlating the emitted statement.
     pub fn shield_with_salt(&self, salt: &[u8; 32]) -> Self {

@@ -23,7 +23,7 @@ Mosoo is a trustless, modular state attestation protocol designed natively for t
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
 │   │ 3-Transaction Split BLS Verification Pipeline                       │   │
 │   │   1. BeginUpdate  ──► 2. MillerUpdate ──► 3. FinishUpdate           │   │
-│   │   (5.23M cycles)       (2.82M cycles)      (1.30M cycles)           │   │
+│   │   (see BENCHMARKS.md & local_simulation.txt for cycle measurements) │   │
 │   │                                                                     │   │
 │   │ Authenticated Light-Client State (PDA: ["mosoo_instance", id])      │   │
 │   │   ├── Current & Next Sync Committee Public Key Commitments          │   │
@@ -49,30 +49,34 @@ The Mosoo codebase is structured into isolated, independently testable crates:
 
 ```text
 lez-mosoo/
-├── methods/guest/             # RISC Zero zkVM guest verification circuits
-│   └── src/main.rs            # In-guest BLS12-381 verification, SSZ traversal, MPT inclusion
+├── methods/guest/             # RISC Zero zkVM guest program target
+│   └── src/main.rs            # In-guest dispatch (Begin/Miller/Finish/AttestState) & shielded journals
 ├── mosoo-core/                # Pure-Rust core cryptographic types & verification logic
-│   ├── src/verifier.rs        # Light client state transitions, committee rotation, split stages
-│   ├── src/inclusion.rs       # Merkle-Patricia Trie (alloy-trie) & receipt-log proof verifier
+│   ├── src/crypto.rs          # BLS12-381 `blst` split pairing, SSZ hash-tree-root, fork gindices
+│   ├── src/verifier.rs        # Light client state transitions, committee rotation, LezRuntimeAdapter
+│   ├── src/inclusion.rs       # Merkle-Patricia Trie (`alloy-trie`) & EIP-2718 receipt-log verifier
 │   ├── src/predicate.rs       # Dynamic predicate evaluation engine & V2 Statement ID derivation
-│   ├── src/ssz.rs             # Fork-aware generalized index proof tree navigation
-│   └── src/types.rs           # Account schemas, HeaderRecord, InstanceAccount, error types
-├── daemon/                    # Production autonomous consensus update daemon (mosoo-daemon)
-│   ├── src/main.rs            # Async event loop, Prometheus /metrics exporter
-│   ├── src/jitter.rs          # Randomized submission deferral (1.0x-2.5x base interval)
-│   ├── src/reorg.rs           # Automated consensus reorg recovery & anchor validation
-│   └── src/proxy.rs           # Logos Ethereum Core RPC TLS verified proxy integration
-├── mosoo-cli/                 # Cross-platform developer command-line interface
-│   └── src/main.rs            # inspect, verify, benchmarks, and offline simulation
+│   ├── src/spel.rs            # SPEL program account/PDA schema helpers
+│   ├── src/types.rs           # Account schemas, HeaderRecord, InstanceAccount, TrustedBridgeConfig
+│   ├── src/error.rs           # Typed MosooError hierarchy
+│   └── tests/                 # 9 integration & adversarial test suites (173 tests)
+│       ├── lez_v04_acceptance_tests.rs  # 4 offline LEZ v0.4-target conformance tests
+│       ├── adversarial_mutation_tests/  # 50 tests across 4 submodules
+│       ├── security_hardening_tests/    # 58 regression tests across 4 submodules
+│       ├── real_chain_vectors_tests.rs  # 4 tests on real Mainnet Fulu, Sepolia Gloas & Hoodi Fulu vectors
+│       └── ...                          # bridge (23), lc (22), privacy (6), seq (4), e2e (2)
+├── daemon/                    # Autonomous consensus update daemon (`mosoo-daemon`)
+│   └── src/                   # main.rs (polling, jitter 1.0x–2.5x, proxy routing) + tests.rs (17 tests)
+├── cli/                       # Developer command-line interface (`mosoo-cli`)
+│   └── src/                   # main.rs, demo.rs, attest.rs, consensus.rs + tests.rs (7 tests)
 ├── consumers/                 # Reference consumer implementations
-│   ├── erc20-receiver/        # Event-log proof consumer with atomic CPI & PDA nullifiers
-│   └── ether-receiver/        # Account balance MPT proof consumer with native ledger crediting
-├── contracts/                 # Reference Solidity contracts
-│   └── src/MosooLocker.sol    # Ethereum Sepolia locker with timelocks & rate limits
-├── tests/                     # Deterministic integration and adversarial test suites
-│   ├── lez_v04_acceptance_tests.rs     # 18/18 LEZ v0.4 account model conformance tests
-│   └── adversarial_mutation_tests.rs   # 50 adversarial invariant & mutation checks
-└── docs/                      # Architectural, operational, and cryptographic documentation
+│   ├── erc20-receiver/src/    # lib.rs + tests.rs (event-log proof consumer, shielded claims, nullifiers)
+│   └── ether-receiver/src/    # lib.rs + tests.rs (account balance / ETH deposit consumer, mETH ledger)
+├── contracts/                 # Ethereum escrow & settlement contracts
+│   ├── MosooLocker.sol        # v2 commissioned live on Sepolia (0xEFEf6dA5...); v1 historical
+│   └── test/MosooLocker.t.sol # 20/20 Foundry unit and fuzz tests (verified locally & in CI)
+├── vectors/                   # Live Ethereum Beacon Chain JSON fixtures (Sepolia Gloas, Hoodi Fulu)
+└── docs/                      # Architectural, deployment, migration, and security documentation
 ```
 
 ---
@@ -80,9 +84,9 @@ lez-mosoo/
 ## 3. In-Guest zkVM Cryptographic Pipeline
 
 ### 3.1 3-Transaction Split BLS Pipeline
-A monolithic Ethereum PoS sync-committee pairing check requires ~12.61M zkVM guest execution cycles. When translated into metered gas schedules under the standalone LEZ sequencer harness, this exceeds the 10,000,000 single-transaction gas ceiling.
+A single-shot 512-validator sync-committee pairing check exceeds LEZ's `10,000,000` single-transaction gas limit (~`13.30M` modeled total gas, or `~9.35M` modeled base prover cycles across stages before gas metering; live `r0vm 3.0.5` cycles measured for `mosoo_lc` in `evidence/mosoo-testnet-v03/local_simulation.txt` are `Begin = 2,558,057`, `Miller = 4,568,088`, `Finish = 3,705,545`).
 
-Mosoo splits the cryptographic verification into three sequential, atomic transactions anchored by an on-chain `JobAccount` PDA:
+Mosoo splits the cryptographic verification into three sequential transactions anchored by a `JobAccount` PDA:
 
 1. **`BeginUpdate` (Stage 1):**
    - Ingests the update header, slot, and committee participation bitfield.
@@ -168,12 +172,11 @@ All state access scales strictly $O(1)$ via direct PDA addressability, with zero
 ## 7. Autonomous Relayer Daemon (`mosoo-daemon`)
 
 The background daemon operates continuously to keep LEZ light-client instances synchronized:
-- **Autonomous Head Polling:** Subscribes to Ethereum Beacon node block streams.
-- **Randomized Polling Jitter:** Enforces randomized submission deferral (1.0x to 2.5x base interval) to prevent gas bidding wars between independent relayers.
-- **Pre-Submission Idempotency Check:** Queries instance PDA immediately before transaction broadcast; if another relayer has already applied the update, broadcast is skipped.
-- **Reorg Recovery:** Detects non-canonical beacon headers and re-anchors to the canonical chain.
-- **Logos Core Verified Proxy:** Routes requests exclusively through authenticated Logos Ethereum Core TLS endpoints (`LOGOS_ETHEREUM_CORE_RPC`), rejecting silent unverified fallbacks.
-- **Prometheus Telemetry:** Exposes sync latency, gas spend, and health metrics on `/metrics`.
+- **Autonomous Head Polling:** Polls configured Ethereum Beacon node REST endpoints (`/eth/v1/beacon/...`).
+- **Randomized Polling Jitter:** Enforces randomized submission deferral (`1.0x` to `2.5x` poll interval) to avoid synchronized bursts across independent relayers.
+- **Pre-Submission Idempotency Check:** Checks whether a finalized slot has already been processed before submitting updates.
+- **Logos Core Verified Proxy:** Supports routing requests through a configured Logos Ethereum Core proxy endpoint (`LOGOS_ETHEREUM_CORE_RPC` / `--logos-ethereum-core-rpc`).
+- **Structured Telemetry (`tracing`):** Emits structured JSON or pretty logs via `tracing-subscriber` (note: a dedicated HTTP Prometheus `/metrics` endpoint is on the production roadmap and not exposed in `daemon/src/main.rs` today).
 
 ---
 

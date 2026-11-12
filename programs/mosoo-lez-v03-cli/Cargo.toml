@@ -1,0 +1,37 @@
+# Standalone LEZ v0.3.1 host CLI & V03State simulator for `mosoo_lc`.
+# Packs `mosoo_lc` R0BF binaries, verifies local wallet identities, executes full
+# local `lee::V03State` simulations (cycle budget <= 10M + adversarial refusals),
+# and deploys & drives Mosoo's live `mosoo_lc` program on LEZ v0.3.1 testnet.
+[workspace]
+
+[package]
+name = "mosoo-lez-v03-cli"
+version = "0.4.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "mosoo-v03"
+path = "src/main.rs"
+
+[dependencies]
+mosoo-core = { path = "../../mosoo-core", default-features = false }
+mosoo-lez-v03 = { path = "../mosoo-lez-v03" }
+lee = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "db66590ab821a4e142c211017a3866d007f6fa77" }
+lee_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "db66590ab821a4e142c211017a3866d007f6fa77", features = ["host"] }
+program_loader_core = { git = "https://github.com/logos-blockchain/logos-execution-zone.git", rev = "db66590ab821a4e142c211017a3866d007f6fa77" }
+risc0-binfmt = "3.0.2"
+risc0-zkos-v1compat = "=2.2.2"
+alloy-primitives = { version = "0.8", default-features = false }
+anyhow = "1"
+base64 = "0.22"
+borsh = { version = "1.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"] }
+hex = "0.4"
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }

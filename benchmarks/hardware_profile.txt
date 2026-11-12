@@ -1,14 +1,11 @@
-Host Workstation Profile:
-  CPU: AMD Ryzen 9 7950X (16 physical cores, 32 hardware threads, base clock 4.5 GHz, boost up to 5.7 GHz)
-  Architecture: x86_64 (AVX-512, BMI2, ADX enabled)
-  Memory: 64 GB DDR5-6000 MHz (2 x 32 GB dual channel)
-  OS: Linux 6.8.0 / Ubuntu 22.04 LTS (x86_64-unknown-linux-gnu)
-  Toolchain: rustc 1.78.0 (9b00956e5 2024-04-29), cargo 1.78.0
+Target Host Toolchain & Environment Notes:
+  Target Architecture: x86_64 host runner / WSL2 Ubuntu build environment
+  Toolchain: Rust 1.88+ (Cargo.lock v4)
 
-zkVM Guest Profile:
+Compiled & Modeled zkVM Guest Profiles:
   Target: riscv32im-risc0-zkvm-elf
-  Guest Binary Digest: 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c
-  Guest ImageID: 0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4
-  Binary Size: 103,424 bytes (uncompressed ELF)
-  Segment Configuration: PO2 = 18 (262,144 cycles per segment)
-  Peak Resident Set Size (RSS): 11.6 GB during BeginUpdate proving
+  Live LEZ v0.3.1 Binary (artifacts/programs/v0.3/mosoo_lc.bin): 569,468 bytes user ELF (601,892 bytes packaged; r0vm 3.0.5 cycles measured in evidence/mosoo-testnet-v03/local_simulation.txt)
+  Local v0.4 Target ELF (artifacts/v04-guest/mosoo-guest): 922,052 bytes (risc0-zkvm 1.2.6 / cargo-risczero 1.2.6)
+  Harness Program ID Constant: 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c
+  Segment Configuration Target: PO2 = 18 (262,144 cycles per segment)
+  Full STARK Proving Notes: Prover wall-clock duration and host RSS depend directly on prover hardware; local runs verify host CPU timings and non-proving r0vm cycle counts.

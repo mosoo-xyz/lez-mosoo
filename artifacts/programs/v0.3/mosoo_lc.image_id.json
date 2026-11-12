@@ -1,0 +1,18 @@
+{
+  "binary_bytes": 601892,
+  "binary_file": "mosoo_lc.bin",
+  "binary_sha256": "0fc6ce723be2c507124f8e0fc6d0fab2b7c4454fdb4a1aa7b755667acb3e2bac",
+  "image_id_hex": "961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0",
+  "image_id_u32": [
+    310254230,
+    4120195735,
+    994322647,
+    2796479310,
+    3768392723,
+    2762674481,
+    2907793166,
+    3758327214
+  ],
+  "segment_count": 6,
+  "user_elf_bytes": 569468
+}

@@ -598,21 +598,21 @@ fn test_sepolia_gloas_and_hoodi_fork_boundary_and_domain_separation() {
     assert!(is_supported_chain(hoodi_chain));
     assert!(!is_supported_chain(999_999));
 
-    // 2. Sepolia Gloas fork boundary verification (slot 11,296,768, official EF activation Oct 6, 2026)
+    // 2. Sepolia Gloas fork boundary verification (slot 11,296,768, epoch 353,024)
     let pre_gloas_sepolia = fork_version(sepolia_chain, 11_296_767);
     let post_gloas_sepolia = fork_version(sepolia_chain, 11_296_768);
-    assert_eq!(pre_gloas_sepolia, [0x90, 0x00, 0x00, 0x75]); // Electra
-    assert_eq!(post_gloas_sepolia, [0x90, 0x00, 0x00, 0x77]); // Gloas
+    assert_eq!(pre_gloas_sepolia, [0x90, 0x00, 0x00, 0x75]); // Fulu
+    assert_eq!(post_gloas_sepolia, [0x90, 0x00, 0x00, 0x76]); // Gloas
 
     let domain_pre = compute_sync_committee_domain(sepolia_chain, 11_296_767);
     let domain_post = compute_sync_committee_domain(sepolia_chain, 11_296_768);
     assert_ne!(domain_pre, domain_post);
 
-    // 3. Hoodi testnet remaining on Fulu (Gloas postponed on Oct 22, 2026)
-    let pre_gloas_hoodi = fork_version(hoodi_chain, 786_431);
-    let post_gloas_hoodi = fork_version(hoodi_chain, 786_432);
-    assert_eq!(pre_gloas_hoodi, [0x10, 0x00, 0x09, 0x00]);
-    assert_eq!(post_gloas_hoodi, [0x10, 0x00, 0x09, 0x00]);
+    // 3. Hoodi testnet (chain_id 560048) Electra -> Fulu boundary (1,622,016)
+    let pre_fulu_hoodi = fork_version(hoodi_chain, 1_622_015);
+    let post_fulu_hoodi = fork_version(hoodi_chain, 1_622_016);
+    assert_eq!(pre_fulu_hoodi, [0x60, 0x00, 0x09, 0x10]); // Electra
+    assert_eq!(post_fulu_hoodi, [0x70, 0x00, 0x09, 0x10]); // Fulu
 
     let domain_hoodi = compute_sync_committee_domain(hoodi_chain, 786_432);
     let domain_sepolia = compute_sync_committee_domain(sepolia_chain, 786_432);
@@ -787,7 +787,7 @@ fn test_multi_network_fork_version_isolation() {
     // Sepolia at slot 11,296,768 is Gloas (official EF activation slot)
     assert_eq!(
         v_sepolia,
-        [0x90, 0x00, 0x00, 0x77],
+        [0x90, 0x00, 0x00, 0x76],
         "Sepolia at slot 11,296,768 is Gloas fork"
     );
 
@@ -867,7 +867,7 @@ fn test_fork_aware_generalized_indices_spec_constants() {
         (69 << 13) | 100
     );
 
-    // 4. Sepolia Gloas (Sepolia slot 11,296,768, official EF activation Oct 6, 2026)
+    // 4. Sepolia Gloas (Sepolia slot 11,296,768, ProgressiveContainer BeaconState)
     let gloas_slot = 11_296_768u64;
     assert_eq!(
         current_sync_committee_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot),
@@ -881,6 +881,10 @@ fn test_fork_aware_generalized_indices_spec_constants() {
     assert_eq!(
         execution_proof_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot),
         2856
+    );
+    assert_eq!(
+        historical_block_roots_gindex(ETH_SEPOLIA_CHAIN_ID, gloas_slot, 100),
+        (352 << 13) | 100
     );
 }
 

@@ -8,16 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.4.0] - 2026-10-29
 
 ### Added
-- **LEZ v0.4 Conformance & Acceptance Gate**: Hardened 18/18 deterministic acceptance tests validating isolated state transition boundaries and strict gas ceilings.
+- **Offline LEZ v0.4-Target Conformance Suite (`lez_v04_acceptance_tests.rs`)**: 4 offline conformance test functions validating isolated state transition boundaries and strict 10M gas ceilings against the local deterministic harness (upstream public LEZ v0.4 testnet remains unreleased).
+- **Real Beacon Chain Vectors (`vectors/`, `real_chain_vectors_tests.rs`)**: Committed live Sepolia Gloas and Hoodi Fulu Beacon Chain JSON vectors verified across core SSZ/BLS checks and daemon parsing (4 integration tests + daemon vector tests).
 - **Admin Authority One-Time Bootstrap**: Added `handle_bootstrap_admin_authority` to `TrustedBridgeConfig` allowing initial governance bootstrapping while rejecting replay attempts with `AlreadyInitialized`.
 - **Effective Instance Head Freshness**: Integrated `get_effective_instance_head` into authenticated update and state attestation handlers with fail-closed fallback to chain-wide anchor heads.
 - **Adversarial Mutation Test Suite**: 50 test functions rejecting 42 distinct mutation attack vectors covering consensus forks (Altair through Gloas), replay, and immutability invariants.
 - **Security Hardening Regression Suite**: 58 regression tests covering state transitions, boundaries, and overflow limits.
-- **Two-Way Bridge Hardening**: 16 Foundry tests for `MosooLocker.sol` on Sepolia verifying rolling 24h withdrawal limits, timelock governance, and independent guardian veto.
+- **Mosoo Own Live LEZ v0.3.1 Deployment (`programs/mosoo-lez-v03/`, `evidence/mosoo-testnet-v03/`)**: Compiled `mosoo_lc` (`artifacts/programs/v0.3/mosoo_lc.bin`, ImageID `961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0`), measured all stages under `10M MAX_GAS_EXEC` via `r0vm 3.0.5` (`Init=927,806`, `Begin=2,558,057`, `Miller=4,568,088`, `Finish=3,705,545`), deployed immutably to `Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg` (blocks `81142`–`81148`), executed 9 mainnet-backed live transactions (`81154`–`81163`), and verified `30/30` live checks via `scripts/verify-mosoo-lez.py`.
+- **Two-Way Bridge & Shielded Pool v2 Upgrades (`contracts/MosooLocker.sol`, `contracts/test/MosooLocker.t.sol`)**: Deployed & **2-of-2 EIP-712 commissioned** `MosooLocker` **v2** live on Ethereum Sepolia (`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`, Block `12113191`, `strictFixedDenominationMode = true`) with verified live `depositShieldedETH` / `DepositCommitted` and `unlockShieldedETH` roundtrip (superseding historical v1 `0x7462...`), plus **20/20 Foundry Solidity tests passing locally and in CI** (`forge test -vvv`).
 
 ### Changed
 - Refactored consensus trust assumptions (`docs/TRUST_ASSUMPTIONS.md`), cleanly delineating 256-epoch sync committee rotation from dynamic PoS weak-subjectivity and Mosoo dual operational/safety windows.
-- Synchronized authoritative test suite counts across documentation and execution traces: 336 total tests passing (320 Rust workspace tests + 16 Foundry EVM tests).
+- Synchronized authoritative test suite counts across documentation and execution traces: **331 Rust workspace tests** (`155` unit + `173` integration across 9 binaries + `3` doc-tests) + **20 Foundry EVM tests** (`contracts/test/MosooLocker.t.sol`) = **351/351 passing tests verified locally**.
+- Clearly separated three runtime scopes in `docs/DEPLOYMENTS.md`: live LEZ v0.3.1 `mosoo_lc` (`Co5EYuBR...`), live Sepolia `MosooLocker` v2 (`0xEFEf6dA5...` + historical v1 `0x7462...`), and unreleased LEZ `v0.4` (`artifacts/v04-guest/mosoo-guest` + offline harness).
 - Replaced absolute security terminology with rigorous cryptographic hardness and zkVM soundness statements.
 
 ## [0.2.0] - 2026-10-28

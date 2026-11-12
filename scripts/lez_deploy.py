@@ -60,7 +60,7 @@ except ImportError:
 RPC_URL   = "https://testnet.lez.logos.co"
 WALLET_JSON = Path(__file__).parent / "wallet.json"
 REPO_ROOT   = Path(__file__).parent.parent
-EVIDENCE_DIR = REPO_ROOT / "evidence" / "testnet-v03" / "mainnet"
+EVIDENCE_DIR = REPO_ROOT / "evidence" / "mosoo-testnet-v03" / "redeploy"
 
 # program_loader account ID (all 0xFE bytes, base58 of [0xFE]*32)
 PROGRAM_LOADER_ID_BYTES = bytes([0xFE] * 32)

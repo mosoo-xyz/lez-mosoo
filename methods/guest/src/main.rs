@@ -50,7 +50,7 @@ fn main() {
     // Statements emitted to public zkVM journal are automatically shielded so that
     // Ethereum addresses, event logs, subject keys, and LEZ recipients are never exposed publicly.
     // In production privacy mode, caller supplies a 256-bit secret salt in AttestStateArgs, ensuring
-    // non-correlation across repeated statements and immunity to dictionary matching.
+    // non-correlation across repeated statements and resistance to dictionary precomputation.
     // If the statement is already salted-shielded, its blinding is preserved.
     // For private statement types (AccountBalance, StorageSlot, ReceiptLog), unshielded value leakage is rejected.
     let safe_result = result.and_then(|output| match output {

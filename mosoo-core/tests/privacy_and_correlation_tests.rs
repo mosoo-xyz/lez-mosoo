@@ -23,7 +23,7 @@ use sha2::Digest;
 /// or signature payload written to the consumer's on-chain account storage.
 ///
 /// Furthermore verifies that on a failed claim (unsatisfied predicate or insufficient value),
-/// the consumer state diff is 100% empty (byte-for-byte unmodified), leaving zero audit artifacts.
+/// the consumer state diff remains completely empty (byte-for-byte unmodified).
 #[test]
 fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
     let eth_sender = Address::repeat_byte(0xab);
@@ -79,7 +79,7 @@ fn test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff() {
     let mut nullifiers = NullifierSet::new();
     let state_before = nullifiers.clone();
 
-    // Audit Failed Claim: Excessive threshold must reject and leave state 100% UNTOUCHED
+    // Rejected claims above balance must leave consumer storage completely unmodified.
     let failed_claim_result = claim(&statement, &mut nullifiers, 10_000_000);
     assert!(
         failed_claim_result.is_err(),
@@ -470,4 +470,347 @@ fn test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage() {
 
     // 6. Assert the only identifiers retained in consumer state are the 32-byte nullifier hash
     assert!(nullifiers.is_used(&statement.statement_id));
+}
+
+#[test]
+fn test_rfp022_shielded_eth_and_erc20_deposit_committed_zero_leak_and_unlinkable_claim() {
+    use erc20_receiver::{Erc20Ledger, ReceiverError, ShieldedErc20ClaimArgs};
+    use ether_receiver::{EtherReceiverError, MethLedger, ShieldedEthClaimArgs};
+    use mosoo_core::inclusion::{
+        test_helpers::build_test_deposit_committed_proof, ProofTarget, StateProof,
+    };
+    use mosoo_core::types::{
+        derive_claim_nullifier, derive_shielded_commitment, derive_shielded_deposit_secrets,
+        verify_commitment_merkle_inclusion, AccountStore, HeaderRecord, InstanceAccount,
+        ProgramAccountStore, SyncCommittee, TrustedBridgeConfig, CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        CANONICAL_SEPOLIA_CHECKPOINT_SLOT, CANONICAL_SEPOLIA_INSTANCE_ID,
+        CANONICAL_SEPOLIA_MOSOO_LOCKER, ETH_SEPOLIA_CHAIN_ID, MOSOO_PROGRAM_ID,
+    };
+
+    let locker_addr = Address::from(CANONICAL_SEPOLIA_MOSOO_LOCKER);
+    let usdc_sepolia: [u8; 20] = [
+        0x1c, 0x7d, 0x4b, 0x19, 0x6c, 0xb0, 0xc7, 0xb0, 0x1d, 0x74, 0x3f, 0xbc, 0x61, 0x16, 0xa9,
+        0x02, 0x37, 0x9c, 0x72, 0x38,
+    ];
+    let eth_amount = U256::from(1_000_000_000_000_000_000u128); // 1 ETH
+    let erc20_amount = U256::from(250_000_000u64); // 250 USDC (6 decimals)
+
+    // 1. Deterministic wallet seed recovery
+    let master_seed = [0x3du8; 32];
+    let (eth_secret, eth_nullifier_secret) = derive_shielded_deposit_secrets(&master_seed, 0);
+    let (erc20_secret, erc20_nullifier_secret) = derive_shielded_deposit_secrets(&master_seed, 1);
+    assert_eq!(
+        derive_shielded_deposit_secrets(&master_seed, 0),
+        (eth_secret, eth_nullifier_secret)
+    );
+    assert_ne!(eth_secret, erc20_secret);
+
+    let eth_commitment = derive_shielded_commitment(
+        &[0u8; 20],
+        &eth_amount.to_be_bytes::<32>(),
+        &eth_secret,
+        &eth_nullifier_secret,
+    );
+    let erc20_commitment = derive_shielded_commitment(
+        &usdc_sepolia,
+        &erc20_amount.to_be_bytes::<32>(),
+        &erc20_secret,
+        &erc20_nullifier_secret,
+    );
+
+    // Deliberately distinct Ethereum depositor and fresh claim-time LEZ recipient
+    let hidden_eth_depositor = [0xdeu8; 20];
+    let fresh_lez_recipient_eth = [0x9au8; 32];
+    let fresh_lez_recipient_erc20 = [0x7bu8; 32];
+
+    let merkle_root_eth = B256::repeat_byte(0xc1);
+    let (receipts_root_eth, proof_nodes_eth, receipt_rlp_eth) = build_test_deposit_committed_proof(
+        locker_addr,
+        B256::from(eth_commitment),
+        Address::ZERO,
+        eth_amount,
+        0,
+        merkle_root_eth,
+        1,
+    );
+
+    // Zero L1 leakage: neither depositor nor LEZ recipient exists anywhere in DepositCommitted receipt!
+    assert!(!receipt_rlp_eth
+        .windows(20)
+        .any(|w| w == hidden_eth_depositor));
+    assert!(!receipt_rlp_eth
+        .windows(32)
+        .any(|w| w == fresh_lez_recipient_eth));
+
+    // Setup authenticated store + canonical Sepolia instance
+    let mut store = ProgramAccountStore::new();
+    let cfg = TrustedBridgeConfig::canonical();
+    cfg.save(&mut store).expect("save bridge config");
+
+    let slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    let instance = InstanceAccount {
+        instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        current_header_hash: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        current_state_root: [0x66u8; 32],
+        current_slot: slot,
+        current_sync_committee: SyncCommittee {
+            pubkeys: vec![vec![0u8; 48]; 512],
+            aggregate_pubkey: vec![0u8; 48],
+        },
+        next_sync_committee: None,
+        bootstrap_slot: slot,
+        bootstrap_header_hash: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        initialized: true,
+        current_execution_block_hash: [0x77u8; 32],
+        current_execution_state_root: [0x88u8; 32],
+        current_receipts_root: receipts_root_eth.0,
+        network_config: None,
+    };
+    let instance_pda = instance.pda_address();
+    store
+        .try_set_account_with_owner(
+            &instance_pda,
+            serde_json::to_vec(&instance).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .expect("store instance");
+
+    let header_eth = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot,
+        beacon_block_root: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        execution_block_hash: [0x77u8; 32],
+        execution_state_root: [0x88u8; 32],
+        receipts_root: receipts_root_eth.0,
+    };
+
+    let eth_proof = StateProof {
+        target: ProofTarget::ShieldedCommitmentDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: locker_addr,
+            token_contract: Address::ZERO,
+            commitment: B256::from(eth_commitment),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes_eth),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp_eth),
+    };
+
+    let mut meth_ledger = MethLedger::new();
+    let mut eth_nullifiers = EtherNullifierSet::new();
+
+    // Wrong secret preimage fails closed with InvalidShieldedPreimage and leaves state clean
+    let bad_preimage = meth_ledger.claim_shielded_eth_deposit_authenticated_store(
+        &mut store,
+        &instance_pda,
+        None,
+        ShieldedEthClaimArgs {
+            header: header_eth.clone(),
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: eth_proof.clone(),
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+            recipient: fresh_lez_recipient_eth,
+            secret: [0xffu8; 32],
+            nullifier_secret: eth_nullifier_secret,
+            min_wei: 1,
+        },
+        &mut eth_nullifiers,
+    );
+    assert_eq!(
+        bad_preimage,
+        Err(EtherReceiverError::InvalidShieldedPreimage)
+    );
+    assert_eq!(meth_ledger.get_balance(&fresh_lez_recipient_eth), 0);
+    assert!(!eth_nullifiers.is_used(&derive_claim_nullifier(&eth_nullifier_secret)));
+
+    // Valid shielded ETH claim succeeds and credits fresh recipient
+    let new_bal = meth_ledger
+        .claim_shielded_eth_deposit_authenticated_store(
+            &mut store,
+            &instance_pda,
+            None,
+            ShieldedEthClaimArgs {
+                header: header_eth.clone(),
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: eth_proof.clone(),
+                predicate: Predicate::AtLeast { min: [0u8; 32] },
+                expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+                recipient: fresh_lez_recipient_eth,
+                secret: eth_secret,
+                nullifier_secret: eth_nullifier_secret,
+                min_wei: 1,
+            },
+            &mut eth_nullifiers,
+        )
+        .expect("shielded ETH claim must succeed");
+    assert_eq!(new_bal, 1_000_000_000_000_000_000u128);
+    assert_eq!(
+        meth_ledger.get_balance(&fresh_lez_recipient_eth),
+        1_000_000_000_000_000_000u128
+    );
+
+    // Double claim replay rejected
+    let replay_err = meth_ledger.claim_shielded_eth_deposit_authenticated_store(
+        &mut store,
+        &instance_pda,
+        None,
+        ShieldedEthClaimArgs {
+            header: header_eth,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: eth_proof,
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+            recipient: [0xefu8; 32],
+            secret: eth_secret,
+            nullifier_secret: eth_nullifier_secret,
+            min_wei: 1,
+        },
+        &mut eth_nullifiers,
+    );
+    assert_eq!(replay_err, Err(EtherReceiverError::AlreadyClaimed));
+
+    // 2. Now test Shielded ERC-20 claim (Sepolia USDC)
+    let merkle_root_erc20 = B256::repeat_byte(0xd2);
+    let (receipts_root_erc20, proof_nodes_erc20, receipt_rlp_erc20) =
+        build_test_deposit_committed_proof(
+            locker_addr,
+            B256::from(erc20_commitment),
+            Address::from(usdc_sepolia),
+            erc20_amount,
+            1,
+            merkle_root_erc20,
+            2,
+        );
+    assert!(!receipt_rlp_erc20
+        .windows(32)
+        .any(|w| w == fresh_lez_recipient_erc20));
+
+    let mut inst_erc20 = instance;
+    inst_erc20.current_receipts_root = receipts_root_erc20.0;
+    store
+        .try_set_account_with_owner(
+            &instance_pda,
+            serde_json::to_vec(&inst_erc20).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .expect("update store instance for erc20 receipt root");
+
+    let header_erc20 = HeaderRecord {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        slot,
+        beacon_block_root: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        execution_block_hash: [0x77u8; 32],
+        execution_state_root: [0x88u8; 32],
+        receipts_root: receipts_root_erc20.0,
+    };
+
+    let erc20_proof = StateProof {
+        target: ProofTarget::ShieldedCommitmentDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: locker_addr,
+            token_contract: Address::from(usdc_sepolia),
+            commitment: B256::from(erc20_commitment),
+        },
+        account_proof: vec![],
+        storage_proof: None,
+        receipt_proof: Some(proof_nodes_erc20),
+        account_value: None,
+        storage_value: None,
+        receipt_value: Some(receipt_rlp_erc20),
+    };
+
+    let mut erc20_ledger = Erc20Ledger::new();
+    let mut erc20_nullifiers = NullifierSet::new();
+
+    let minted_usdc = erc20_ledger
+        .claim_shielded_deposit_authenticated_store(
+            &mut store,
+            &instance_pda,
+            None,
+            ShieldedErc20ClaimArgs {
+                header: header_erc20.clone(),
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: erc20_proof.clone(),
+                predicate: Predicate::AtLeast { min: [0u8; 32] },
+                expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+                expected_token_contract: usdc_sepolia,
+                recipient: fresh_lez_recipient_erc20,
+                secret: erc20_secret,
+                nullifier_secret: erc20_nullifier_secret,
+                min_amount: U256::from(1u64),
+            },
+            &mut erc20_nullifiers,
+        )
+        .expect("shielded ERC-20 claim must succeed");
+    assert_eq!(minted_usdc, erc20_amount);
+    assert_eq!(
+        erc20_ledger.get_balance(&usdc_sepolia, &fresh_lez_recipient_erc20),
+        250_000_000u128
+    );
+
+    // Double claim ERC-20 rejected
+    let erc20_replay = erc20_ledger.claim_shielded_deposit_authenticated_store(
+        &mut store,
+        &instance_pda,
+        None,
+        ShieldedErc20ClaimArgs {
+            header: header_erc20,
+            header_history_branch: None,
+            historical_execution_proof: None,
+            proof: erc20_proof,
+            predicate: Predicate::AtLeast { min: [0u8; 32] },
+            expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+            expected_token_contract: usdc_sepolia,
+            recipient: [0x12u8; 32],
+            secret: erc20_secret,
+            nullifier_secret: erc20_nullifier_secret,
+            min_amount: U256::from(1u64),
+        },
+        &mut erc20_nullifiers,
+    );
+    assert_eq!(erc20_replay, Err(ReceiverError::AlreadyClaimed));
+
+    // 3. Verify Depth-20 incremental Merkle helper matches keccak256("mosoo_merkle_v1" || left || right)
+    let mut siblings = [[0u8; 32]; 20];
+    let empty_leaf = alloy_primitives::keccak256(b"mosoo_empty_leaf_v1").0;
+    let mut z = empty_leaf;
+    for level in &mut siblings {
+        *level = z;
+        let mut buf = [0u8; 79];
+        buf[..15].copy_from_slice(b"mosoo_merkle_v1");
+        buf[15..47].copy_from_slice(&z);
+        buf[47..79].copy_from_slice(&z);
+        z = alloy_primitives::keccak256(buf).0;
+    }
+    let mut expected_root = eth_commitment;
+    for s in &siblings {
+        let mut buf = [0u8; 79];
+        buf[..15].copy_from_slice(b"mosoo_merkle_v1");
+        buf[15..47].copy_from_slice(&expected_root);
+        buf[47..79].copy_from_slice(s);
+        expected_root = alloy_primitives::keccak256(buf).0;
+    }
+    assert!(verify_commitment_merkle_inclusion(
+        &eth_commitment,
+        0,
+        &siblings,
+        &expected_root
+    ));
+    assert!(!verify_commitment_merkle_inclusion(
+        &erc20_commitment,
+        0,
+        &siblings,
+        &expected_root
+    ));
 }

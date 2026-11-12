@@ -28,11 +28,13 @@ jobs:
       - name: Install stable Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build zkVM Guest, Core & CLI Packages
+      - name: Build Host Release Packages (Core, CLI, Host Guest Harness)
+        # Note: For deterministic RISC Zero zkVM ELF compilation (`riscv32im-risc0-zkvm-elf`),
+        # see docker/Dockerfile.guest. Host `cargo build --release` builds native host libraries/binaries.
         run: |
           cargo build --release -p mosoo-core -p mosoo-guest -p mosoo-cli
 
-      - name: Validate SPEL Interface Definitions (.spel)
+      - name: Validate SPEL Interface Conformance (Offline Sequencer Harness)
         run: |
           cargo test -p mosoo-core --test lez_v04_acceptance_tests
 
@@ -52,14 +54,14 @@ jobs:
             echo "HAS_TOKEN=false" >> $GITHUB_ENV
           fi
 
-      - name: Create GitHub Release
+      - name: Create GitHub Pre-Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          name: "Mosoo v0.4.0 — LEZ v0.4 Conformance & zkVM Attestation Release"
-          body_path: docs/releases/v0.4.0.md
+          name: "Mosoo v0.4.0 Pre-Release — Offline LEZ v0.4-Target Conformance Prototype"
+          body_path: CHANGELOG.md
           draft: false
-          prerelease: false
+          prerelease: true
           files: |
             mosoo-lez-module.tar.gz
             mosoo-cli-linux-x86_64.tar.gz

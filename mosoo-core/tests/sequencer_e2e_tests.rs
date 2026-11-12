@@ -455,11 +455,11 @@ fn test_sequencer_sepolia_gloas_lifecycle_e2e() {
         .insert(instance_pda, serde_json::to_vec(&instance).unwrap());
     assert!(sequencer.accounts.contains_key(&instance_pda));
 
-    // Verify Sepolia Gloas fork version at slot 7,077,888
+    // Verify Sepolia Gloas fork version at slot 11,296,768
     let fv = fork_version(sepolia_chain, gloas_slot);
     assert_eq!(
         fv,
-        [0x90, 0x00, 0x00, 0x77],
+        [0x90, 0x00, 0x00, 0x76],
         "Must be Sepolia Gloas fork version"
     );
 

@@ -17,7 +17,7 @@ const SEPOLIA_RPCS = [
   'https://1rpc.io/sepolia'
 ];
 
-const LOCKER_ADDRESS = '0x74625D146B8d9413F3c3976B323d94A739be7856';
+const LOCKER_ADDRESS = '0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b';
 
 function parseArgs() {
   const args = process.argv.slice(2);

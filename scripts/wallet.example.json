@@ -1,0 +1,11 @@
+{
+  "network": "Logos Execution Zone (LEZ) Testnet",
+  "sequencerRpc": "https://testnet.lez.logos.co",
+  "explorer": "https://explorer.testnet.lez.logos.co/",
+  "accountId": "<YOUR_BASE58_ACCOUNT_ID>",
+  "publicAddress": "Public/<YOUR_BASE58_ACCOUNT_ID>",
+  "publicKeyHex": "0x<YOUR_32_BYTE_PUBLIC_KEY_HEX>",
+  "privateKeyHex": "0x<YOUR_HEX_PRIVATE_KEY>",
+  "canonicalProgramId": "<YOUR_PROGRAM_ID>",
+  "sepoliaInstancePda": "<YOUR_INSTANCE_PDA>"
+}

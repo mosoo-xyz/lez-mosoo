@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "networks": {
+    "mainnet": {
+      "chain_id": 1,
+      "finalized_slot": 15632352,
+      "signature_slot": 15632430,
+      "earlier_bootstrap_slot": 15632288,
+      "el_block_number": 26392691,
+      "el_block_hash": "0x5f9597a4bbccc846b0589c646ca00ddb3af36c1468a7f42acbc95e16639070a2",
+      "hashes": {
+        "bootstrap_fin": "8ebaff0d984244607cc7766fcd46a12b87f77049835c061554d2828c379af445",
+        "finality_update": "085fed1d8f4ad9ef5ef40c6c8d0e3a4a45463877747dfc436b4ba428759bf8b2",
+        "period_updates": "6a14e5256c300ee8d5b1628f6a861dbe6fcd95aa036d410f8d5b5a55aabfffb2",
+        "execution_proof": "e50a9e0dc105d589de4434b51b858545c56b8e16b0f59faf7346dffa5ee384cd",
+        "receipt_proof": "b8a3a6fcdff9ae5996750df3c0b7349e1ee5424768f8eb5d271e532d75c1c77a",
+        "bootstrap_earlier": "48edaafec50abe1d789bff10696f98684b00aede225dc5df5f29d044bcc8be2d"
+      }
+    },
+    "sepolia": {
+      "chain_id": 11155111,
+      "fork": "gloas",
+      "finalized_slot": 11556544,
+      "signature_slot": 11556609,
+      "earlier_bootstrap_slot": null,
+      "gloas_el_block_number": 12112710,
+      "deposit_tx": "0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913",
+      "hashes": {
+        "bootstrap_fin": "37a59862625584cd56ec74af6e20329e17585b115ab5beb51a85abc84e22b7a3",
+        "finality_update": "036788d2e9bfb7644dd011e772a6e9f2bc40ac8147124c806aa97adccc0540c3",
+        "period_updates": "a642e0a273119d37779a705147382b607c948ab241753e4f94b8005433962430",
+        "execution_block": "a6f32f44880c1283d1a249a494c04c558f8a5ff44713c3df75ceacc2d75d146b",
+        "latest_proof_snapshot": "e69df6b3fde98f1f0bdff8095546c994dbea1728c2f8abee52823f7802e284f9",
+        "deposit_12082214": "80752308cc89f0891e38adcdb3768dda15f1e77ee83150ca0ebcd27322415d75",
+        "deposit_v2_shielded": "fed76e3eaa539ea674883471efb59b2b048b465a7786bbb852a9e0531c1fbddd"
+      },
+      "deposit_v2_tx": "0xe017525b987833b91a943196fbc4d81316282f1b2710f43da348f19daaf88c19"
+    },
+    "hoodi": {
+      "chain_id": 560048,
+      "fork": "fulu",
+      "finalized_slot": 4349920,
+      "signature_slot": 4349987,
+      "earlier_bootstrap_slot": 4349856,
+      "hashes": {
+        "bootstrap_fin": "507790fa68f1e9992adf646c1d6d169895765290d27f5d8f53e1a844c6291193",
+        "finality_update": "bcb56cb82bb150463e10c3daa8f28a87863839b480e56bfc18910aaebc852b87",
+        "period_updates": "680c32987f7b85e570521528e6adc61bbbcc677886ff2acd18ce3673a71ce6e5",
+        "current_period_update": "3d0d34fa1352c5615a2b951882fc81f56affd55f32e4646d1183d7a215541297",
+        "bootstrap_earlier": "e6e493e0901fba53de2b043afd9ba3178db7f1ee60d241a167ab3f51fbd6c6ea"
+      }
+    }
+  }
+}

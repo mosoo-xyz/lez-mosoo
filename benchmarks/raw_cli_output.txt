@@ -1,4 +1,4 @@
-[1;36m
+﻿[1;36m
   __  __  ___  ____   ___   ___  
  |  \/  |/ _ \/ ___| / _ \ / _ \ 
  | |\/| | | | \___ \| | | | | | |
@@ -6,7 +6,7 @@
  |_|  |_|\___/|____/ \___/ \___/ 
 [0m
 [1m Mosoo: Trustless Ethereum State Attestation for LEZ (RFP-021)[0m
- Ethereum consensus & state verification module (M0 Architecture)
+ Ethereum consensus & state verification module 
 
 [1m=== Mosoo Measured Performance & Gas Reconciliation ===[0m
 
@@ -17,13 +17,13 @@ Executing live cryptographic benchmark workload on local CPU...
    +------------------------------------+------------------+-----------------+-----------+----------------+
    | Pipeline Stage                     | blst Optimized   | Pure Software   | Speedup   | Measured Local |
    +------------------------------------+------------------+-----------------+-----------+----------------+
-   | Tx 1: Begin (Quorum + hash_to_G2)  |  5,232,000 cycles| 15,425,000 cyc  | 2.95x     |    169.84┬╡s    |
-   | Tx 2: Miller (Dual Miller Loops)   |  2,822,000 cycles|  5,974,000 cyc  | 2.12x     |    596.60┬╡s    |
-   | Tx 3: Finish (Final Exp + Roots)   |  1,298,000 cycles|  1,850,000 cyc  | 1.42x     |    372.08┬╡s    |
+   | Tx 1: Begin (Quorum + hash_to_G2)  |  5,232,000 cycles| 15,425,000 cyc  | 2.95x     |    205.96µs    |
+   | Tx 2: Miller (Dual Miller Loops)   |  2,822,000 cycles|  5,974,000 cyc  | 2.12x     |    670.84µs    |
+   | Tx 3: Finish (Final Exp + Roots)   |  1,298,000 cycles|  1,850,000 cyc  | 1.42x     |    444.96µs    |
    +------------------------------------+------------------+-----------------+-----------+----------------+
-   | Full 3-Tx Consensus Pipeline Total |  9,352,000 cycles| 23,249,000 cyc  | 2.49x     |      1.14ms    |
+   | Full 3-Tx Consensus Pipeline Total |  9,352,000 cycles| 23,249,000 cyc  | 2.49x     |      1.32ms    |
    +------------------------------------+------------------+-----------------+-----------+----------------+
-   | SSZ 512-Validator Merkleization    |    184,200 cycles|    420,000 cyc  | 2.28x     |    558.52┬╡s    |
+   | SSZ 512-Validator Merkleization    |    184,200 cycles|    420,000 cyc  | 2.28x     |     13.69ms    |
    +------------------------------------+------------------+-----------------+-----------+----------------+
 
 2. LEZ Gas Consumption Reconciliation (Gas = zkVM Cycles + PDA/Storage Gas):

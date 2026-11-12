@@ -710,7 +710,7 @@ impl MockEthereumLocker {
             }
         }
 
-        // Continuous rolling 24-hour volume limit check (Finding M-04 / 3 hardening)
+        // Rolling 24-hour withdrawal volume limit check
         if self.daily_withdrawal_limit_eth > 0 {
             let cutoff = current_timestamp.saturating_sub(86_400);
             let mut cleaned = 0;
@@ -2247,5 +2247,375 @@ fn test_two_way_bridge_cross_instance_burn_domain_separation() {
     assert_ne!(
         erc20_burn_id_a, erc20_burn_id_b,
         "Identical ERC-20 burn parameters for different LEZ instances MUST yield distinct burn IDs"
+    );
+}
+
+#[test]
+fn test_two_way_bridge_rfp022_shielded_outbound_burn_nullifier() {
+    use erc20_receiver::ShieldedErc20ClaimArgs;
+    use ether_receiver::ShieldedEthClaimArgs;
+    use mosoo_core::inclusion::{
+        test_helpers::build_test_deposit_committed_proof, ProofTarget, StateProof,
+    };
+    use mosoo_core::types::Predicate;
+    use mosoo_core::types::{
+        derive_shielded_burn_nullifier, derive_shielded_commitment,
+        derive_shielded_deposit_secrets, AccountStore, HeaderRecord, InstanceAccount,
+        ProgramAccountStore, SyncCommittee, TrustedBridgeConfig, CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        CANONICAL_SEPOLIA_CHECKPOINT_SLOT, CANONICAL_SEPOLIA_INSTANCE_ID,
+        CANONICAL_SEPOLIA_MOSOO_INSTANCE, CANONICAL_SEPOLIA_MOSOO_LOCKER, ETH_SEPOLIA_CHAIN_ID,
+    };
+
+    let mut meth_ledger = MethLedger::new();
+    let mut erc20_ledger = Erc20Ledger::new();
+
+    let lez_user = [0x44u8; 32];
+    let eth_amount = 500_000_000_000_000_000u128; // 0.5 ETH
+    let burn_secret_eth = [0x51u8; 32];
+    let burn_secret_erc20 = [0x62u8; 32];
+    let usdc_token: [u8; 20] = [
+        0x1c, 0x7d, 0x4b, 0x19, 0x6c, 0xb0, 0xc7, 0xb0, 0x1d, 0x74, 0x3f, 0xbc, 0x61, 0x16, 0xa9,
+        0x02, 0x37, 0x9c, 0x72, 0x38,
+    ];
+
+    // 1. Domain separation and zero owner leakage checks for shielded burn nullifier
+    let expected_eth_nullifier = derive_shielded_burn_nullifier(
+        ETH_MAINNET_CHAIN_ID,
+        &CANONICAL_MAINNET_MOSOO_INSTANCE,
+        &[0u8; 20],
+        &U256::from(eth_amount).to_be_bytes::<32>(),
+        &burn_secret_eth,
+    );
+    let other_instance_nullifier = derive_shielded_burn_nullifier(
+        ETH_MAINNET_CHAIN_ID,
+        &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        &[0u8; 20],
+        &U256::from(eth_amount).to_be_bytes::<32>(),
+        &burn_secret_eth,
+    );
+
+    assert_ne!(
+        expected_eth_nullifier, other_instance_nullifier,
+        "Shielded burn nullifier MUST enforce cross-instance domain separation"
+    );
+    assert!(
+        !expected_eth_nullifier
+            .windows(16)
+            .any(|w| w == &lez_user[..16]),
+        "Shielded burn nullifier MUST NOT leak LEZ owner bytes"
+    );
+
+    // 2. Attempting shielded burn with zero amount or unfunded account fails closed
+    assert_eq!(
+        meth_ledger.burn_shielded_meth(
+            ETH_MAINNET_CHAIN_ID,
+            &CANONICAL_MAINNET_MOSOO_INSTANCE,
+            &lez_user,
+            0,
+            &burn_secret_eth,
+        ),
+        Err(EtherReceiverError::BalanceTooLow {
+            actual: 0,
+            required: 1,
+        })
+    );
+    assert_eq!(
+        meth_ledger.burn_shielded_meth(
+            ETH_MAINNET_CHAIN_ID,
+            &CANONICAL_MAINNET_MOSOO_INSTANCE,
+            &lez_user,
+            eth_amount,
+            &burn_secret_eth,
+        ),
+        Err(EtherReceiverError::AccountNotFound(lez_user))
+    );
+    assert_eq!(
+        erc20_ledger.burn_shielded_tokens(
+            ETH_MAINNET_CHAIN_ID,
+            &CANONICAL_MAINNET_MOSOO_INSTANCE,
+            &usdc_token,
+            &lez_user,
+            100,
+            &burn_secret_erc20,
+        ),
+        Err(ReceiverError::AccountNotFound {
+            token: usdc_token,
+            owner: lez_user,
+        })
+    );
+
+    // 3. Complete funded shielded round-trip (Mint via DepositCommitted -> Partial Burn -> Overburn Reject)
+    let master_seed = [0x91u8; 32];
+    let (eth_secret, eth_nullifier_secret) = derive_shielded_deposit_secrets(&master_seed, 0);
+    let (erc20_secret, erc20_nullifier_secret) = derive_shielded_deposit_secrets(&master_seed, 1);
+
+    let full_eth_deposit = 1_000_000_000_000_000_000u128; // 1.0 ETH
+    let erc20_deposit = 250_000_000u128; // 250 USDC
+
+    let eth_commitment = derive_shielded_commitment(
+        &[0u8; 20],
+        &U256::from(full_eth_deposit).to_be_bytes::<32>(),
+        &eth_secret,
+        &eth_nullifier_secret,
+    );
+    let erc20_commitment = derive_shielded_commitment(
+        &usdc_token,
+        &U256::from(erc20_deposit).to_be_bytes::<32>(),
+        &erc20_secret,
+        &erc20_nullifier_secret,
+    );
+
+    let locker_addr = alloy_primitives::Address::from(CANONICAL_SEPOLIA_MOSOO_LOCKER);
+    let (receipts_root_eth, proof_nodes_eth, receipt_rlp_eth) = build_test_deposit_committed_proof(
+        locker_addr,
+        alloy_primitives::B256::from(eth_commitment),
+        alloy_primitives::Address::ZERO,
+        U256::from(full_eth_deposit),
+        0,
+        alloy_primitives::B256::repeat_byte(0xA1),
+        1,
+    );
+    let (receipts_root_erc20, proof_nodes_erc20, receipt_rlp_erc20) =
+        build_test_deposit_committed_proof(
+            locker_addr,
+            alloy_primitives::B256::from(erc20_commitment),
+            alloy_primitives::Address::from(usdc_token),
+            U256::from(erc20_deposit),
+            1,
+            alloy_primitives::B256::repeat_byte(0xB2),
+            2,
+        );
+
+    let mut store = ProgramAccountStore::new();
+    TrustedBridgeConfig::canonical()
+        .save(&mut store)
+        .expect("save canonical bridge config");
+
+    let slot = CANONICAL_SEPOLIA_CHECKPOINT_SLOT;
+    let mut instance = InstanceAccount {
+        instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        current_header_hash: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        current_state_root: [0x66u8; 32],
+        current_slot: slot,
+        current_sync_committee: SyncCommittee {
+            pubkeys: vec![vec![0u8; 48]; 512],
+            aggregate_pubkey: vec![0u8; 48],
+        },
+        next_sync_committee: None,
+        bootstrap_slot: slot,
+        bootstrap_header_hash: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+        initialized: true,
+        current_execution_block_hash: [0x77u8; 32],
+        current_execution_state_root: [0x88u8; 32],
+        current_receipts_root: receipts_root_eth.0,
+        network_config: None,
+    };
+    let instance_pda = instance.pda_address();
+    store
+        .try_set_account_with_owner(
+            &instance_pda,
+            serde_json::to_vec(&instance).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .expect("store Sepolia instance for ETH shielded claim");
+
+    let mut eth_nullifiers = EtherNullifierSet::new();
+    let minted_eth = meth_ledger
+        .claim_shielded_eth_deposit_authenticated_store(
+            &mut store,
+            &instance_pda,
+            None,
+            ShieldedEthClaimArgs {
+                header: HeaderRecord {
+                    chain_id: ETH_SEPOLIA_CHAIN_ID,
+                    slot,
+                    beacon_block_root: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+                    execution_block_hash: [0x77u8; 32],
+                    execution_state_root: [0x88u8; 32],
+                    receipts_root: receipts_root_eth.0,
+                },
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: StateProof {
+                    target: ProofTarget::ShieldedCommitmentDeposit {
+                        tx_index: 0,
+                        log_index: 0,
+                        deposit_contract: locker_addr,
+                        token_contract: alloy_primitives::Address::ZERO,
+                        commitment: alloy_primitives::B256::from(eth_commitment),
+                    },
+                    account_proof: vec![],
+                    storage_proof: None,
+                    receipt_proof: Some(proof_nodes_eth),
+                    account_value: None,
+                    storage_value: None,
+                    receipt_value: Some(receipt_rlp_eth),
+                },
+                predicate: Predicate::AtLeast { min: [0u8; 32] },
+                expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+                recipient: lez_user,
+                secret: eth_secret,
+                nullifier_secret: eth_nullifier_secret,
+                min_wei: 1,
+            },
+            &mut eth_nullifiers,
+        )
+        .expect("funded shielded ETH claim must succeed");
+    assert_eq!(minted_eth, full_eth_deposit);
+    assert_eq!(meth_ledger.total_supply_wei, full_eth_deposit);
+
+    // Execute shielded outbound burn for 0.5 ETH and check ledger accounting + nullifier
+    let eth_burn_nullifier = meth_ledger
+        .burn_shielded_meth(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &lez_user,
+            eth_amount,
+            &burn_secret_eth,
+        )
+        .expect("shielded mETH burn must succeed");
+    assert_eq!(
+        eth_burn_nullifier,
+        derive_shielded_burn_nullifier(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &[0u8; 20],
+            &U256::from(eth_amount).to_be_bytes::<32>(),
+            &burn_secret_eth,
+        )
+    );
+    assert!(!eth_burn_nullifier.windows(16).any(|w| w == &lez_user[..16]));
+    assert_eq!(
+        meth_ledger.get_balance(&lez_user),
+        full_eth_deposit - eth_amount
+    );
+    assert_eq!(meth_ledger.total_supply_wei, full_eth_deposit - eth_amount);
+    assert_eq!(meth_ledger.total_burned_wei, eth_amount);
+
+    // Attempting to burn more than remaining balance fails closed
+    assert_eq!(
+        meth_ledger.burn_shielded_meth(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &lez_user,
+            full_eth_deposit,
+            &burn_secret_eth,
+        ),
+        Err(EtherReceiverError::InsufficientBalance {
+            available: full_eth_deposit - eth_amount,
+            requested: full_eth_deposit,
+        })
+    );
+
+    // Update instance receipts root for shielded ERC-20 claim -> burn round-trip
+    instance.current_receipts_root = receipts_root_erc20.0;
+    store
+        .try_set_account_with_owner(
+            &instance_pda,
+            serde_json::to_vec(&instance).unwrap(),
+            MOSOO_PROGRAM_ID,
+        )
+        .expect("update Sepolia instance for ERC-20 shielded claim");
+
+    let mut erc20_nullifiers = Erc20NullifierSet::new();
+    let minted_usdc = erc20_ledger
+        .claim_shielded_deposit_authenticated_store(
+            &mut store,
+            &instance_pda,
+            None,
+            ShieldedErc20ClaimArgs {
+                header: HeaderRecord {
+                    chain_id: ETH_SEPOLIA_CHAIN_ID,
+                    slot,
+                    beacon_block_root: CANONICAL_SEPOLIA_CHECKPOINT_ROOT,
+                    execution_block_hash: [0x77u8; 32],
+                    execution_state_root: [0x88u8; 32],
+                    receipts_root: receipts_root_erc20.0,
+                },
+                header_history_branch: None,
+                historical_execution_proof: None,
+                proof: StateProof {
+                    target: ProofTarget::ShieldedCommitmentDeposit {
+                        tx_index: 0,
+                        log_index: 0,
+                        deposit_contract: locker_addr,
+                        token_contract: alloy_primitives::Address::from(usdc_token),
+                        commitment: alloy_primitives::B256::from(erc20_commitment),
+                    },
+                    account_proof: vec![],
+                    storage_proof: None,
+                    receipt_proof: Some(proof_nodes_erc20),
+                    account_value: None,
+                    storage_value: None,
+                    receipt_value: Some(receipt_rlp_erc20),
+                },
+                predicate: Predicate::AtLeast { min: [0u8; 32] },
+                expected_deposit_contract: CANONICAL_SEPOLIA_MOSOO_LOCKER,
+                expected_token_contract: usdc_token,
+                recipient: lez_user,
+                secret: erc20_secret,
+                nullifier_secret: erc20_nullifier_secret,
+                min_amount: U256::from(1u64),
+            },
+            &mut erc20_nullifiers,
+        )
+        .expect("funded shielded ERC-20 claim must succeed");
+    assert_eq!(minted_usdc, U256::from(erc20_deposit));
+    assert_eq!(
+        erc20_ledger.get_balance(&usdc_token, &lez_user),
+        erc20_deposit
+    );
+
+    let erc20_burn_amount = 100_000_000u128; // 100 USDC
+    let erc20_burn_nullifier = erc20_ledger
+        .burn_shielded_tokens(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &usdc_token,
+            &lez_user,
+            erc20_burn_amount,
+            &burn_secret_erc20,
+        )
+        .expect("shielded ERC-20 burn must succeed");
+    assert_eq!(
+        erc20_burn_nullifier,
+        derive_shielded_burn_nullifier(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &usdc_token,
+            &U256::from(erc20_burn_amount).to_be_bytes::<32>(),
+            &burn_secret_erc20,
+        )
+    );
+    assert!(!erc20_burn_nullifier
+        .windows(16)
+        .any(|w| w == &lez_user[..16]));
+    assert_eq!(
+        erc20_ledger.get_balance(&usdc_token, &lez_user),
+        erc20_deposit - erc20_burn_amount
+    );
+    assert_eq!(
+        erc20_ledger.get_total_supply(&usdc_token),
+        erc20_deposit - erc20_burn_amount
+    );
+    assert_eq!(
+        erc20_ledger.get_total_burned(&usdc_token),
+        erc20_burn_amount
+    );
+
+    assert_eq!(
+        erc20_ledger.burn_shielded_tokens(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &usdc_token,
+            &lez_user,
+            erc20_deposit,
+            &burn_secret_erc20,
+        ),
+        Err(ReceiverError::InsufficientBalance {
+            available: erc20_deposit - erc20_burn_amount,
+            requested: erc20_deposit,
+        })
     );
 }

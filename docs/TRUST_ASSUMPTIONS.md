@@ -17,7 +17,8 @@ Cryptographic trust assumptions, threat model, participant failure conditions, a
   - **Ethereum PoS Weak Subjectivity:** A dynamic consensus parameter calculated under Ethereum specification based on active validator deposit balances and churn limits (dynamically calculated under the official Ethereum Consensus Specifications Weak Subjectivity Guide, typically ~14 to 28 days on Ethereum Mainnet). Light clients that remain offline longer than this window cannot trust historical validator signatures due to potential long-range slashing evasion.
   - **Mosoo Protocol Freshness Enforcement:** Mosoo enforces a two-tier defense:
     1. **Canonical Operational Window:** 54,000 slots (`CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS`, ~7.5 days at 12s/slot) for routine sync progression against trusted network anchors.
-    2. **Hard Protocol Kill Switch (Dormancy Ceiling):** 1,728,000 slots (MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS / 54,000 epochs, ~240 days) acts as an absolute protocol kill switch. It is **not** a validity guarantee for ancient checkpoints (240 days is not a validity or freshness guarantee); actual Ethereum weak-subjectivity windows are dynamic (dynamically calculated chain-specific window per Ethereum Consensus Specifications, typically ~14–28 days on Ethereum Mainnet). Instead, 1.728M slots enforces hard fail-closed invalidation: dormant instances exceeding this boundary are permanently bricked and cannot be updated.\n- **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods (MosooError::SyncCommitteePeriodSkip) or fail weak-subjectivity freshness bounds (MosooError::WeakSubjectivityExpired). Any bootstrap or reinitialization must be anchored to an independently verified, currently acceptable checkpoint within the canonical weak-subjectivity window (~14–28 days). If an instance stalls past 1.728M slots, it cannot be rewritten in place; it must be retired and superseded by a fresh instance.\n
+    2. **Hard Protocol Kill Switch (Dormancy Ceiling):** 1,728,000 slots (`MAX_WEAK_SUBJECTIVITY_WINDOW_SLOTS` / 54,000 epochs, ~240 days) acts as an absolute protocol kill switch. It is **not** a validity guarantee for ancient checkpoints; actual Ethereum weak-subjectivity windows are dynamic (dynamically calculated chain-specific windows per Ethereum Consensus Specifications, typically ~14–28 days on Ethereum Mainnet). Instead, 1.728M slots enforces hard fail-closed invalidation: dormant instances exceeding this boundary are permanently bricked and cannot be updated.
+- **Fail-Closed Protection:** Mosoo strictly rejects updates that skip sync committee periods (`MosooError::SyncCommitteePeriodSkip`) or fail weak-subjectivity freshness bounds (`MosooError::WeakSubjectivityExpired`). Any bootstrap or reinitialization must be anchored to an independently verified checkpoint within the operational/weak-subjectivity window. If an instance stalls past allowed bounds, it cannot be rewritten in place; it must be retired and superseded by a fresh instance.
 ---
 
 ## 2. Cryptographic Quorum Trust: 2/3 Sync-Committee Assumption
@@ -34,20 +35,20 @@ Mosoo implements the standard Ethereum Altair/Electra Sync Committee light clien
 - **$\ge 1/3$ Colluding Validators ($\ge 171$ nodes):** Liveness stall risk. Malicious validators can refuse to sign, preventing the light client from reaching the 342-vote quorum. However, **safety is strictly preserved** — no false state or invalid headers can ever be finalized.
 - **$\ge 2/3$ Colluding Validators ($\ge 342$ nodes):** Safety failure. If > 2/3 of Ethereum sync committee validators maliciously collude and sign an invalid block header, the light client would accept it. This is the fundamental, irreducible security assumption of all Ethereum light clients (identical to EIP-4788, Helios, and Telepathy).
 
-### 2.3 Quorum Carryover Threat Model & Non-Automatic Exposure Bounds (VS.4)
+### 2.3 Quorum Carryover Threat Model & Non-Automatic Exposure Bounds
 - **Quorum Carryover Threat:** A malicious sync committee supermajority (>= 342 validators) could sign both a fraudulent finalized header and a fraudulent next sync committee root. Because future committees are authenticated via signed finalized headers, a compromised committee could attempt to chain fraudulent updates into subsequent periods unless halted.
 - **Non-Automatic Exposure Boundary:** Committee rotation alone does NOT establish an automatic bound on the lifetime of a compromised trust chain. Exposure does not automatically terminate after 27.3 hours if the attacker successfully forges the next committee transition.
 - **Defense-in-Depth & Mitigation Architecture:**
-  1. **Consumer-Level Safeguards:** Consumer applications must independently bound financial exposure. `MosooLocker.sol` enforces rolling 24-hour withdrawal rate limits, a mandatory 2-day timelock for large transfers, and Guardian multisig veto power to freeze contract settlement upon abnormal activity.
-  2. **Independent Checkpoint Verification & Fast Retirement (F.9, F.10):** The off-chain daemon cross-checks headers against independent Logos Ethereum Core RPC endpoints (`verify_checkpoint` API). If an off-canonical fork is detected, the compromised instance is immediately retired (F.10) and superseded by a fresh instance initialized from an independently verified canonical weak-subjectivity checkpoint.
-  3. **Adversarial Invariant Test Suite:** Five specific adversarial regression tests validate invariant rejections under corrupt committee conditions (`tests/adversarial_mutation_tests.rs`):
+  1. **Consumer-Level Safeguards:** Consumer applications must independently bound financial exposure. `MosooLocker.sol` enforces rolling 24-hour withdrawal rate limits, a 24-hour queue + Guardian veto for large withdrawals (`>= 10 ETH`), a 24-hour delay on `attesterAuthority` transfers, and 48-hour multisig governance timelocks (`GOVERNANCE_TIMELOCK_DELAY = 2 days`).
+  2. **Independent Checkpoint Verification & Fast Retirement:** The off-chain daemon cross-checks headers against independent Ethereum Beacon RPC endpoints (`verify_checkpoint` API). If an off-canonical fork is detected, the compromised instance is retired and superseded by a fresh instance initialized from an independently verified canonical weak-subjectivity checkpoint.
+  3. **Adversarial Invariant Test Suite:** Five adversarial regression tests validate invariant rejections under corrupt committee conditions (`mosoo-core/tests/adversarial_mutation_tests/`):
      - Test 1: Rejection of updates with < 342 valid BLS signatures (`SubthresholdQuorumRejected`).
      - Test 2: Rejection of fabricated finalized headers against honest committee public keys.
      - Test 3: Detection and rejection of corrupt next-committee Merkle branch proofs.
      - Test 4: Chained update verification rejecting unanchored next-period transitions.
      - Test 5: Rejection of post-compromise recovery attempts without fresh independently verified weak-subjectivity checkpoints.
 
-### 2.4 Quantitative Economic Attack Model (VS.4)
+### 2.4 Quantitative Economic Attack Model
 
 To rigorously evaluate the economic feasibility of corrupting a 512-member sync committee:
 
@@ -63,7 +64,14 @@ $$P(\text{Attack Success}) = P(X \ge 342) = \sum_{j=342}^{512} \binom{512}{j} p^
 
 #### Exact Recalculated Attack Probability Distribution:
 
-| Attacker Stake Fraction ($) | Illustrative Stake Valuation | Binomial Approx. (X \ge 342)$ (Per Period: ~27.3h) | Cumulative Annual Risk ( - (1 - P)^{321}$) | Feasibility & Security Interpretation |\n|---|---|---|---|---|\n| ** = 10\%$** | ~9.90 Billion USD | **.42 \times 10^{-210}$** | $\approx 4.56 \times 10^{-208}$ | Mathematically zero. Exceeds cryptographic security margins. |\n| ** = 33\%$** | ~32.68 Billion USD | **.19 \times 10^{-55}$** | $\approx 1.99 \times 10^{-52}$ | Infeasible. Corresponds to negligible cryptographic probability. |\n| ** = 50\%$** | ~49.52 Billion USD | **.18 \times 10^{-14}$** | $\approx 3.79 \times 10^{-12}$ | Negligible (~1 in 260 billion operating years). |\n| ** = 60\%$** | ~59.42 Billion USD | **.0888\%$ (.88 \times 10^{-4}$)** | **$\approx 24.8\%$** | Non-negligible over full operating year (~321 rotations). Demands consumer defense-in-depth! |\n| ** \ge 66.8\%$** | **~66.15 Billion USD** | ** \ge 0.50$** | ** \approx 1.00$** | Deterministic supermajority; stake-equivalent market valuation ~.15B. |\n
+| Attacker Stake Fraction ($p$) | Illustrative Stake Valuation | Binomial Approx. $P(X \ge 342)$ (Per Period: ~27.3h) | Cumulative Annual Risk ($1 - (1 - P)^{321}$) | Feasibility & Security Interpretation |
+|---|---|---|---|---|
+| **$p = 10\%$** | ~9.90 Billion USD | **$1.42 \times 10^{-210}$** | $\approx 4.56 \times 10^{-208}$ | Negligibly small under independent binomial approximation. Exceeds $2^{-128}$ security margins. |
+| **$p = 33\%$** | ~32.68 Billion USD | **$6.19 \times 10^{-55}$** | $\approx 1.99 \times 10^{-52}$ | Negligible under the stated binomial model. |
+| **$p = 50\%$** | ~49.52 Billion USD | **$1.18 \times 10^{-14}$** | $\approx 3.79 \times 10^{-12}$ | Negligible (~1 in 260 billion operating years under independent draws). |
+| **$p = 60\%$** | ~59.42 Billion USD | **$0.0888\%$ ($8.88 \times 10^{-4}$)** | **$\approx 24.8\%$** | Non-negligible over full operating year (~321 rotations). Demands consumer defense-in-depth! |
+| **$p \ge 66.8\%$** | **~66.15 Billion USD** | **$P \ge 0.50$** | **$P \approx 1.00$** | At the threshold ($p = 66.8\%$), attacker has $\approx 50\%$ per-period probability ($P \ge 0.50$, not guaranteed single-period control); illustrative stake-equivalent valuation ~\$66.15B USD. |
+
 #### Reproducible Python Verification Script:
 ```python
 import math
@@ -78,7 +86,7 @@ print("p=0.60:", f"{binom_tail(512, 342, 0.60):.4%}")  # 0.0888%
 ```
 
 #### Analytical Limitations & Mitigations:
-1. **Simplified Sampling Model:** The binomial model treats sampling with replacement; actual Ethereum selection is effective-balance weighted without replacement, which further reduces variance and favors safety.
+1. **Simplified Sampling Model:** The binomial model treats sampling with replacement (reproducible in Python via `sum(math.comb(512, j) * (p**j) * ((1 - p)**(512 - j)) for j in range(342, 513))`); actual Ethereum selection is effective-balance weighted without replacement, which further reduces variance and favors safety.
 2. **Exogenous Correlated Staking Risk:** Liquid staking pools (e.g. Lido) or major infrastructure node operators could represent correlated failure domains. This risk is exogenous to the light client and is directly mitigated at the application layer via `MosooLocker.sol` rate limits, timelocks, and guardian vetoes.
 
 ---
@@ -108,9 +116,10 @@ Mosoo strictly decouples **Safety** (enforced mathematically in-guest under cryp
 - **Salted Blinding & Shielding:** Private state proofs support secret salting (`VerifiedStatement::shield_with_salt`), blinding the statement ID into `sha256("mosoo_salted_statement_id_v1:" || salt || statement_id)`.
 
 ### 4.2 Known Public Boundaries & Side-Channel Caveats
-- **Public Source Chain Transparency:** Ethereum Mainnet and Sepolia are public blockchains. The original deposit transaction, sender address, and deposit amount are permanently visible on Ethereum block explorers.
+- **Live Sepolia v2 Commissioned Shielded Pool vs Scope Boundary:** `MosooLocker` **v2** is now deployed and commissioned on Sepolia ([`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`](https://sepolia.etherscan.io/address/0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b), `2-of-2` quorum, `strictFixedDenominationMode = true`), emitting `DepositCommitted` without `sender` or `lezRecipient` (historical v1 `0x7462...` emitted cleartext `DepositETH`).
+- **Amount Visibility & RFP-022 Scope Boundary:** Even under local v2 `DepositCommitted`, Ethereum deposit **amounts** remain visible in event logs unless `strictFixedDenominationMode` (`0.01`, `0.1`, `1`, `10` ETH fixed tranches) is enabled. Mosoo targets RFP-021 inbound state attestation and does **not** run on-LEZ Groth16 amount-hiding ZK circuits.
 - **Off-Chain Traffic Analysis Correlation:** If an Ethereum transaction deposits `7.4912 ETH` at 12:00 UTC and an account on LEZ claims `7.4912 mETH` at 12:02 UTC, external observers can correlate the two events off-chain via deposit amounts and timestamp proximity.
-- **Production Unlinkability Path:** True cryptographic unlinkability in production requires relayer batching, standard deposit denominations (e.g., fixed 0.1, 1.0, 10.0 ETH tranches), or time-delayed batch claims.
+- **Production Unlinkability Path:** Limiting timing/amount correlation requires fixed denominations (`strictFixedDenominationMode`), batched relayers, or time-delayed claim windows.
 
 ---
 
@@ -129,4 +138,4 @@ Mosoo strictly decouples **Safety** (enforced mathematically in-guest under cryp
 - **Sub-Threshold Participation (< 342 validators):** Reverted with `MosooError::InsufficientParticipation`.
 - **Tampered Merkle Proof:** Reverted with `MosooError::InvalidTrieProof`.
 - **Duplicate Nullifier Submission:** Consuming contracts strictly revert with `AlreadyClaimed`.
-- **Predicate Tampering (Attack 33):** Statement identity is derived from canonical underlying state facts (`derive_statement_id_v2`), ensuring altered predicates over the same event produce identical statement IDs and are strictly rejected.
+- **Predicate Tampering:** Statement identity is derived from canonical underlying state facts (`derive_statement_id_v2`), ensuring altered predicates over the same event produce identical statement IDs and are strictly rejected.

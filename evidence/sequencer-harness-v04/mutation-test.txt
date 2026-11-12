@@ -1,18 +1,28 @@
 ﻿================================================================================
-Mosoo Verifier Mutation Testing Suite (RFP-021 Evidence Integrity)
-Verifying that the evidence verifier rejects 7 deliberate manifest corruptions
+Mosoo Evidence Verifier Mutation Suite (7 Attack Scenarios)
+Verifying fail-closed behavior of scripts/verify-evidence.py
 ================================================================================
-[+] Baseline Verification: Canonical run.tsv passed with 0 errors.
 
-  ok   [1/7] Mutation 1: Fake Transaction Hash                  -> CAUGHT (Verifier exited 1)
-  ok   [2/7] Mutation 2: Refused -> Applied Flip (Tampered Verdict) -> CAUGHT (Verifier exited 1)
-  ok   [3/7] Mutation 3: Applied -> Refused Flip                -> CAUGHT (Verifier exited 1)
-  ok   [4/7] Mutation 4: Gas Limit Cap Violation (> 10,000,000 gas) -> CAUGHT (Verifier exited 1)
-  ok   [5/7] Mutation 5: Unknown Action Label Injection         -> CAUGHT (Verifier exited 1)
-  ok   [6/7] Mutation 6: Tampered Adversarial Rejection Reason  -> CAUGHT (Verifier exited 1)
-  ok   [7/7] Mutation 7: Non-Existent Execution Proof Hash      -> CAUGHT (Verifier exited 1)
+--- Baseline Check: Canonical Unmutated Manifest ---
+  [OK] Canonical manifest passes with 0 errors (baseline verified)
+
+--- Executing 7 Adversarial Mutation Scenarios ---
+  [PASS] Mutation 1: Tampered Transaction Hash (Byte Corruption)
+         Rejected with exit code 1 (NOT verified in test output)
+  [PASS] Mutation 2: Gas Limit Violation (> 10,000,000 Gas Cap)
+         Rejected with exit code 1 (exceeded 10M gas cap)
+  [PASS] Mutation 3: Inverted Safety Verdict (False Applied Status)
+         Rejected with exit code 1 (Unknown or unauthorized transaction action label)
+  [PASS] Mutation 4: Fabricated Rejection Reason
+         Rejected with exit code 1 (NOT confirmed)
+  [PASS] Mutation 5: Fabricated Unknown Label
+         Rejected with exit code 1 (Unknown or unauthorized transaction action label)
+  [PASS] Mutation 6: Corrupted Zeroed Transaction Hash
+         Rejected with exit code 1 (NOT verified in test output)
+  [PASS] Mutation 7: Sub-threshold Quorum Safety Inversion
+         Rejected with exit code 1 (Unknown or unauthorized transaction action label)
 
 ================================================================================
-[+] Mutation Test Result: 7 / 7 deliberate corruptions caught by verifier.
-[+] Status: PASS (100% Tamper Detection Rate)
+[+] All 7 mutation scenarios rejected by verify-evidence.py.
+[+] Status: PASS
 ================================================================================

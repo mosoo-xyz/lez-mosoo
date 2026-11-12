@@ -1,117 +1,83 @@
-# Reproducible Build Specification & Published ImageID
+# Building & Reproducing Verification
 
-This document specifies the exact instructions, toolchain pinning, and cryptographic identifiers required to deterministically compile the **Mosoo zkVM Guest Binary** and verify its committed RISC0 `ImageID`.
+This document covers host setup, deterministic RISC Zero guest ELF builds (`riscv32im-risc0-zkvm-elf`), identifier boundaries, and test execution.
 
 ---
 
-## 1. Published Program Identifiers
+## 1. Prerequisites
 
-All on-chain LEZ deployments and consumer contract verification routines anchor to the following cryptographic identifiers:
+- **Rust Toolchain:** `1.88.0+` (`Cargo.lock` v4 and `icu_collections 2.3.0`)
+- **Foundry:** `forge` & `solc` (`contracts/test/MosooLocker.t.sol`)
+- **Python 3.9+:** Verification and mutation scripts (`scripts/*.py`)
+- **Docker (or Linux/WSL2 `rzup`):** Needed for compiling the `riscv32im-risc0-zkvm-elf` guest ELF (`cargo-risczero 1.2.6` + `rzup install cpp` for `mosoo-guest`; LEZ v0.3.1 `mosoo_lc` uses `r0vm 3.0.5`)
+
+---
+
+## 2. Binary & Identifier Boundaries
 
 | Identifier | Value | Notes |
-| :--- | :--- | :--- |
-| **RISC0 ImageID (Hex - Harness)** | `0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4` | Root of the execution binary committed in offline sequencer harness |
-| **ImageID (u32 Array - Harness)** | `[0x5e149f7a, 0x334dc182, 0x6e2247b8, 0xfa3d1590, 0x4fbe0188, 0x2687315c, 0x7304c9aa, 0xb4d82e51]` | Little-endian RISC0 words |
-| **Live LEZ v0.3.1 Program ID** | `DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf` | Base58 Program Header on live testnet (`https://testnet.lez.logos.co`) |
-| **Live LEZ v0.3.1 ImageID (Hex)** | `0xad6fbedb983da6b6d75b287da354ce3041905d152d4e576ec318871eddfaa928` | Committed in Header shard on-chain at block 78002 |
-| **Target Architecture** | `riscv32im-risc0-zkvm-elf` (zkVM) / `x86_64-pc-windows-msvc` | Host-profile & zkVM guest targets |
-| **Compiled Release Binary SHA-256** | `01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` | Non-empty compiled release binary digest (103,424 bytes) |
-| **LEZ Program Account** | `0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` | Deterministic program address matching compiled binary digest |
+|---|---|---|
+| **Live LEZ v0.3.1 Program (`mosoo_lc`)** | `Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg` | Deployed immutably on `https://testnet.lez.logos.co` (Block `81148`; verified via `scripts/verify-mosoo-lez.py`) |
+| **Live LEZ v0.3.1 ImageID** | `961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0` | Matches [`artifacts/programs/v0.3/mosoo_lc.bin`](../artifacts/programs/v0.3/mosoo_lc.bin) (`601,892` B package; `569,468` B user ELF; `SHA-256: 0fc6ce72...`) |
+| **Compiled v0.4 Target ELF (`mosoo-guest`)** | `SHA-256: 733bff2a3fa6440458b00cdbdb163efa0315784de89baf75b4cd6b78d5d715d2` | [`artifacts/v04-guest/mosoo-guest`](../artifacts/v04-guest/mosoo-guest) (`922,052` B `riscv32im-risc0-zkvm-elf`; awaits public LEZ `v0.4` release) |
+| **Offline Harness Constant (`MOSOO_PROGRAM_ID`)** | `0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` | Static Rust constant in `mosoo-core/src/types.rs` for offline harness PDA derivation (not a binary hash) |
+| **Offline Harness Diagnostic ImageID** | `0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4` | Diagnostic ID emitted by offline `mosoo-cli` fixtures (`evidence/sequencer-harness-v04/run.tsv`) |
+
+Running `cargo build -p mosoo-guest --release` on a host OS compiles a **host executable** for unit tests, not the `riscv32im-risc0-zkvm-elf` guest ELF. Use `docker/Dockerfile.guest` or `cargo risczero build` for the zkVM target.
 
 ---
 
-### zkVM Guest ImageID Provenance & Network Shard Architecture
+## 3. Reproducible zkVM Guest ELF Build
 
-The Mosoo light client codebase tracks two distinct, verified ImageIDs for clear architectural reasons:
-1. **Live Testnet v0.3.1 ImageID (`0xad6fbedb983da6b6d75b287da354ce3041905d152d4e576ec318871eddfaa928`):**
-   - Deployed on-chain in Header shard at block 78002 (`evidence/public-testnet-v03/deployment_manifest.json`).
-   - Represents the canonical reference light client guest binary verified across LEZ public testnet segments 0–6 on program ID `DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf`.
-2. **Offline Sequencer Harness v0.4 ImageID (`0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4`):**
-   - Used in offline deterministic test harness (`evidence/sequencer-harness-v04/run.tsv`).
-   - Built with mock predicate verification targets enabled for deterministic local integration test vectors.
-
-Both artifacts are fully reproducible via `docker build -f docker/Dockerfile.guest .`.
-
----
-
-## 2. Pinned Toolchain Environment
-
-For byte-for-byte reproducibility across independent reviewers and Logos auditors:
-
-| Component | Pinned Version | Source |
-| :--- | :--- | :--- |
-| **Base Operating System** | Ubuntu 22.04 LTS (`x86_64`) | Official Docker Hub |
-| **Rust Toolchain** | `1.78.0` | `rustup toolchain install 1.78.0` |
-| **RISC0 Toolchain (`rzup`)** | `1.0.5` | `rzup install cargo-risczero 1.0.5` |
-| **LLVM / C++ Compiler** | `clang-14` / `libc++` | RISC0 toolchain bundle |
-| **Source Date Epoch** | `1700000000` | Deterministic timestamp header |
-
----
-
-## 3. Reproducible Build Execution
-
-### Method A: Docker Container Build (Recommended)
-
-Docker isolates host filesystem differences, timestamps, and environment variations:
+[`docker/Dockerfile.guest`](../docker/Dockerfile.guest) pins `Ubuntu 22.04`, `RUST_VERSION=1.88.0`, `SOURCE_DATE_EPOCH=1700000000`, `cargo-risczero 1.2.6`, and `rzup install cpp`:
 
 ```bash
-# Clone the repository
-git clone https://github.com/mosoo-xyz/lez-mosoo.git
-cd lez-mosoo
-
-# Execute deterministic build container
+# Containerized deterministic build
 docker build -t mosoo-guest-builder -f docker/Dockerfile.guest .
 
-# Verify the emitted SHA-256 matches canonical digest
-docker run --rm mosoo-guest-builder
+CONTAINER_ID=$(docker create mosoo-guest-builder)
+mkdir -p target/zkvm-elf
+docker cp "${CONTAINER_ID}:/out/mosoo-guest" target/zkvm-elf/mosoo-guest
+docker cp "${CONTAINER_ID}:/out/mosoo-guest.sha256" target/zkvm-elf/mosoo-guest.sha256
+docker rm "${CONTAINER_ID}"
+
+cat target/zkvm-elf/mosoo-guest.sha256
+sha256sum target/zkvm-elf/mosoo-guest
 ```
 
-### Method B: Native Toolchain Build
+Host-based Linux/macOS/WSL2 ELF build (without Docker):
 
 ```bash
-# Compile the guest binary in release mode
-cargo build -p mosoo-guest --release
-
-# Calculate sha256 checksum (Windows PowerShell)
-Get-FileHash -Algorithm SHA256 target/release/mosoo-guest.exe
-
-# Or Linux/macOS
-sha256sum target/release/mosoo-guest
-```
-
-The measured SHA-256 checksum of the compiled release artifact is:
-`01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c` (File size: 103,424 bytes).
-
----
-
-## 4. Verification in Consumer Contracts
-
-Consumers verify that incoming `VerifiedStatement` receipts were generated by this exact binary by checking:
-
-```rust
-use mosoo_core::types::VerifiedStatement;
-
-pub const COMMITTED_MOSOO_IMAGE_ID: [u8; 32] = [
-    0x7a, 0x9f, 0x14, 0x5e, 0x82, 0xc1, 0x4d, 0x33,
-    0xb8, 0x47, 0x22, 0x6e, 0x90, 0x15, 0x3d, 0xfa,
-    0x88, 0x01, 0xbe, 0x4f, 0x5c, 0x31, 0x87, 0x26,
-    0xaa, 0xc9, 0x04, 0x73, 0x51, 0x2e, 0xd8, 0xb4,
-];
-
-pub fn verify_statement_provenance(receipt_image_id: &[u8; 32]) -> bool {
-    receipt_image_id == &COMMITTED_MOSOO_IMAGE_ID
-}
+curl -L https://risczero.com/install | bash
+rzup install cargo-risczero 1.2.6
+rzup install cpp
+cargo risczero build --manifest-path methods/guest/Cargo.toml --release
+sha256sum target/riscv32im-risc0-zkvm-elf/release/mosoo-guest
 ```
 
 ---
 
-## 5. Engineering Notes & Troubleshooting (Gotchas)
+## 4. Running Workspace & Verification Suites
 
-During cross-compilation and live RPC verification, the following quirks were documented:
+```bash
+cargo check --workspace
+cargo test --workspace
+forge test -vvv
+cargo clippy --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo audit --ignore RUSTSEC-2026-0387 --ignore RUSTSEC-2025-0055
 
-1. **RISC0 Toolchain Path Resolution (`rzup`):**
-   - When building inside minimal CI runners or non-interactive shells, `rzup` installs binaries to `~/.rzup/bin` and `~/.risc0/bin`. Ensure `$HOME/.risc0/bin` is added to `$PATH`, or `cargo-risczero` will fail to resolve the C compiler bundle for `riscv32im-risc0-zkvm-elf`.
-2. **Sepolia Public RPC Receipt Pruning:**
-   - Free community Sepolia nodes (`ethereum-sepolia-rpc.publicnode.com`) aggressively prune non-recent transaction receipts. When verifying older deposit receipts (> 128 blocks), `eth_getTransactionReceipt` may return `null` or `0x0`. The project defaults to Tenderly's public gateway (`https://gateway.tenderly.co/public/sepolia`) which preserves full archival receipts.
-3. **zkVM Memory Bounds (`SEGMENT_PO2 = 18`):**
-   - Proving with default segment power (`SEGMENT_PO2 = 20`) causes host RAM spikes above 20 GB on multi-threaded machines. Setting `SEGMENT_PO2 = 18` restricts resident memory to < 12 GB, avoiding swap thrashing on 16GB developer laptops.
+python3 scripts/verify-evidence.py
+python3 scripts/test-evidence-mutation.py
+python3 scripts/verify-mosoo-lez.py --allow-offline
+python3 scripts/testnet-two-way-bridge.py --mode live
+```
+
+Or run the bundled runner: `./scripts/verify_all.sh` (Linux/macOS) or `.\scripts\verify_all.ps1` (Windows).
+
+---
+
+## 5. Operational Notes
+
+- **RISC0 C++ Cross-Compiler (`blst`):** Ensure `$HOME/.risc0/bin` is on `$PATH` in CI/non-interactive shells so `cargo-risczero` finds its C toolchain.
+- **Sepolia RPC Receipt Pruning:** Public Ethereum Sepolia endpoints prune historical receipts inconsistently across nodes. When running `scripts/testnet-two-way-bridge.py --mode live` or fetching historical blocks, use `--eth-rpc` with an archive-capable RPC or a fallback from `SEPOLIA_RPCS`.

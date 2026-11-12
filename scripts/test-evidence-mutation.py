@@ -56,7 +56,7 @@ def main():
         (
             "Mutation 1: Tampered Transaction Hash (Byte Corruption)",
             lambda text: text.replace("0xfb524c5c5c61a32c", "0xdeadbeefdeadbeef"),
-            "Hash NOT reproduced in test output"
+            "NOT verified in test output"
         ),
         (
             "Mutation 2: Gas Limit Violation (> 10,000,000 Gas Cap)",
@@ -66,7 +66,7 @@ def main():
         (
             "Mutation 3: Inverted Safety Verdict (False Applied Status)",
             lambda text: text.replace("replay_erc20_claim\trefused\tAlreadyClaimed", "replay_erc20_claim\tapplied\tAlreadyClaimed"),
-            "NOT reproduced in test output"
+            "Unknown or unauthorized transaction action label"
         ),
         (
             "Mutation 4: Fabricated Rejection Reason",
@@ -76,17 +76,17 @@ def main():
         (
             "Mutation 5: Fabricated Unknown Label",
             lambda text: text.replace("attest_state\tapplied", "malicious_unauth_call\tapplied"),
-            "NOT reproduced in test output"
+            "Unknown or unauthorized transaction action label"
         ),
         (
             "Mutation 6: Corrupted Zeroed Transaction Hash",
             lambda text: text.replace("0x1626ff854cdbb1b3", "0x0000000000000000"),
-            "NOT reproduced in test output"
+            "NOT verified in test output"
         ),
         (
             "Mutation 7: Sub-threshold Quorum Safety Inversion",
             lambda text: text.replace("sub_threshold_quorum\trefused\tInsufficientParticipation", "sub_threshold_quorum\tapplied\tSuccess"),
-            "NOT reproduced in test output"
+            "Unknown or unauthorized transaction action label"
         ),
     ]
 
@@ -105,12 +105,12 @@ def main():
             m_code, m_out, m_err = run_verifier_on_manifest(temp_manifest, repo_root)
             combined_out = m_out + "\n" + m_err
 
-            if m_code != 0:
+            if m_code != 0 and expected_err_substr.lower() in combined_out.lower():
                 print(f"  [PASS] {title}")
-                print(f"         Verifier strictly failed-closed with exit code {m_code}")
+                print(f"         Rejected with exit code {m_code} ({expected_err_substr})")
             else:
                 print(f"  [FAIL] {title}")
-                print(f"         Verifier unexpectedly accepted mutated manifest!")
+                print(f"         Unexpected acceptance or missing rejection reason (code={m_code})")
                 all_passed = False
         finally:
             if os.path.exists(temp_manifest):
@@ -118,9 +118,8 @@ def main():
 
     print("\n" + "=" * 80)
     if all_passed:
-        print("[+] All 7 mutation scenarios successfully caught and rejected by verifier.")
-        print("[+] Verifier is 100% fail-closed and immune to manifest tampering.")
-        print("[+] Status: PASS (0 vulnerabilities detected)")
+        print("[+] All 7 mutation scenarios rejected by verify-evidence.py.")
+        print("[+] Status: PASS")
         print("=" * 80)
     else:
         print("[!] One or more mutation tests failed!")

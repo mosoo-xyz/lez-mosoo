@@ -1,0 +1,50 @@
+==================================================================================
+MOSOO OWN LEZ v0.3.1 LIVE TESTNET VERIFICATION
+Program ID : Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg (mosoo_lc / mosoo-core)
+Image ID   : 961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0
+Target RPC : https://testnet.lez.logos.co (TLS Strict)
+==================================================================================
+
+--- [1/5] Sequencer Health & Distinct Program Identity ---
+  [PASS] Sequencer live height = 81412
+  [PASS] Gas caps match LEZ spec (exec=10,000,000, stor=1,000,000)
+  [PASS] Distinct from external reference sextant_lc (DQprfeSk1wPC...)
+
+--- [2/5] Local Artifact & Binary Determinism ---
+  [PASS] mosoo_lc.bin verified (601,892 bytes, sha256=0fc6ce723be2c507...)
+  [PASS] mosoo_lc.image_id.json matches deployed manifest (961a7e12973295f5...)
+
+--- [3/5] On-Chain ProgramHeader & 6-Segment Linked Chain ---
+  [PASS] ProgramHeader immutable=1, ImageID committed, mined in block 81148
+  [PASS] Segment[0] 9X1hF5tUia6c... (98,304B code, blk=81147, next=6UBAq65B...)
+  [PASS] Segment[1] 6UBAq65BjXSJ... (98,304B code, blk=81146, next=Ji3hDgfb...)
+  [PASS] Segment[2] Ji3hDgfbLgkB... (98,304B code, blk=81145, next=BJRPojpu...)
+  [PASS] Segment[3] BJRPojpue2Rb... (98,304B code, blk=81144, next=6FkoVKKB...)
+  [PASS] Segment[4] 6FkoVKKBfkvW... (98,304B code, blk=81143, next=CrTgQoTP...)
+  [PASS] Segment[5] CrTgQoTPYP1Z... (77,948B code, blk=81142, next=None)
+  [PASS] Reconstructed on-chain ELF (569,468B) bit-exact matches local mosoo_lc.bin
+
+--- [4/5] Live 9-Step Lifecycle & TSV Manifest Reconciliation ---
+  [PASS] run.tsv rows (9) == lifecycle_manifest steps (9)
+  [PASS] Init: blk=81154, outcome=applied, fee=7,631,440 lepta
+  [PASS] Begin: blk=81155, outcome=applied, fee=20,702,816 lepta
+  [PASS] Miller: blk=81156, outcome=applied, fee=36,547,544 lepta
+  [PASS] Finish: blk=81157, outcome=applied, fee=29,653,408 lepta
+  [PASS] Attest_WETH_Balance: blk=81158, outcome=applied, fee=1,867,592 lepta
+  [PASS] Attest_WETH_Storage: blk=81159, outcome=applied, fee=2,960,912 lepta
+  [PASS] Attest_USDC_Transfer_Confidential: blk=81160, outcome=applied, fee=1,740,648 lepta
+  [PASS] Refusal_Attest_Wrong_Chain: blk=81162, outcome=reverted_in_block, fee=1,794,552 lepta
+  [PASS] Refusal_Attest_Unknown_Slot: blk=81163, outcome=reverted_in_block, fee=1,794,552 lepta
+  [PASS] Lifecycle totals: 7 applied + 2 refused, total_fee=104,693,464 lepta
+
+--- [5/5] On-Chain PDA State Decoding vs Mainnet #26392691 Vector ---
+  [PASS] All 4 LEE v0.2 PDAs match deterministic SHA-256 derivations
+  [PASS] Live MosooInstance (324B) matches Mainnet block #26392691 (0x5f9597a4bbcc...)
+  [PASS] Live HeaderRecords decoded (init slot 15632288, fin slot 15632352)
+  [PASS] Closed JobAccount PDA (92x4rxU2z7uK...) is empty after Finish
+  [PASS] Unknown-slot HeaderRecord PDA (slot 15632353) stayed empty after Refusal
+  [PASS] Sanity negative check: zero tx hash resolves to None
+
+==================================================================================
+MOSOO LIVE VERIFICATION: 30 PASSED, 0 FAILED
+==================================================================================

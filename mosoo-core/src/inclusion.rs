@@ -36,7 +36,7 @@ impl VerifiedValue {
     /// pads left with zeros.
     /// For variable-length event data > 32 bytes (dynamic strings, byte arrays, complex structs),
     /// computes a domain-separated Keccak-256 hash `keccak256("MOSOO_EVENT_PAYLOAD_HASH:" || data)`
-    /// to guarantee collision-free and truncation-free predicate binding (P1 Security).
+    /// to guarantee collision-free and truncation-free predicate binding.
     pub fn as_bytes32(&self) -> [u8; 32] {
         match self {
             VerifiedValue::EthBalance(v) => v.to_be_bytes(),
@@ -99,6 +99,16 @@ pub enum ProofTarget {
         token_contract: Address,
         sender: Address,
         recipient: [u8; 32],
+    },
+    /// Prove an RFP-022 shielded deposit commitment emitted by MosooLocker:
+    /// DepositCommitted(bytes32 indexed commitment, address indexed token, uint256 amount, uint32 indexed leafIndex, bytes32 newRoot, uint64 nonce)
+    ShieldedCommitmentDeposit {
+        tx_index: u64,
+        log_index: usize,
+        deposit_contract: Address,
+        /// `Address::ZERO` for shielded native ETH deposit; non-zero ERC-20 address otherwise.
+        token_contract: Address,
+        commitment: B256,
     },
 }
 
@@ -315,7 +325,7 @@ pub fn verify_state_proof(
             }
 
             let from_topic = verified_log.topics[1];
-            // Enforce canonical ABI indexed address encoding with 12 leading zero bytes (Finding 5 / Medium #1)
+            // Enforce canonical ABI indexed address encoding with 12 leading zero bytes.
             if from_topic.0[0..12] != [0u8; 12] || &from_topic.0[12..32] != sender.as_slice() {
                 return Err(MosooError::Internal(
                     "sender address mismatch or non-canonical 12-zero topic padding in Deposit log"
@@ -326,7 +336,7 @@ pub fn verify_state_proof(
             let to_topic = verified_log.topics[2];
             if sig == deposit_eth_canonical_topic0 || sig == deposit_topic0_bytes32 {
                 // Canonical DepositETH(address,bytes32,uint256,uint64) and Deposit(address,bytes32,uint256):
-                // Enforce strict exact 32-byte equality (Finding 2 / P1).
+                // Enforce exact 32-byte equality.
                 if to_topic.0 != *recipient {
                     return Err(MosooError::RecipientMismatch);
                 }
@@ -410,6 +420,56 @@ pub fn verify_state_proof(
             }
             // data is abi.encode(amount, nonce): first 32 bytes is amount
             Ok(VerifiedValue::LogData(verified_log.data[..32].to_vec()))
+        }
+        ProofTarget::ShieldedCommitmentDeposit {
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            commitment,
+        } => {
+            if *commitment == B256::ZERO {
+                return Err(MosooError::Internal(
+                    "shielded commitment cannot be zero".into(),
+                ));
+            }
+            let deposit_committed_topic0 = B256::from(alloy_primitives::keccak256(
+                b"DepositCommitted(bytes32,address,uint256,uint32,bytes32,uint64)",
+            ));
+            let r_proof = ReceiptLogProof {
+                tx_index: *tx_index,
+                log_index: *log_index,
+                expected_emitter: Some(*deposit_contract),
+                expected_topic0: Some(deposit_committed_topic0),
+                receipt_proof: proof.receipt_proof.clone().ok_or_else(|| {
+                    MosooError::Internal(
+                        "receipt_proof required for ShieldedCommitmentDeposit proof".into(),
+                    )
+                })?,
+                receipt_rlp: proof.receipt_value.clone().ok_or_else(|| {
+                    MosooError::Internal(
+                        "receipt_value required for ShieldedCommitmentDeposit proof".into(),
+                    )
+                })?,
+            };
+            let verified_log = verify_receipt_log_proof(&r_proof, header)?;
+            let (decoded_commitment, decoded_token, amount, _leaf_index, _new_root, _nonce) =
+                decode_deposit_committed_log(&verified_log)?;
+            if decoded_commitment != *commitment {
+                return Err(MosooError::EventTopicMismatch {
+                    index: 1,
+                    expected: format!("{commitment:?}"),
+                    actual: format!("{decoded_commitment:?}"),
+                });
+            }
+            if decoded_token != *token_contract {
+                return Err(MosooError::EventTopicMismatch {
+                    index: 2,
+                    expected: format!("{token_contract:?}"),
+                    actual: format!("{decoded_token:?}"),
+                });
+            }
+            Ok(VerifiedValue::LogData(amount.to_be_bytes::<32>().to_vec()))
         }
     }
 }
@@ -605,7 +665,7 @@ pub fn decode_deposit_eth_log(
         });
     };
 
-    // Enforce canonical ABI indexed address encoding with 12 leading zero bytes (Finding 5)
+    // Enforce canonical ABI indexed address encoding with 12 leading zero bytes.
     if log.topics[1].0[0..12] != [0u8; 12] {
         return Err(MosooError::Internal(
             "sender address topic in Deposit log must have canonical 12 leading zero bytes".into(),
@@ -684,6 +744,118 @@ pub fn decode_deposit_erc20_log(
     let nonce = u64::from_be_bytes(nonce_buf);
 
     Ok((token, sender, recipient, amount, nonce))
+}
+
+/// Decodes a verified RFP-022 `DepositCommitted` event log emitted by `MosooLocker.sol`.
+///
+/// Event signature:
+/// `DepositCommitted(bytes32 indexed commitment, address indexed token, uint256 amount, uint32 indexed leafIndex, bytes32 newRoot, uint64 nonce)`
+///
+/// Returns `(commitment, token, amount, leaf_index, new_root, nonce)`.
+pub fn decode_deposit_committed_log(
+    log: &VerifiedLog,
+) -> Result<(B256, Address, U256, u32, B256, u64), MosooError> {
+    let deposit_committed_topic0 = B256::from(alloy_primitives::keccak256(
+        b"DepositCommitted(bytes32,address,uint256,uint32,bytes32,uint64)",
+    ));
+
+    if log.topics.len() != 4 {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "DepositCommitted log must have exactly 4 topics (sig, commitment, token, leafIndex), got {}",
+            log.topics.len()
+        )));
+    }
+    if log.topics[0] != deposit_committed_topic0 {
+        return Err(MosooError::EventTopicMismatch {
+            index: 0,
+            expected: format!("{deposit_committed_topic0:?}"),
+            actual: format!("{:?}", log.topics[0]),
+        });
+    }
+
+    let commitment = log.topics[1];
+    if commitment == B256::ZERO {
+        return Err(MosooError::Internal(
+            "DepositCommitted commitment topic cannot be zero".into(),
+        ));
+    }
+
+    // Enforce canonical ABI indexed address encoding with 12 leading zero bytes
+    if log.topics[2].0[0..12] != [0u8; 12] {
+        return Err(MosooError::Internal(
+            "token contract topic in DepositCommitted log must have canonical 12 leading zero bytes"
+                .into(),
+        ));
+    }
+    let token = Address::from_slice(&log.topics[2].0[12..32]);
+
+    // Enforce canonical ABI indexed uint32 encoding with 28 leading zero bytes
+    if log.topics[3].0[0..28] != [0u8; 28] {
+        return Err(MosooError::Internal(
+            "leafIndex topic in DepositCommitted log must have canonical 28 leading zero bytes"
+                .into(),
+        ));
+    }
+    let mut leaf_buf = [0u8; 4];
+    leaf_buf.copy_from_slice(&log.topics[3].0[28..32]);
+    let leaf_index = u32::from_be_bytes(leaf_buf);
+
+    if log.data.len() != 96 {
+        return Err(MosooError::Internal(format!(
+            "DepositCommitted log data must be exactly 96 bytes (abi.encode(amount, newRoot, nonce)), got {}",
+            log.data.len()
+        )));
+    }
+    let mut amount_bytes = [0u8; 32];
+    amount_bytes.copy_from_slice(&log.data[0..32]);
+    let amount = U256::from_be_bytes(amount_bytes);
+    if amount.is_zero() {
+        return Err(MosooError::Internal(
+            "DepositCommitted amount cannot be zero".into(),
+        ));
+    }
+
+    let new_root = B256::from_slice(&log.data[32..64]);
+    if new_root == B256::ZERO {
+        return Err(MosooError::Internal(
+            "DepositCommitted newRoot cannot be zero".into(),
+        ));
+    }
+
+    // Enforce canonical uint64 ABI left-padding (24 leading zero bytes)
+    if log.data[64..88] != [0u8; 24] {
+        return Err(MosooError::Internal(
+            "DepositCommitted nonce ABI word must have 24 leading zero bytes".into(),
+        ));
+    }
+    let mut nonce_buf = [0u8; 8];
+    nonce_buf.copy_from_slice(&log.data[88..96]);
+    let nonce = u64::from_be_bytes(nonce_buf);
+
+    Ok((commitment, token, amount, leaf_index, new_root, nonce))
+}
+
+/// Decodes `DepositCommitted` metadata from an already trie-verified `StateProof`.
+pub fn decode_deposit_committed_from_proof(
+    proof: &StateProof,
+    tx_index: u64,
+    log_index: usize,
+    deposit_contract: Address,
+) -> Result<(B256, Address, U256, u32, B256, u64), MosooError> {
+    let deposit_committed_topic0 = B256::from(alloy_primitives::keccak256(
+        b"DepositCommitted(bytes32,address,uint256,uint32,bytes32,uint64)",
+    ));
+    let receipt_bytes = proof.receipt_value.as_ref().ok_or_else(|| {
+        MosooError::Internal("receipt_value required for ShieldedCommitmentDeposit proof".into())
+    })?;
+    let verified_log = decode_and_validate_receipt(
+        receipt_bytes,
+        tx_index,
+        log_index,
+        Some(deposit_contract),
+        Some(deposit_committed_topic0),
+    )?;
+    decode_deposit_committed_log(&verified_log)
 }
 
 /// Parse an RLP list into the byte slices of its child items.
@@ -1628,6 +1800,112 @@ pub mod test_helpers {
         let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
         (receipts_root, proof_nodes, receipt_rlp)
     }
+
+    /// Construct a valid EIP-1559 receipt (type 0x02) containing the RFP-022 `DepositCommitted` log:
+    /// `DepositCommitted(bytes32 indexed commitment, address indexed token, uint256 amount, uint32 indexed leafIndex, bytes32 newRoot, uint64 nonce)`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_test_eip1559_deposit_committed_receipt(
+        deposit_contract: Address,
+        commitment: B256,
+        token: Address,
+        amount: U256,
+        leaf_index: u32,
+        new_root: B256,
+        nonce: u64,
+    ) -> Vec<u8> {
+        let sig = keccak256("DepositCommitted(bytes32,address,uint256,uint32,bytes32,uint64)");
+        let topic1 = commitment;
+        let topic2 = B256::left_padding_from(token.as_slice());
+        let topic3 = B256::left_padding_from(&leaf_index.to_be_bytes());
+
+        let mut topics_payload = Vec::new();
+        topics_payload.extend_from_slice(&alloy_rlp::encode(sig.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic1.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic2.0));
+        topics_payload.extend_from_slice(&alloy_rlp::encode(topic3.0));
+        let mut topics_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: topics_payload.len(),
+        }
+        .encode(&mut topics_rlp);
+        topics_rlp.extend_from_slice(&topics_payload);
+
+        // Data: abi.encode(amount, newRoot, nonce) -> 96 bytes
+        let mut data_bytes = [0u8; 96];
+        data_bytes[0..32].copy_from_slice(&amount.to_be_bytes::<32>());
+        data_bytes[32..64].copy_from_slice(&new_root.0);
+        data_bytes[88..96].copy_from_slice(&nonce.to_be_bytes());
+        let data_rlp = alloy_rlp::encode(&data_bytes[..]);
+
+        let mut log_payload = Vec::new();
+        log_payload.extend_from_slice(&alloy_rlp::encode(deposit_contract.as_slice()));
+        log_payload.extend_from_slice(&topics_rlp);
+        log_payload.extend_from_slice(&data_rlp);
+        let mut log_rlp = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_payload.len(),
+        }
+        .encode(&mut log_rlp);
+        log_rlp.extend_from_slice(&log_payload);
+
+        let mut logs_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: log_rlp.len(),
+        }
+        .encode(&mut logs_list);
+        logs_list.extend_from_slice(&log_rlp);
+
+        let status_rlp = alloy_rlp::encode(1u8);
+        let gas_rlp = alloy_rlp::encode(50000u64);
+        let bloom_bytes = [0u8; 256];
+        let bloom_rlp = alloy_rlp::encode(&bloom_bytes[..]);
+
+        let mut receipt_payload = Vec::new();
+        receipt_payload.extend_from_slice(&status_rlp);
+        receipt_payload.extend_from_slice(&gas_rlp);
+        receipt_payload.extend_from_slice(&bloom_rlp);
+        receipt_payload.extend_from_slice(&logs_list);
+
+        let mut receipt_list = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: receipt_payload.len(),
+        }
+        .encode(&mut receipt_list);
+        receipt_list.extend_from_slice(&receipt_payload);
+
+        let mut full_receipt = vec![0x02u8];
+        full_receipt.extend_from_slice(&receipt_list);
+        full_receipt
+    }
+
+    /// Construct a complete MPT receipt proof for RFP-022 `DepositCommitted`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_test_deposit_committed_proof(
+        deposit_contract: Address,
+        commitment: B256,
+        token: Address,
+        amount: U256,
+        leaf_index: u32,
+        new_root: B256,
+        nonce: u64,
+    ) -> (B256, Vec<Bytes>, Vec<u8>) {
+        let receipt_rlp = build_test_eip1559_deposit_committed_receipt(
+            deposit_contract,
+            commitment,
+            token,
+            amount,
+            leaf_index,
+            new_root,
+            nonce,
+        );
+        let key_bytes = alloy_rlp::encode(0u64);
+        let (receipts_root, proof_nodes) = build_leaf_mpt_proof(&key_bytes, &receipt_rlp);
+        (receipts_root, proof_nodes, receipt_rlp)
+    }
 }
 
 #[cfg(test)]
@@ -2276,5 +2554,105 @@ mod tests {
         assert_eq!(dec_rec, recipient);
         assert_eq!(dec_amt, U256::from(42u64));
         assert_eq!(dec_nonce, 9u64);
+    }
+
+    #[test]
+    fn test_shielded_deposit_committed_mpt_inclusion_and_fail_closed_checks() {
+        let deposit_contract = Address::repeat_byte(0x42);
+        let token = Address::ZERO; // Shielded ETH deposit
+        let commitment = B256::repeat_byte(0xab);
+        let amount = U256::from(1_000_000_000_000_000_000u128);
+        let leaf_index = 7u32;
+        let new_root = B256::repeat_byte(0xcd);
+        let nonce = 3u64;
+
+        let (receipts_root, proof_nodes, receipt_rlp) = build_test_deposit_committed_proof(
+            deposit_contract,
+            commitment,
+            token,
+            amount,
+            leaf_index,
+            new_root,
+            nonce,
+        );
+
+        let header = HeaderRecord {
+            chain_id: 11_155_111,
+            slot: 10_000_000,
+            beacon_block_root: [0x55; 32],
+            execution_block_hash: [0x66; 32],
+            execution_state_root: [0x77; 32],
+            receipts_root: receipts_root.0,
+        };
+
+        let valid_proof = StateProof {
+            target: ProofTarget::ShieldedCommitmentDeposit {
+                tx_index: 0,
+                log_index: 0,
+                deposit_contract,
+                token_contract: token,
+                commitment,
+            },
+            account_proof: vec![],
+            storage_proof: None,
+            receipt_proof: Some(proof_nodes.clone()),
+            account_value: None,
+            storage_value: None,
+            receipt_value: Some(receipt_rlp.clone()),
+        };
+
+        let verified = verify_state_proof(&valid_proof, &header)
+            .expect("Shielded DepositCommitted proof MUST verify");
+        assert_eq!(
+            verified,
+            VerifiedValue::LogData(amount.to_be_bytes::<32>().to_vec())
+        );
+
+        // Wrong commitment target rejects fail-closed
+        let mut wrong_commitment_proof = valid_proof.clone();
+        wrong_commitment_proof.target = ProofTarget::ShieldedCommitmentDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            token_contract: token,
+            commitment: B256::repeat_byte(0xfe),
+        };
+        assert!(matches!(
+            verify_state_proof(&wrong_commitment_proof, &header),
+            Err(MosooError::EventTopicMismatch { index: 1, .. })
+        ));
+
+        // Zero commitment rejected
+        let mut zero_commitment_proof = valid_proof;
+        zero_commitment_proof.target = ProofTarget::ShieldedCommitmentDeposit {
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract,
+            token_contract: token,
+            commitment: B256::ZERO,
+        };
+        assert!(matches!(
+            verify_state_proof(&zero_commitment_proof, &header),
+            Err(MosooError::Internal(_))
+        ));
+
+        // Malformed DepositCommitted data (truncated) rejected
+        let sig = keccak256("DepositCommitted(bytes32,address,uint256,uint32,bytes32,uint64)");
+        let malformed_log = VerifiedLog {
+            emitter: deposit_contract,
+            topics: vec![
+                sig,
+                commitment,
+                B256::left_padding_from(token.as_slice()),
+                B256::left_padding_from(&leaf_index.to_be_bytes()),
+            ],
+            data: vec![0u8; 64],
+            tx_index: 0,
+            log_index: 0,
+        };
+        assert!(matches!(
+            decode_deposit_committed_log(&malformed_log),
+            Err(MosooError::Internal(_))
+        ));
     }
 }

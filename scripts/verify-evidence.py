@@ -10,9 +10,9 @@ Scope & Audit Boundaries:
       gas limits (< 10M cap), and adversarial mutation rejections within the deterministic
       LEZ v0.4 in-memory sequencer harness.
     - Live on-chain public testnet verification against the active Logos Execution Zone testnet
-      (testnet.lez.logos.co, v0.3.1) and Ethereum Sepolia (MosooLocker.sol) is provided in
-      `scripts/verify-onchain.py` and `scripts/testnet-two-way-bridge.py --mode live` with traces
-      committed in `evidence/public-testnet-v03/`.
+      (testnet.lez.logos.co, v0.3.1 `mosoo_lc`) and Ethereum Sepolia (`MosooLocker.sol`) is provided in
+      `scripts/verify-mosoo-lez.py` and `scripts/testnet-two-way-bridge.py --mode live` with traces
+      committed in `evidence/mosoo-testnet-v03/`.
     - Public testnet deployment migration to the LEZ v0.4 devnet will occur upon
       official release of the v0.4 devnet by Logos Core.
     - All checks are STRICT: Any missing transaction hash or unreproduced safety rejection
@@ -52,9 +52,9 @@ def main():
             sys.exit(1)
 
     print("=" * 80)
-    print("Mosoo Sequencer Harness Verifier")
-    print("Specification: LEZ v0.4 Conformance | Execution Mode: Deterministic Verification")
-    print("Live Testnet: For active LEZ v0.3.1 & Sepolia traces, see scripts/verify-onchain.py")
+    print("Mosoo Offline Sequencer Harness Verifier")
+    print("Target Spec: LEZ v0.4-Target Conformance | Mode: Offline Deterministic Harness")
+    print("Note: Public LEZ v0.4 testnet is unreleased; live v0.3.1 verification lives in scripts/verify-mosoo-lez.py")
     print("=" * 80)
     print(f"Manifest File: {manifest_path}")
 

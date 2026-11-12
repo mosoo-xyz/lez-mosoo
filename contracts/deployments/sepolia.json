@@ -1,35 +1,64 @@
 {
   "contractName": "MosooLocker",
+  "version": "v2",
   "network": "sepolia",
   "chainId": "11155111",
-  "address": "0x74625D146B8d9413F3c3976B323d94A739be7856",
+  "address": "0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b",
   "deployer": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
   "attesterAuthority": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
-  "initialQuorum": 1,
-  "initialAttesterCount": 1,
-  "transactionHash": "0x1b492d89631c7fb398008285e777781d95f48c1a07c9d6ca2d6be5459941b28b",
-  "blockNumber": 11989329,
-  "gasUsed": "22000376",
-  "deployedAt": "2026-10-25T07:16:17.607Z",
+  "guardian": "0x528605F78c650Cf4d84705e3dB85db37b4de30a0",
+  "additionalAttesters": [
+    "0x9acFB1b95E270ecb4b0E4b5C4016aA84f939a858"
+  ],
+  "isCommissioned": true,
+  "requiredQuorum": 2,
+  "attesterCount": 2,
+  "strictFixedDenominationMode": true,
+  "transactionHash": "0xa13c8e1df8018335fdcb957d1ba257ccf32264c4ffe1cea32b319f2ae627a999",
+  "blockNumber": 12113191,
+  "gasUsed": "40441728",
+  "deployedAt": "2026-11-11T17:26:15.723Z",
   "rpcUsed": "https://ethereum-sepolia-rpc.publicnode.com",
-  "canonicalDeposit": {
-    "transactionHash": "0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882",
-    "blockNumber": 11990019,
-    "amountWei": "5000000000000000",
-    "amountEth": "0.005",
-    "depositor": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
-    "lezRecipient": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "nonce": 1
+  "commissionTransaction": {
+    "transactionHash": "0x8ceaa4ccb67047a1be022f7e46b0c2db518dc62522a84bab2d99be24c27e09f5",
+    "blockNumber": 12113196,
+    "gasUsed": "157836"
   },
-  "liveAttestationDeposit": {
-    "transactionHash": "0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913",
-    "blockNumber": 12082214,
+  "strictModeTransaction": {
+    "transactionHash": "0x3cec009c3348d7d7c47094106dfeb868a8ae111db53b555f76edd5ecd5a3e1e2",
+    "blockNumber": 12113198,
+    "gasUsed": "129282"
+  },
+  "canonicalDeposit": {
+    "event": "DepositCommitted",
+    "transactionHash": "0xe017525b987833b91a943196fbc4d81316282f1b2710f43da348f19daaf88c19",
+    "blockNumber": 12113199,
+    "gasUsed": "652998",
+    "commitment": "0xb8a5118c210b1e9e1bd377c7d02407629aa273b3459ee459039d71e0210d78ec",
     "amountWei": "10000000000000000",
     "amountEth": "0.01",
-    "depositor": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
-    "lezRecipient": "0x3c6241644a263062423834f9cd926912cae9c6ebfb5eea85633c52bcbfcbe8c6",
-    "nonce": 2,
-    "gasUsed": "53682"
+    "leafIndex": 1,
+    "newRoot": "0x8ad6258c24f7ef2a099b9163b47cef96f28375357e0aa271eb2481dd385ec1fe",
+    "nonce": 2
   },
-  "notes": "Testnet contract initialized with 1-of-1 attester authority for pipeline verification. Supports on-chain addAttester and setQuorum for M-of-N multisig transition."
+  "liveShieldedRoundtrip": {
+    "depositTxHash": "0x7f50577dec30a32f407ac0715110b3c08a1b1fae4fcae0e58a133fe589527614",
+    "depositBlockNumber": 12113195,
+    "depositCommitment": "0x24b5b361959d8520eed92e630a0505b71737796b5191cd0cdec9e1653656c517",
+    "depositLeafIndex": 0,
+    "depositAmountEth": "0.005",
+    "unlockTxHash": "0x390fe18c1df4c29cbe7ec6779b201fe91f0ecbafbf128cb7dd51d94551511e33",
+    "unlockBlockNumber": 12113197,
+    "burnNullifier": "0xc2b225df38aba7ffcb11f3f808110e03c7847cdb6414596bba09c3f3d98411bb",
+    "sourceInstance": "0x984a6b2e81c318492c2c0abd211dfbbb641a3e71a5b27fcf806732ad55861912",
+    "unlockQuorum": "2-of-2"
+  },
+  "previousV1Deployment": {
+    "address": "0x74625D146B8d9413F3c3976B323d94A739be7856",
+    "transactionHash": "0x1b492d89631c7fb398008285e777781d95f48c1a07c9d6ca2d6be5459941b28b",
+    "blockNumber": 11989329,
+    "deposit1Tx": "0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882",
+    "deposit3Tx": "0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913"
+  },
+  "notes": "Live commissioned MosooLocker v2 on Ethereum Sepolia with 2-of-2 EIP-712 quorum, strict fixed denomination mode, and verified DepositCommitted + UnlockedShieldedETH transactions."
 }

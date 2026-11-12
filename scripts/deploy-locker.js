@@ -64,7 +64,10 @@ async function getProvider(network, explicitRpc) {
   
   for (const rpcUrl of candidateRpcs) {
     try {
-      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const req = new ethers.FetchRequest(rpcUrl);
+      req.setHeader('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+      const targetChainId = network === 'mainnet' ? 1 : (network === 'holesky' ? 17000 : 11155111);
+      const provider = new ethers.JsonRpcProvider(req, targetChainId, { staticNetwork: true });
       const net = await provider.getNetwork();
       console.log(`Connected to RPC: ${rpcUrl} (Chain ID: ${net.chainId})`);
       return provider;
@@ -114,7 +117,11 @@ async function main() {
   console.log(`Deployer Address    : ${deployerAddress}`);
   console.log(`Attester Authority  : ${attesterAuthority}`);
   const guardianAddress = options.guardian || ethers.ZeroAddress;
-  console.log(`Guardian Address    : ${guardianAddress === ethers.ZeroAddress ? 'Deployer (default)' : guardianAddress}`);
+  if (guardianAddress === ethers.ZeroAddress || guardianAddress.toLowerCase() === deployerAddress.toLowerCase()) {
+    console.error('Error: A valid non-zero --guardian (or GUARDIAN_ADDRESS) distinct from the deployer is required by MosooLocker.sol (GuardianMustNotBeOwner / InvalidGuardian).');
+    process.exit(1);
+  }
+  console.log(`Guardian Address    : ${guardianAddress}`);
 
   const balance = await provider.getBalance(deployerAddress);
   console.log(`Deployer Balance    : ${ethers.formatEther(balance)} ETH`);

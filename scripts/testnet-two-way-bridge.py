@@ -22,8 +22,10 @@ Usage:
 import os
 import sys
 import json
+import time
 import argparse
 import urllib.request
+import urllib.error
 import ssl
 
 DEFAULT_RPC = "https://testnet.lez.logos.co"
@@ -102,16 +104,23 @@ def call_rpc(rpc_url: str, method: str, params: list):
         "method": method,
         "params": params
     }).encode("utf-8")
-    req = urllib.request.Request(
-        rpc_url,
-        data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "Mosoo-Bridge/1.0"}
-    )
-    with urllib.request.urlopen(req, timeout=10, context=ctx) as res:
-        return json.loads(res.read().decode("utf-8"))
+    for attempt in range(4):
+        req = urllib.request.Request(
+            rpc_url,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "Mosoo-Bridge/1.0"}
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10, context=ctx) as res:
+                return json.loads(res.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            if exc.code == 429 and attempt < 3:
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            raise
 
 def derive_burn_id(chain_id: int, source_instance: bytes, lez_owner: bytes, eth_recipient: bytes, amount_wei: int, burn_nonce: int, lez_slot: int) -> bytes:
-    """Canonical V2 burnId calculation matching MosooLocker.sol (Finding P2 / Cross-Instance Domain Separation)"""
+    """Canonical V2 burnId calculation matching MosooLocker.sol domain separation."""
     prefix = b"mosoo_burn_v2"
     chain_bytes = chain_id.to_bytes(32, byteorder='big')
     amount_bytes = amount_wei.to_bytes(32, byteorder='big')
@@ -156,7 +165,7 @@ def main():
     print("=" * 80)
 
     # 1. Check live LEZ sequencer node connectivity
-    print("\n--- [Phase 1/5] LEZ Testnet Sequencer Health Check ---")
+    print("\n--- [Step 1/5] LEZ Testnet Sequencer Health Check ---")
     if args.mode == "live":
         try:
             fee_resp = call_rpc(args.rpc, "getFeeState", [])
@@ -197,11 +206,11 @@ def main():
                 print(f"  [-] Fatal: Failed connecting to Ethereum RPC at {eth_rpc}: {e}")
                 sys.exit(1)
     else:
-        print("  [+] Mode: Local Verified Harness (Mock Sequencer State)")
-        print("  [+] Sequencer Gas Cap: 10,000,000 (Strictly enforced per LEZ v0.4)")
+        print("  [+] Mode: Local Verified Harness (Offline Sequencer Simulation)")
+        print("  [+] Sequencer Gas Cap: 10,000,000 (Modelled target for unreleased LEZ v0.4)")
 
     # 2. Ethereum Deposit Step
-    print("\n--- [Phase 2/5] Ethereum Vault Deposit (MosooLocker.sol) ---")
+    print("\n--- [Step 2/5] Ethereum Vault Deposit (MosooLocker.sol) ---")
     dep_tx_hash = None
     canonical_deposit_tx = None
     if args.locker:
@@ -302,6 +311,10 @@ def main():
 
     topic_deposit_eth = "0x" + keccak256(b"DepositETH(address,bytes32,uint256,uint64)").hex()
     topic_deposit_erc20 = "0x" + keccak256(b"DepositERC20(address,address,bytes32,uint256,uint64)").hex()
+    topic_deposit_committed = "0x" + keccak256(b"DepositCommitted(bytes32,address,uint256,uint32,bytes32,uint64)").hex()
+    deposit_is_shielded = False
+    deposit_commitment = None
+    deposit_leaf_index = None
 
     if args.mode == "live" and eth_rpc:
         if not deposit_tx_to_verify:
@@ -320,7 +333,34 @@ def main():
                 log_contract = log.get("address", "").lower()
                 topics = log.get("topics", [])
                 if log_contract == f"0x{locker_address.hex()}".lower() and topics:
-                    if topics[0].lower() == topic_deposit_eth.lower():
+                    if topics[0].lower() == topic_deposit_committed.lower():
+                        if len(topics) < 4:
+                            print(f"  [-] Fatal: Malformed DepositCommitted event (expected 4 topics, got {len(topics)}) in tx {deposit_tx_to_verify}")
+                            sys.exit(1)
+                        data_hex = log.get("data", "0x")[2:]
+                        if len(data_hex) < 192:
+                            print(f"  [-] Fatal: Malformed DepositCommitted event data (expected at least 192 hex chars, got {len(data_hex)}) in tx {deposit_tx_to_verify}")
+                            sys.exit(1)
+                        deposit_is_shielded = True
+                        deposit_commitment = topics[1]
+                        tok_addr = "0x" + topics[2][-40:].lower()
+                        deposit_leaf_index = int(topics[3], 16)
+                        deposit_raw_units = int(data_hex[:64], 16)
+                        deposit_nonce = int(data_hex[128:192], 16)
+                        if tok_addr == "0x0000000000000000000000000000000000000000":
+                            deposit_is_erc20 = False
+                            deposit_token_symbol = "ETH"
+                            deposit_token_decimals = 18
+                        else:
+                            deposit_is_erc20 = True
+                            deposit_token_contract = tok_addr
+                            deposit_token_symbol = args.token_decimals and "ERC20" or "ERC20"
+                            deposit_token_decimals = args.token_decimals if args.token_decimals is not None else 18
+                        deposit_amount = deposit_raw_units / (10 ** deposit_token_decimals)
+                        found_event = True
+                        print(f"  [+] Live On-Chain DepositCommitted (RFP-022 Shielded) Log Verified from Tx: {deposit_tx_to_verify}")
+                        break
+                    elif topics[0].lower() == topic_deposit_eth.lower():
                         if len(topics) < 4:
                             print(f"  [-] Fatal: Malformed DepositETH event (expected 4 topics, got {len(topics)}) in tx {deposit_tx_to_verify}")
                             sys.exit(1)
@@ -389,7 +429,7 @@ def main():
                         break
 
             if not found_event:
-                print(f"  [-] Fatal: No authentic DepositETH or DepositERC20 event emitted by 0x{locker_address.hex()} in tx {deposit_tx_to_verify}!")
+                print(f"  [-] Fatal: No authentic DepositCommitted, DepositETH, or DepositERC20 event emitted by 0x{locker_address.hex()} in tx {deposit_tx_to_verify}!")
                 sys.exit(1)
         except Exception as e:
             print(f"  [-] Fatal: Error validating deposit transaction receipt: {e}")
@@ -399,23 +439,30 @@ def main():
 
     synth_token = f"m{deposit_token_symbol}"
     print(f"  [+] Contract       : MosooLocker.sol (0x{locker_address.hex()})")
-    print(f"  [+] Depositor      : 0x{eth_depositor.hex()}")
-    print(f"  [+] Target LEZ PDA : {alice_lez.hex()[:16]}...{alice_lez.hex()[-8:]}")
+    if deposit_is_shielded:
+        print(f"  [+] Depositor      : <SHIELDED / OMITTED FROM L1 EVENT>")
+        print(f"  [+] Commitment     : {deposit_commitment} (Merkle leaf #{deposit_leaf_index})")
+    else:
+        print(f"  [+] Depositor      : 0x{eth_depositor.hex()}")
+        print(f"  [+] Target LEZ PDA : {alice_lez.hex()[:16]}...{alice_lez.hex()[-8:]}")
     if deposit_is_erc20:
         print(f"  [+] Locked ERC-20  : {deposit_amount:.4f} {deposit_token_symbol} ({deposit_raw_units} raw units)")
         print(f"  [+] Token Contract : {deposit_token_contract}")
-        print(f"  [+] Emitted Event  : DepositERC20(token, sender, recipient, amount, nonce)")
+        ev_label = "DepositCommitted" if deposit_is_shielded else "DepositERC20(token, sender, recipient, amount, nonce)"
+        print(f"  [+] Emitted Event  : {ev_label}")
     else:
         print(f"  [+] Locked Native  : {deposit_amount:.4f} ETH ({deposit_raw_units} wei)")
-        print(f"  [+] Emitted Event  : DepositETH(sender, recipient, amount, nonce)")
+        ev_label = "DepositCommitted(commitment, 0x0, amount, leafIndex, newRoot, nonce)" if deposit_is_shielded else "DepositETH(sender, recipient, amount, nonce)"
+        print(f"  [+] Emitted Event  : {ev_label}")
     print(f"  [+] Deposit Nonce  : {deposit_nonce}")
 
-    # 3. Consensus Sync & MPT Verification on LEZ
-    print("\n--- [Phase 3/5] LEZ Consensus Update & MPT Proof Attestation ---")
-    print("  [*] Execution Profile: [LEZ zkVM STATE MACHINE VERIFICATION]")
-    print("      * Target LEZ Program ID: DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf")
-    print("      * 3-Tx Split Pipeline Gas Allocation (from docs/BENCHMARKS.md):")
-    print("        - begin_update  : 5,382,000 gas (46.2% under 10M cap)")
+    # 3. Consensus Sync & MPT Verification on LEZ (Local State-Machine Simulation)
+    print("\n--- [Step 3/5] LEZ Consensus Update & MPT Proof Attestation (Simulation) ---")
+    print("  [*] Execution Profile: [LOCAL STATE MACHINE SIMULATION — NO LIVE LEZ TXs SUBMITTED]")
+    print("      * Mosoo LEZ v0.3.1 Live ID: Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg (scripts/verify-mosoo-lez.py)")
+    print("      * Mosoo LEZ v0.4 Target   : Compiled v0.4 ELF ready; public v0.4 testnet unreleased upstream")
+    print("      * 3-Tx Split Pipeline Gas Model (see docs/BENCHMARKS.md; modelled cycles/gas):")
+    print("        - begin_update  : 5,382,140 gas (46.2% under 10M cap)")
     print("        - miller_update : 4,180,000 gas (58.2% under 10M cap)")
     print("        - finish_update : 3,740,000 gas (62.6% under 10M cap)")
     print(f"  [+] Execution State Root finalized at slot {deposit_slot}")
@@ -423,7 +470,7 @@ def main():
     print("  [+] On-chain Nullifier registered (Replay prevented)")
 
     # 4. Minting synthetic mETH & Intra-LEZ Transfer
-    print("\n--- [Phase 4/5] Minting mETH on LEZ & Peer-to-Peer Transfer ---")
+    print("\n--- [Step 4/5] Minting mETH on LEZ & Peer-to-Peer Transfer ---")
     print("  [*] State Transition: [CONSERVATION OF VALUE & ESCROW BALANCE VERIFICATION]")
     bob_lez = b"\xbb" * 32
     transfer_units = deposit_raw_units * 4 // 10  # 40% transferred to Bob
@@ -444,7 +491,7 @@ def main():
     print(f"      * Total Supply : {total_supply / unit_div:.4f} {synth_token} (Unchanged)")
 
     # 5. Burning mETH on LEZ & Unlocking real ETH on Ethereum
-    print("\n--- [Phase 5/5] Burning mETH on LEZ -> Unlocking ETH on Ethereum ---")
+    print("\n--- [Step 5/5] Burning mETH on LEZ -> Unlocking ETH on Ethereum ---")
     print("  [*] Withdrawal Pathway: [CROSS-CHAIN UNLOCK INVARIANT & BURNID VERIFICATION]")
     eth_recipient = b"\x33" * 20
     lez_burn_slot = 62_185
@@ -473,13 +520,14 @@ def main():
     print(f"      * Total {deposit_token_symbol} Remaining in Locker : {total_supply / unit_div:.4f} {deposit_token_symbol}")
     print(f"      * Total {synth_token} Remaining on LEZ   : {total_supply / unit_div:.4f} {synth_token}")
     print(f"      * Total {deposit_token_symbol} Released to Recipient: {burn_units / unit_div:.4f} {deposit_token_symbol}")
-    print(f"      * Invariant: Remaining Locked {deposit_token_symbol} ({total_supply / unit_div:.4f}) == Active {synth_token} ({total_supply / unit_div:.4f}) [100% MATCH]")
+    print(f"      * Invariant: Remaining Locked {deposit_token_symbol} ({total_supply / unit_div:.4f}) == Active {synth_token} ({total_supply / unit_div:.4f}) [MATCH]")
 
     print("\n" + "=" * 80)
-    print(f"[+] TWO-WAY BRIDGE PIPELINE ({args.mode.upper()} MODE) COMPLETED SUCCESSFULLY")
-    print("  - Live Ethereum Phase : Verified MosooLocker deployment and deposit receipt event on-chain")
-    print("  - LEZ Settlement Phase: Cryptographic state-machine simulation (MPT inclusion, nullifier, conservation of value)")
-    print("  - Invariant Status    : 100% Conservation of Value across Cross-Chain Boundaries")
+    print(f"[+] TWO-WAY BRIDGE PIPELINE ({args.mode.upper()} MODE) COMPLETED")
+    print("  - Ethereum Sepolia : Queries live commissioned v2 MosooLocker (0xEFEf...; DepositCommitted)")
+    print("                       (Legacy v1 0x7462... preserved under previousV1Deployment)")
+    print("  - LEZ Steps 3-5    : Local Python state-machine simulation (no LEZ txs broadcast)")
+    print("  - Invariant Check  : Locked asset delta matches simulated supply")
     print("=" * 80)
 
 if __name__ == "__main__":

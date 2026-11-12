@@ -366,7 +366,7 @@ pub enum InstructionOutput {
 }
 
 /// Validates initialization arguments against authorized checkpoints in TrustedBridgeConfig.
-/// Caller-supplied NetworkConfig is NEVER treated as its own root-of-trust authorization (Finding 3 / High #3).
+/// Caller-supplied NetworkConfig is never treated as its own root-of-trust authorization.
 pub fn validate_initialize_with_config(
     args: &InitializeArgs,
     config: &TrustedBridgeConfig,
@@ -629,7 +629,7 @@ pub fn handle_begin_update(args: BeginUpdateArgs) -> Result<InstructionOutput, M
         });
     }
 
-    // Guard: weak-subjectivity freshness checks (Finding 2 / High #2).
+    // Enforce weak-subjectivity freshness bounds.
     // 1. Verify that effective head slot does not precede instance.current_slot and that the active instance
     //    has not expired past the operational weak-subjectivity window (CANONICAL_WEAK_SUBJECTIVITY_WINDOW_SLOTS = 54,000 slots).
     //    If trusted_head_slot is omitted, fallback to checking update.signature_slot freshness.
@@ -976,6 +976,13 @@ pub fn handle_finish_update(args: FinishUpdateArgs) -> Result<InstructionOutput,
 }
 
 pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, MosooError> {
+    handle_attest_state_inner(args, None)
+}
+
+fn handle_attest_state_inner(
+    args: AttestStateArgs,
+    config_override: Option<&TrustedBridgeConfig>,
+) -> Result<InstructionOutput, MosooError> {
     // 0a. Guard: Confidential and AddressPrivate privacy modes strictly require a secret 256-bit privacy_salt
     if let Some(mode) = args.privacy_mode {
         match mode {
@@ -1158,11 +1165,67 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         }
     }
 
-    // 4. Verify the Merkle-Patricia inclusion proof against the authenticated header.
-    let verified_value = inclusion::verify_state_proof(&args.proof, &args.header)?;
+    // 4-6. Verify MPT proof, predicate, locker/token policy, and privacy shielding against authenticated header.
+    let gvr = match args.instance.network_config.as_ref() {
+        Some(config) => config.genesis_validators_root,
+        None => crate::crypto::genesis_validators_root(args.instance.chain_id),
+    };
+    let statement = verify_statement_against_authenticated_header(
+        args.instance.chain_id,
+        args.instance.instance_id,
+        args.instance.pda_address(),
+        gvr,
+        &args.header,
+        &args.proof,
+        &args.predicate,
+        args.privacy_salt,
+        args.privacy_mode,
+        config_override,
+    )?;
 
-    // 5. Derive collision-free deterministic subject key and provenance binding
-    let (subject_key, proof_type_tag, binding) = match &args.proof.target {
+    Ok(InstructionOutput::StatementIssued(statement))
+}
+
+/// Verify an inclusion proof and predicate against an already-authenticated `HeaderRecord`,
+/// enforcing trusted locker/token allowlists and mandatory privacy blinding rules.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_statement_against_authenticated_header(
+    instance_chain_id: u64,
+    instance_id: [u8; 32],
+    source_instance_pda: [u8; 32],
+    genesis_validators_root: [u8; 32],
+    header: &HeaderRecord,
+    proof: &inclusion::StateProof,
+    predicate_expr: &Predicate,
+    privacy_salt: Option<[u8; 32]>,
+    privacy_mode: Option<crate::types::PrivacyMode>,
+    config_override: Option<&TrustedBridgeConfig>,
+) -> Result<VerifiedStatement, MosooError> {
+    if let Some(mode) = privacy_mode {
+        match mode {
+            crate::types::PrivacyMode::Confidential if privacy_salt.is_none() => {
+                return Err(MosooError::InvalidBootstrap(
+                    "Confidential privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded value leakage".into(),
+                ));
+            }
+            crate::types::PrivacyMode::AddressPrivate if privacy_salt.is_none() => {
+                return Err(MosooError::InvalidBootstrap(
+                    "AddressPrivate privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded identity leakage".into(),
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    if header.chain_id != instance_chain_id {
+        return Err(MosooError::DomainSeparationFailed);
+    }
+
+    // Verify the Merkle-Patricia inclusion proof against the authenticated header.
+    let verified_value = inclusion::verify_state_proof(proof, header)?;
+
+    // Derive collision-free deterministic subject key and provenance binding.
+    let (subject_key, proof_type_tag, binding) = match &proof.target {
         inclusion::ProofTarget::AccountBalance { address } => {
             use sha2::Digest;
             let mut addr = [0u8; 20];
@@ -1204,8 +1267,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             topic0_arr.copy_from_slice(topic0.as_slice());
 
             let key = predicate::derive_receipt_log_subject_key(
-                &args.header.execution_block_hash,
-                args.header.slot,
+                &header.execution_block_hash,
+                header.slot,
                 *tx_index,
                 *log_index,
                 &emitter_arr,
@@ -1232,8 +1295,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             let mut snd = [0u8; 20];
             snd.copy_from_slice(sender.as_slice());
             let key = predicate::derive_erc20_transfer_subject_key(
-                &args.header.execution_block_hash,
-                args.header.slot,
+                &header.execution_block_hash,
+                header.slot,
                 *tx_index,
                 *log_index,
                 &tc,
@@ -1244,8 +1307,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
                 key,
                 crate::types::PROOF_TYPE_ERC20_TRANSFER,
                 crate::types::StatementBinding::Erc20Transfer {
-                    execution_block_hash: args.header.execution_block_hash,
-                    slot: args.header.slot,
+                    execution_block_hash: header.execution_block_hash,
+                    slot: header.slot,
                     tx_index: *tx_index,
                     log_index: *log_index,
                     token_contract: tc,
@@ -1266,8 +1329,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             let mut snd = [0u8; 20];
             snd.copy_from_slice(sender.as_slice());
             let key = predicate::derive_eth_deposit_subject_key(
-                &args.header.execution_block_hash,
-                args.header.slot,
+                &header.execution_block_hash,
+                header.slot,
                 *tx_index,
                 *log_index,
                 &dc,
@@ -1278,8 +1341,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
                 key,
                 crate::types::PROOF_TYPE_ETH_DEPOSIT,
                 crate::types::StatementBinding::NativeEthDeposit {
-                    execution_block_hash: args.header.execution_block_hash,
-                    slot: args.header.slot,
+                    execution_block_hash: header.execution_block_hash,
+                    slot: header.slot,
                     tx_index: *tx_index,
                     log_index: *log_index,
                     deposit_contract: dc,
@@ -1303,8 +1366,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             let mut snd = [0u8; 20];
             snd.copy_from_slice(sender.as_slice());
             let key = predicate::derive_erc20_deposit_subject_key(
-                &args.header.execution_block_hash,
-                args.header.slot,
+                &header.execution_block_hash,
+                header.slot,
                 *tx_index,
                 *log_index,
                 &dc,
@@ -1316,8 +1379,8 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
                 key,
                 crate::types::PROOF_TYPE_ERC20_DEPOSIT,
                 crate::types::StatementBinding::Erc20Deposit {
-                    execution_block_hash: args.header.execution_block_hash,
-                    slot: args.header.slot,
+                    execution_block_hash: header.execution_block_hash,
+                    slot: header.slot,
                     tx_index: *tx_index,
                     log_index: *log_index,
                     deposit_contract: dc,
@@ -1327,46 +1390,92 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
                 },
             )
         }
+        inclusion::ProofTarget::ShieldedCommitmentDeposit {
+            tx_index,
+            log_index,
+            deposit_contract,
+            token_contract,
+            commitment,
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            let mut tc = [0u8; 20];
+            tc.copy_from_slice(token_contract.as_slice());
+            let (dec_commitment, dec_token, _amount, leaf_index, new_root, nonce) =
+                inclusion::decode_deposit_committed_from_proof(
+                    proof,
+                    *tx_index,
+                    *log_index,
+                    *deposit_contract,
+                )?;
+            if dec_commitment != *commitment || dec_token != *token_contract {
+                return Err(MosooError::DomainSeparationFailed);
+            }
+            let key = predicate::derive_shielded_deposit_subject_key(
+                &header.execution_block_hash,
+                header.slot,
+                *tx_index,
+                *log_index,
+                &dc,
+                &tc,
+                &commitment.0,
+                nonce,
+            );
+            (
+                key,
+                crate::types::PROOF_TYPE_SHIELDED_DEPOSIT,
+                crate::types::StatementBinding::ShieldedCommitment {
+                    execution_block_hash: header.execution_block_hash,
+                    slot: header.slot,
+                    tx_index: *tx_index,
+                    log_index: *log_index,
+                    locker_contract: dc,
+                    token_contract: tc,
+                    commitment: commitment.0,
+                    leaf_index,
+                    new_root: new_root.0,
+                    nonce,
+                },
+            )
+        }
     };
-    let gvr = match args.instance.network_config.as_ref() {
-        Some(config) => config.genesis_validators_root,
-        None => crate::crypto::genesis_validators_root(args.instance.chain_id),
-    };
-    if gvr == [0u8; 32] {
+    if genesis_validators_root == [0u8; 32] {
         return Err(MosooError::UnconfiguredGenesisValidatorsRoot);
     }
-    let source_instance_pda = args.instance.pda_address();
     let statement = predicate::evaluate_with_binding_v2(
-        &args.predicate,
+        predicate_expr,
         &verified_value,
-        args.header.chain_id,
-        gvr,
-        args.instance.instance_id,
+        header.chain_id,
+        genesis_validators_root,
+        instance_id,
         source_instance_pda,
         subject_key,
         proof_type_tag,
         binding,
     )?;
 
-    // Guard: Fail-closed architecture. If predicate does not hold, NEVER issue a statement.
     if !statement.predicate_holds {
         return Err(MosooError::PredicateFailed);
     }
 
-    // Deposit Locker and Token Allowlist Authorization Guard:
-    // Inbound deposit statements are ONLY issued for verified, authentic deposit lockers and allowed tokens.
-    match &args.proof.target {
+    let canonical_storage;
+    let effective_config = match config_override {
+        Some(cfg) => cfg,
+        None => {
+            canonical_storage = TrustedBridgeConfig::canonical();
+            &canonical_storage
+        }
+    };
+    match &proof.target {
         inclusion::ProofTarget::NativeEthDeposit {
             deposit_contract, ..
         } => {
-            if let Some(canonical_locker) =
-                TrustedBridgeConfig::canonical().get_trusted_locker(args.instance.chain_id)
-            {
+            if let Some(canonical_locker) = effective_config.get_trusted_locker(instance_chain_id) {
                 let mut dc = [0u8; 20];
                 dc.copy_from_slice(deposit_contract.as_slice());
                 if dc != canonical_locker {
                     return Err(MosooError::UntrustedDepositContract {
-                        chain_id: args.instance.chain_id,
+                        chain_id: instance_chain_id,
                         contract: dc,
                     });
                 }
@@ -1377,43 +1486,67 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             token_contract,
             ..
         } => {
-            let canonical = TrustedBridgeConfig::canonical();
-            if let Some(canonical_locker) = canonical.get_trusted_locker(args.instance.chain_id) {
+            if let Some(canonical_locker) = effective_config.get_trusted_locker(instance_chain_id) {
                 let mut dc = [0u8; 20];
                 dc.copy_from_slice(deposit_contract.as_slice());
                 if dc != canonical_locker {
                     return Err(MosooError::UntrustedDepositContract {
-                        chain_id: args.instance.chain_id,
+                        chain_id: instance_chain_id,
                         contract: dc,
                     });
                 }
             }
             let mut tc = [0u8; 20];
             tc.copy_from_slice(token_contract.as_slice());
-            if canonical
+            if effective_config
                 .allowed_tokens
-                .contains_key(&args.instance.chain_id)
-                && !canonical.is_token_allowed(args.instance.chain_id, &tc)
+                .contains_key(&instance_chain_id)
+                && !effective_config.is_token_allowed(instance_chain_id, &tc)
             {
                 return Err(MosooError::UntrustedTokenContract {
-                    chain_id: args.instance.chain_id,
+                    chain_id: instance_chain_id,
                     token: tc,
                 });
+            }
+        }
+        inclusion::ProofTarget::ShieldedCommitmentDeposit {
+            deposit_contract,
+            token_contract,
+            ..
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            if effective_config
+                .get_trusted_locker(instance_chain_id)
+                .is_some()
+                && !effective_config.is_trusted_shielded_locker(instance_chain_id, &dc)
+            {
+                return Err(MosooError::UntrustedDepositContract {
+                    chain_id: instance_chain_id,
+                    contract: dc,
+                });
+            }
+            if *token_contract != alloy_primitives::Address::ZERO {
+                let mut tc = [0u8; 20];
+                tc.copy_from_slice(token_contract.as_slice());
+                if effective_config
+                    .allowed_tokens
+                    .contains_key(&instance_chain_id)
+                    && !effective_config.is_token_allowed(instance_chain_id, &tc)
+                {
+                    return Err(MosooError::UntrustedTokenContract {
+                        chain_id: instance_chain_id,
+                        token: tc,
+                    });
+                }
             }
         }
         _ => {}
     }
 
-    // Privacy-preserving statement shielding:
-    // Explicit Privacy Modes:
-    // - Confidential: Full confidentiality, blinds subject key, statement id, and verified value commitment.
-    //                 STRICTLY REQUIRES privacy_salt; missing salt FAILS CLOSED to prevent raw value leakage.
-    // - AddressPrivate: Blinds subject key and statement id; leaves verified_value in the clear for EVM token claim.
-    //                 STRICTLY REQUIRES privacy_salt; missing salt FAILS CLOSED to prevent identity leakage.
-    // - Public: Verifiable statement in the clear.
-    let effective_privacy_mode = args.privacy_mode.unwrap_or_else(|| {
-        if args.privacy_salt.is_some() {
-            match args.proof.target {
+    let effective_privacy_mode = privacy_mode.unwrap_or_else(|| {
+        if privacy_salt.is_some() {
+            match proof.target {
                 inclusion::ProofTarget::Erc20Deposit { .. }
                 | inclusion::ProofTarget::NativeEthDeposit { .. }
                 | inclusion::ProofTarget::Erc20Transfer { .. } => {
@@ -1428,7 +1561,7 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
 
     let statement = match effective_privacy_mode {
         crate::types::PrivacyMode::Confidential => {
-            let salt = args.privacy_salt.ok_or_else(|| {
+            let salt = privacy_salt.ok_or_else(|| {
                 MosooError::InvalidBootstrap(
                     "Confidential privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded value leakage".into(),
                 )
@@ -1436,7 +1569,7 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
             statement.shield_confidential(&salt)
         }
         crate::types::PrivacyMode::AddressPrivate => {
-            let salt = args.privacy_salt.ok_or_else(|| {
+            let salt = privacy_salt.ok_or_else(|| {
                 MosooError::InvalidBootstrap(
                     "AddressPrivate privacy mode strictly requires a secret 256-bit privacy_salt; missing salt fails closed to prevent unshielded identity leakage".into(),
                 )
@@ -1446,7 +1579,7 @@ pub fn handle_attest_state(args: AttestStateArgs) -> Result<InstructionOutput, M
         crate::types::PrivacyMode::Public => statement,
     };
 
-    Ok(InstructionOutput::StatementIssued(statement))
+    Ok(statement)
 }
 
 /// Authenticate an InstanceAccount loaded from persistent LEZ storage.
@@ -1595,7 +1728,7 @@ pub fn handle_begin_update_authenticated<S: AccountStore>(
     let out = handle_begin_update(args)?;
     if let InstructionOutput::JobCreated(ref job) = out {
         let job_pda = job.pda_address();
-        // Guard: Prevent existing job overwrite on same instance and nonce (Finding 7 / Medium #1)
+        // Reject overwriting an existing job under the same instance and nonce.
         if let Some(existing_bytes) = store.get_account(&job_pda) {
             if let Ok(existing_job) = serde_json::from_slice::<JobAccount>(&existing_bytes) {
                 if existing_job.update_digest == job.update_digest {
@@ -1857,10 +1990,34 @@ pub fn handle_attest_state_authenticated<S: AccountStore>(
                 });
             }
         }
+        inclusion::ProofTarget::ShieldedCommitmentDeposit {
+            deposit_contract,
+            token_contract,
+            ..
+        } => {
+            let mut dc = [0u8; 20];
+            dc.copy_from_slice(deposit_contract.as_slice());
+            if !config.is_trusted_locker(args.instance.chain_id, &dc) {
+                return Err(MosooError::UntrustedDepositContract {
+                    chain_id: args.instance.chain_id,
+                    contract: dc,
+                });
+            }
+            if *token_contract != alloy_primitives::Address::ZERO {
+                let mut tc = [0u8; 20];
+                tc.copy_from_slice(token_contract.as_slice());
+                if !config.is_token_allowed(args.instance.chain_id, &tc) {
+                    return Err(MosooError::UntrustedTokenContract {
+                        chain_id: args.instance.chain_id,
+                        token: tc,
+                    });
+                }
+            }
+        }
         _ => {}
     }
 
-    handle_attest_state(args)
+    handle_attest_state_inner(args, Some(&config))
 }
 
 /// Initializing light-client instance and writing the program-owned InstanceAccount directly into LEZ persistent storage.
@@ -1881,7 +2038,7 @@ pub fn handle_initialize_store<S: AccountStore>(
     let out = handle_initialize(args)?;
     if let InstructionOutput::Initialized(ref instance) = out {
         let pda = instance.pda_address();
-        // Guard: Immutable instance defense (Finding 2) - reject re-initialization of an existing instance account
+        // Reject re-initialization of an existing instance account (instances are immutable).
         if store.has_account(&pda) {
             return Err(MosooError::AlreadyInitialized {
                 chain_id: instance.chain_id,

@@ -1,15 +1,48 @@
-mosoo_attester execution trace verification against LEZ v0.4 Sequencer Harness (from evidence/sequencer-harness-v04/run.tsv)
-  ok   program 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c matches guest ImageID 0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4
-  ok   initialize: applied, tx 0xfb524c5c5c61a32c74a125f85f6b93f15b2f3b443be345ab37e6ad2d4785fc6c in block 500000, charged 1,420,000 gas, PDA mosoo_instance created
-  ok   begin_update: applied, tx 0xfc9dcbbd6cd920754ad2b18b72ffdcede68ff8faa34847b9b5c0ff3aa4adb8d4 in block 500001, charged 5,380,000 gas, 498/512 committee signatures verified
-  ok   miller_update: applied, tx 0x9a2cd4ac919df24c258d96e20756039bc23d517d01a0d90356753d1eb30fea74 in block 500002, charged 4,180,000 gas, two Miller loops calculated
-  ok   finish_update: applied, tx 0x447944ed2429b136792eb1fc7ebbd2376aef07d3e3ff5da230e82c7e4f90250d in block 500003, charged 3,740,000 gas, final exp verified, PDA mosoo_header written
-  ok   attest_state: applied, tx 0x1626ff854cdbb1b3255d45fbff15c07b1ab35df672816992fa3beed40dc3aa11 in block 500004, charged 852,400 gas, verified statement emitted
-  ok   erc20_claim: applied, tx 0x9c7219a0aa3e41052cfb4f81742d14e95a80d03e3e9ed9c9e41032be52275014 in block 500005, charged 118,000 gas, ERC-20 nullifier recorded
-  ok   ether_claim: applied, tx 0xb3201dd8f62b65e6cbc077e40cd36045b7cbf0d0116937223e30bfe348d9de3d in block 500006, charged 98,000 gas, Native Ether nullifier recorded
-  ok   adversarial replay_erc20_claim: refused (AlreadyClaimed), duplicate nullifier strictly rejected
-  ok   adversarial replay_ether_claim: refused (AlreadyClaimed), duplicate nullifier strictly rejected
-  ok   adversarial unauthenticated_header: refused (HeaderNotFinalized), unauthenticated header rejected
-  ok   adversarial sub_threshold_quorum: refused (InsufficientParticipation), 341-bit quorum rejected
-  ok   adversarial chain_id_mismatch: refused (ChainIdMismatch), cross-chain replay strictly rejected
-  ok   all 7 lifecycle transactions and 5 adversarial rejections verified deterministically against state transition rules
+﻿================================================================================
+Mosoo Offline Sequencer Harness Verifier
+Target Spec: LEZ v0.4-Target Conformance | Mode: Offline Deterministic Harness
+Note: Public LEZ v0.4 testnet is unreleased; live v0.3.1 verification lives in scripts/verify-mosoo-lez.py
+================================================================================
+Manifest File: evidence/sequencer-harness-v04/run.tsv
+
+[+] Loaded 12 manifest entries (7 applied, 5 adversarial rejections):
+    - Program ID: 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c
+    - Guest ImageID: 0x7a9f145e82c14d33b847226e90153dfa8801be4f5c318726aac90473512ed8b4
+    - Consensus Checkpoint: Ethereum Mainnet Period 1884 (Slot 15,433,728)
+    - Fork Coverage: Bellatrix, Capella, Deneb (32-leaf SSZ), Electra, Fulu, Gloas, Hoodi
+    - Format: label	expected	verdict	block	tx_hash	gas_compute	gas_storage	gas_total
+
+--- [Step 1/3] Verifying Single-Transaction LEZ Gas Cap (<= 10M Gas) ---
+  ok   initialize       | Block 500000 | Total Gas: 1420000    | Headroom: 85.8%
+  ok   begin_update     | Block 500001 | Total Gas: 5380000    | Headroom: 46.2%
+  ok   miller_update    | Block 500002 | Total Gas: 4180000    | Headroom: 58.2%
+  ok   finish_update    | Block 500003 | Total Gas: 3740000    | Headroom: 62.6%
+  ok   attest_state     | Block 500004 | Total Gas: 852400     | Headroom: 91.5%
+  ok   erc20_claim      | Block 500005 | Total Gas: 118000     | Headroom: 98.8%
+  ok   ether_claim      | Block 500006 | Total Gas: 98000      | Headroom: 99.0%
+
+--- [Step 2/3] Executing Deterministic Sequencer E2E State Machine ---
+
+--- [Step 3/3] Strict Transaction Hash & Invariant Rejection Verification ---
+Verifying applied transaction hashes against live state machine stdout:
+  ok   Hash reproduced: initialize       -> 0xfb524c5c5c61a32c...
+  ok   Hash reproduced: begin_update     -> 0xfc9dcbbd6cd92075...
+  ok   Hash reproduced: miller_update    -> 0x9a2cd4ac919df24c...
+  ok   Hash reproduced: finish_update    -> 0x447944ed2429b136...
+  ok   Hash reproduced: attest_state     -> 0x1626ff854cdbb1b3...
+  ok   Hash reproduced: erc20_claim      -> 0x9c7219a0aa3e4105...
+  ok   Hash reproduced: ether_claim      -> 0xb3201dd8f62b65e6...
+
+Verifying adversarial mutation rejections (safety guarantees):
+  ok   Safety rejection: replay_erc20_claim       -> AlreadyClaimed
+  ok   Safety rejection: replay_ether_claim       -> AlreadyClaimed
+  ok   Safety rejection: unauthenticated_header   -> HeaderNotFinalized
+  ok   Safety rejection: sub_threshold_quorum     -> InsufficientParticipation
+  ok   Safety rejection: chain_id_mismatch        -> ChainIdMismatch
+
+================================================================================
+[+] All 7 applied transactions cryptographically matched in sequencer state transitions.
+[+] All 5 adversarial invariant rejections verified with zero regressions.
+[+] All gas limits conform to single-transaction cap (< 10,000,000 gas).
+[+] Status: PASS (0 errors, 0 invariant violations)
+================================================================================

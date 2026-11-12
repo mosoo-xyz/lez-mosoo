@@ -41,24 +41,27 @@ jobs:
         run: cargo test --workspace --verbose
 
       - name: Run Security Hardening Suite (58 regression & boundary tests)
-        run: cargo test --test audit_oct26_hardening_tests --verbose
+        run: cargo test --test security_hardening_tests --verbose
 
-      - name: Run 4/4 Offline LEZ v0.4-Target Acceptance Tests (18 Assertions)
+      - name: Run 4/4 Offline LEZ v0.4-Target Conformance Tests (Harness)
         run: cargo test --test lez_v04_acceptance_tests --verbose
 
-      - name: Run Adversarial & Mutation Tests (Altair, Gloas, BLS, Replay & Immutability Security)
+      - name: Run Adversarial & Mutation Tests (50 tests, 42 attack vectors)
         run: cargo test --test adversarial_mutation_tests --verbose
 
-      - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (ETH/mETH & USDC Settlement, 22/22 tests)
+      - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (23/23 tests)
         run: cargo test --test two_way_bridge_tests --verbose
 
-      - name: Run Standalone LEZ Sequencer E2E Suite (State Binding & Settlement)
+      - name: Run Standalone LEZ Sequencer E2E Suite (4/4 tests)
         run: cargo test --test sequencer_e2e_tests --verbose
 
-      - name: Run 5/5 Privacy & Zero-Correlation Tests (RFP-021 Privacy Guarantee)
+      - name: Run Real Ethereum Beacon Chain Vector Tests (Sepolia Gloas & Hoodi Fulu, 4/4 tests)
+        run: cargo test --test real_chain_vectors_tests --verbose
+
+      - name: Run 6/6 Privacy & Zero-Correlation Tests
         run: cargo test --test privacy_and_correlation_tests --verbose
 
-      - name: Run 15 Daemon Operational Tests (Proxy, Jitter, Competing-Update Recovery)
+      - name: Run 17 Daemon Operational Tests (Beacon Parsing, Jitter, Competing-Update Recovery)
         run: cargo test -p mosoo-daemon --verbose
 
       - name: Execute Live Empirical Benchmark Suite & Emit JSON Artifact
@@ -87,19 +90,17 @@ jobs:
           echo "Emitted zkVM ELF Size: $FILE_SIZE bytes"
           test -n "$DIGEST" || exit 1
 
-          # Verify guest build artifact and compare with committed deployment manifest
-          EXPECTED_IMAGE_ID=$(jq -r '.image_id' evidence/public-testnet-v03/deployment_manifest.json)
-          echo "Committed On-Chain Program ImageID: $EXPECTED_IMAGE_ID"
-          test -n "$EXPECTED_IMAGE_ID" || exit 1
-
-          # Verify guest binary integrity against container-generated sha256 (Finding P1 / Build Reproducibility)
+          # Verify guest binary integrity against container-generated sha256 (Build Reproducibility)
+          # Note: Public LEZ v0.4 testnet is unreleased upstream; Mosoo's live LEZ v0.3.1
+          # program (`mosoo_lc`) is deployed under `evidence/mosoo-testnet-v03/` while
+          # `mosoo-guest` awaits public LEZ v0.4 network launch.
           CONTAINER_SHA256=$(cat target/zkvm-elf/mosoo-guest.sha256 | awk '{print $1}')
           if [ "$DIGEST" != "$CONTAINER_SHA256" ]; then
             echo "[-] Error: Built ELF SHA-256 ($DIGEST) does not match exported container hash ($CONTAINER_SHA256)"
             exit 1
           fi
-          echo "[+] Verified: zkVM guest binary matched committed container hash ($DIGEST)"
-          echo "[+] Verified: zkVM guest deployment manifest ImageID authenticated ($EXPECTED_IMAGE_ID)
+          echo "[+] Verified: Built Mosoo zkVM guest ELF matches container sha256 ($DIGEST)"
+          echo "[+] Diagnostic: Artifact archived for deterministic verification ahead of LEZ v0.4 deployment"
 
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
@@ -116,11 +117,13 @@ jobs:
       - name: Install cargo-audit
         uses: taiki-e/install-action@cargo-audit
 
-      - name: Security audit dependencies (Transitive RUSTSEC Risk Analysis in docs/SECURITY.md)
+      - name: Security audit dependencies (Transitive RUSTSEC Risk Analysis in docs/security-review.md)
         run: |
           # 1. RUSTSEC-2026-0387: crypto-bigint 0.5.5 (transitive alloy -> k256). Mosoo only verifies public signatures; holds zero secrets.
           # 2. RUSTSEC-2025-0055: tracing-subscriber 0.2.25 (transitive risc0-zkvm -> ark-relations). Internal telemetry formatting only.
           cargo audit --ignore RUSTSEC-2026-0387 --ignore RUSTSEC-2025-0055
 
-      - name: Verify committed execution evidence manifest
-        run: python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
+      - name: Verify committed execution evidence manifest and run tamper-detection mutation suites
+        run: |
+          python3 scripts/verify-evidence.py --manifest evidence/sequencer-harness-v04/run.tsv
+          python3 scripts/test-evidence-mutation.py
