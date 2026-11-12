@@ -5,7 +5,7 @@ This document records verifiable execution manifests, state transitions, gas con
 > [!NOTE]
 > **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's **offline** Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../mosoo-core/tests/sequencer_e2e_tests.rs). Public LEZ `v0.4` is **unreleased upstream** (`v0.3.1` is latest); this offline harness models target LEZ `v0.4` state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction).
 > 
-> In addition, [`scripts/verify-mosoo-lez.py`](../scripts/verify-mosoo-lez.py) verifies live `mosoo_lc` on public LEZ v0.3.1 (`https://testnet.lez.logos.co`, `Co5EYuBR...`), and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) queries live Ethereum Sepolia (`MosooLocker` v3 at `0x374B9F07...`) paired with offline Steps 3–5 LEZ state-machine simulation. Deployment of `mosoo-guest` to LEZ `v0.4` awaits upstream public `v0.4` release.
+> In addition, [`scripts/verify-mosoo-lez.py`](../scripts/verify-mosoo-lez.py) verifies live `mosoo_lc` on public LEZ v0.3.1 (`https://testnet.lez.logos.co`, `Co5EYuBR...`), and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) queries live Ethereum Sepolia (`MosooLocker` v4 at `0xF94eA0F9...`) paired with offline Steps 3–5 LEZ state-machine simulation. Deployment of `mosoo-guest` to LEZ `v0.4` awaits upstream public `v0.4` release.
 
 ---
 

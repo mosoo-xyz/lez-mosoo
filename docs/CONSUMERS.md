@@ -294,7 +294,7 @@ $$\text{Locked on Ethereum Escrow} \equiv \text{Active Supply on LEZ}$$
 │  MosooLocker.sol                                   Consumers / Ledgers      │
 │                                                                             │
 │  depositETH(lezRecipient)  ──(Light Client MPT)──► mint_meth() (1:1 mETH)   │
-│  depositShieldedETH(commitment) [hardened v3 live on Sepolia 0x374B9F07...]│
+│  depositShieldedETH(commitment) [hardened v4 live on Sepolia 0xF94eA0F9...]│
 │                                                          │                  │
 │                                                          ▼                  │
 │                                                  transfer_meth() (LEZ P2P)  │
@@ -413,4 +413,4 @@ function unlockERC20(
 - **EIP-2 Malleability Defense:** Signatures enforce strict upper bound on $s$ ($s \le \text{0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0}$) and reject `address(0)` recovered signers.
 - **Fee-on-Transfer Protection:** Balance differential pattern on ERC-20 deposits (`depositERC20` / local v2 `depositShieldedERC20`) ensures only actual tokens received are credited.
 - **Two-Step Ownership:** Contract ownership changes require `transferOwnership` followed by `acceptOwnership`.
-- **Hardened Shielded Pool v3 (Live Commissioned on Sepolia):** [`contracts/MosooLocker.sol`](../contracts/MosooLocker.sol) v3 (`0x374B9F073A6aC1aF2c147392319499e35E8C7e82`, `productionCommissioned = true` `2-of-2` latch, `shieldedDepositsOnly = true`, `strictFixedDenominationMode = true`, `legacyRoutesPermanentlyDisabled = true`) is live on Sepolia with verified `DepositCommitted` (`0x3ceb8bc3...` / `0xef24568c...`) and `UnlockedShieldedETH` (`0x3204263c...`) transactions (historical v1 `0x7462...` & v2 `0xEFEf...` preserved in `contracts/deployments/sepolia.json`).
+- **Hardened Shielded Pool v4 (Live Commissioned on Sepolia):** [`contracts/MosooLocker.sol`](../contracts/MosooLocker.sol) v4 (`0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd`, `24,521 B` EIP-170 compliant, `productionCommissioned = true` `2-of-2` latch, irreversible `shieldedDepositsOnly = true` & `strictFixedDenominationMode = true` post-commissioning, `legacyRoutesPermanentlyDisabled = true`, payload-bound large ETH/ERC-20 withdrawal 24h queue) is live on Sepolia with verified `DepositCommitted` (`0x29a9a209...` / `0x5beca8cd...`) and `UnlockedShieldedETH` (`0x9a986ef0...`) transactions (historical v1 `0x7462...`, v2 `0xEFEf...` & v3 `0x374B...` preserved in `contracts/deployments/sepolia.json`).

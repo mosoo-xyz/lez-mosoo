@@ -646,12 +646,13 @@ pub fn decode_and_validate_receipt(
         )));
     }
 
-    // Validate transaction execution status (EIP-658). Reverted transactions (status = 0)
-    // MUST NOT be attested.
+    // Validate transaction execution status (EIP-658). Only canonical EIP-658 success status == 1
+    // (`[1u8]`) is accepted; reverted (`[]`/`[0u8]`) or non-canonical (`!= [1u8]`, e.g. `[2u8]`)
+    // transactions MUST NOT be attested.
     let status_raw = rlp_strip_prefix(fields[0]);
-    if status_raw.is_empty() || status_raw == [0u8] {
+    if status_raw != [1u8] {
         return Err(MosooError::Internal(
-            "transaction reverted (status = 0); events from failed transactions cannot be attested"
+            "transaction reverted or invalid EIP-658 status (status != 1); events from failed transactions cannot be attested"
                 .into(),
         ));
     }
@@ -2828,6 +2829,28 @@ mod tests {
             decode_and_validate_receipt(&typed_unknown, 0, 0, None, None),
             Err(MosooError::RlpDecodeFailed(_))
         ));
+
+        // EIP-658 receipt status != 1 (M-03): empty status (0x80), explicit [0x00], and [0x02] MUST all fail.
+        for bad_status in [vec![0x80u8], vec![0x00u8], vec![0x02u8]] {
+            let mut bad_inner = bad_status;
+            alloy_primitives::Bytes::from_static(&[0x01]).encode(&mut bad_inner);
+            alloy_primitives::Bytes::from_static(&[0u8; 256]).encode(&mut bad_inner);
+            bad_inner.push(0xc0);
+            let mut bad_receipt = Vec::new();
+            alloy_rlp::Header {
+                list: true,
+                payload_length: bad_inner.len(),
+            }
+            .encode(&mut bad_receipt);
+            bad_receipt.extend_from_slice(&bad_inner);
+            assert!(
+                matches!(
+                    decode_and_validate_receipt(&bad_receipt, 0, 0, None, None),
+                    Err(MosooError::Internal(_))
+                ),
+                "non-1 EIP-658 status must be rejected"
+            );
+        }
 
         // Trailing bytes after RLP list -> rejected.
         let mut trailing = valid_4.clone();

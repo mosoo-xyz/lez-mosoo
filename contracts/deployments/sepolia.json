@@ -1,14 +1,14 @@
 {
   "contractName": "MosooLocker",
-  "version": "v3",
+  "version": "v4",
   "network": "sepolia",
   "chainId": "11155111",
-  "address": "0x374B9F073A6aC1aF2c147392319499e35E8C7e82",
+  "address": "0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd",
   "deployer": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
   "attesterAuthority": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
   "guardian": "0x528605F78c650Cf4d84705e3dB85db37b4de30a0",
   "additionalAttesters": [
-    "0xFD8a8Ba3468865AC13Df58fD83e01599a2D23c15"
+    "0x0349f0793905991dEF2De19eB1508bc41C5Aa7E4"
   ],
   "isCommissioned": true,
   "productionCommissioned": true,
@@ -18,37 +18,46 @@
   "strictFixedDenominationMode": true,
   "tokenAllowlistEnabled": true,
   "legacyRoutesPermanentlyDisabled": true,
-  "transactionHash": "0x2fd1d318d43a5a82f1bed7d94e95610eee1919c5676f0490407c4af1b57102a7",
-  "blockNumber": 12118809,
-  "gasUsed": "46806487",
-  "deployedAt": "2026-11-12T12:21:52.884Z",
+  "largeWithdrawalThresholdERC20_USDC": "10000000000",
+  "largeWithdrawalThresholdERC20_USDT": "10000000000",
+  "transactionHash": "0x2af69c9cc3c5eb68ade512f4f913e361f1b369d29cb8cf69657cb3e58b70959a",
+  "blockNumber": 12119389,
+  "gasUsed": "42693534",
+  "deployedAt": "2026-11-12T14:19:43.848Z",
   "hardeningTransactions": {
-    "shieldedDepositsOnlyTx": "0x987cf3fc9d5d35fd236ecd291b4bfec7dbe6646010fed04868448d589c040704",
-    "strictDenominationModeTx": "0x42cc6fda93bf06a43ed9978fbc59e041985017e7735a4c0b88de07cb85741f34",
-    "retireLegacyRoutesTx": "0x4fd43ec78808b784eebeeb15610f886e0183514b448a62f6609170698c56f01f",
-    "commissionLockerTx": "0x8a4f44c2a803ed264d2b24025c1f662d15e85e0e791403df0a1e6eee69fe89dc"
+    "shieldedDepositsOnlyTx": "0x1bad410eef5ebe5dfae0cfcf9afd613a15ced3e1d33641f499cd29466ecc79dd",
+    "strictDenominationModeTx": "0x9b9b1fcbf966bac5d3c9b82859f6565aca1b83404e3658d8bcf63ae52ee615f9",
+    "retireLegacyRoutesTx": "0xa955a123aba68590bad521f7501fe5adf5d49280683b63fe2a3653bb3a0dce4c",
+    "commissionLockerTx": "0x43358207fa7328307184eae7ac494494bad8f0368667e1e3ede90c60e9a79e52"
   },
   "canonicalDeposit": {
     "event": "DepositCommitted",
-    "transactionHash": "0xef24568c6d44d2798744dcf89566e12e216b153f188509dbe9914020d35c5773",
-    "blockNumber": 12118816,
-    "gasUsed": "651555",
-    "commitment": "0xd27e15416dad9efd3ddbb7598c8d44efc2160093fa1a3cb3c86cc7bd95ee5d53",
+    "transactionHash": "0x5beca8cddc24ca97448b428b679642d88238df7b5502650a540817c2ccbc8c0c",
+    "blockNumber": 12119399,
+    "gasUsed": "652809",
+    "commitment": "0xddb704100cf57b8e67fb7c807693825ad29f736f8ba4a74655601ad45cdfb985",
     "amountWei": "10000000000000000",
     "amountEth": "0.01",
     "leafIndex": 1
   },
   "liveShieldedRoundtrip": {
-    "depositTxHash": "0x3ceb8bc3cb1e9f77d26d4304cc796e229677fb182bbd2ca902a3c017573aa233",
-    "depositBlockNumber": 12118814,
-    "depositCommitment": "0x60e38ee1eee38dffa203ace21af0931536166f76423758a09e0406298ad48ca9",
+    "depositTxHash": "0x29a9a209e2beb5a18b0150a71e691e896b8306ef1b3002a14d6bdb6103e00e47",
+    "depositBlockNumber": 12119396,
+    "depositCommitment": "0xf01ba81c62d3fcbe92b985b500aee3e705fba5b740d3edd44cd85ccc3fbf24d9",
     "depositLeafIndex": 0,
     "depositAmountEth": "0.01",
-    "unlockTxHash": "0x3204263c6c80b0612f04c7c1e557d139fb7152c649ae9fed4fc47addaf88b56b",
-    "unlockBlockNumber": 12118815,
-    "burnNullifier": "0x9be1dcf3e31b23c98a0599b3c973b0bb40eb7bc8c02459994b2337fa80255e83",
+    "unlockTxHash": "0x9a986ef0e864a894e82b531ee710fab1c773ba71c265fc73db306d64f26404e8",
+    "unlockBlockNumber": 12119398,
+    "burnNullifier": "0x65a1c397867bcd39812bf8f5ab2746c70e9adb3e7826f41cb8a827a07c66905c",
     "sourceInstance": "0x984a6b2e81c318492c2c0abd211dfbbb641a3e71a5b27fcf806732ad55861912",
     "unlockQuorum": "2-of-2"
+  },
+  "previousV3Deployment": {
+    "address": "0x374B9F073A6aC1aF2c147392319499e35E8C7e82",
+    "transactionHash": "0x2fd1d318d43a5a82f1bed7d94e95610eee1919c5676f0490407c4af1b57102a7",
+    "blockNumber": 12118809,
+    "commissionTransactionHash": "0x8a4f44c2a803ed264d2b24025c1f662d15e85e0e791403df0a1e6eee69fe89dc",
+    "liveRoundtripUnlockTx": "0x3204263c6c80b0612f04c7c1e557d139fb7152c649ae9fed4fc47addaf88b56b"
   },
   "previousV2Deployment": {
     "address": "0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b",
@@ -64,5 +73,5 @@
     "deposit1Tx": "0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882",
     "deposit3Tx": "0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913"
   },
-  "notes": "Hardened MosooLocker v3 on Sepolia with irreversible productionCommissioned>=2 latch, shieldedDepositsOnly=true, strictFixedDenominationMode=true, permanentlyRetireLegacyRoutes=true, owner!=guardian invariants, non-zero daily limits, and verified 2-of-2 DepositCommitted + UnlockedShieldedETH roundtrip."
+  "notes": "Hardened MosooLocker v4 on Sepolia with M-01 payload-bound large withdrawal queue, M-02 irreversible post-commissioning privacy flags, M-08 ERC-20 large-withdrawal 24h queue, 2-of-2 quorum, legacy retirement, and live DepositCommitted + UnlockedShieldedETH roundtrip."
 }

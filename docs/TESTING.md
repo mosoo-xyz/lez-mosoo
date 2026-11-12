@@ -79,6 +79,6 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 
 ## Scope & Honest Test Boundaries
 
-- **Verified locally & in CI (`358/358` automated tests):** `334` Rust workspace tests + `24` Foundry tests execute deterministically without external network dependencies, mocks masquerading as chain proofs, or relaxed assertions.
-- **Verified live on public testnets (`v0.3.1` + Sepolia `v3`):** Immutable `mosoo_lc` on LEZ v0.3.1 (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) and hardened commissioned `2-of-2` `MosooLocker` v3 on Sepolia (`0x374B9F073A6aC1aF2c147392319499e35E8C7e82`). See [`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md).
+- **Verified locally & in CI (`361/361` automated tests):** `335` Rust workspace tests + `26` Foundry tests execute deterministically without external network dependencies, mocks masquerading as chain proofs, or relaxed assertions.
+- **Verified live on public testnets (`v0.3.1` + Sepolia `v4`):** Immutable `mosoo_lc` on LEZ v0.3.1 (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) and hardened EIP-170 commissioned `2-of-2` `MosooLocker` v4 on Sepolia (`0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd`). See [`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md).
 - **Not yet run against public network:** Live public LEZ `v0.4` deployment awaits upstream LEZ `v0.4` testnet availability; the `v0.4` target guest is verified today against offline sequencer harnesses and local unit/integration suites.

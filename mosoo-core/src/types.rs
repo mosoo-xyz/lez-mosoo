@@ -27,6 +27,13 @@ pub const CANONICAL_SEPOLIA_MOSOO_LOCKER_V3: [u8; 20] = [
     0x5e, 0x8c, 0x7e, 0x82,
 ];
 
+/// Canonical Sepolia MosooLocker v4 EIP-170 hardened shielded-pool contract address (deployed at block 12119389, tx 0x2af6...59a)
+/// Adds M-01 payload-bound large withdrawal queue, M-02 irreversible privacy flags post-commissioning, and M-08 ERC-20 large-withdrawal queue.
+pub const CANONICAL_SEPOLIA_MOSOO_LOCKER_V4: [u8; 20] = [
+    0xf9, 0x4e, 0xa0, 0xf9, 0xec, 0xbf, 0x5c, 0x0e, 0xdb, 0x78, 0x0f, 0x87, 0x15, 0x52, 0x16, 0x4a,
+    0xd6, 0x8d, 0x14, 0xcd,
+];
+
 /// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky, Hoodi).
 /// Light-client consensus tracking and inclusion proof verification are supported across all 4 chains.
 pub const fn is_supported_chain_id(chain_id: u64) -> bool {
@@ -367,8 +374,8 @@ impl TrustedBridgeConfig {
     }
 
     /// Returns true if candidate address is trusted for shielded `DepositCommitted` claims.
-    /// When Sepolia uses the default canonical v1 locker, the commissioned Sepolia v2 and v3
-    /// hardened deployments (`CANONICAL_SEPOLIA_MOSOO_LOCKER_V2`, `CANONICAL_SEPOLIA_MOSOO_LOCKER_V3`)
+    /// When Sepolia uses the default canonical v1 locker, the commissioned Sepolia v2, v3, and v4
+    /// hardened deployments (`CANONICAL_SEPOLIA_MOSOO_LOCKER_V2`, `_V3`, `_V4`)
     /// are also recognized alongside v1 while explicit overrides stay isolated.
     pub fn is_trusted_shielded_locker(&self, chain_id: u64, candidate: &[u8; 20]) -> bool {
         if *candidate == [0u8; 20] {
@@ -380,7 +387,8 @@ impl TrustedBridgeConfig {
                     || (chain_id == ETH_SEPOLIA_CHAIN_ID
                         && *configured == CANONICAL_SEPOLIA_MOSOO_LOCKER
                         && (*candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V2
-                            || *candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V3))
+                            || *candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V3
+                            || *candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V4))
             }
             None => false,
         }
@@ -2324,5 +2332,22 @@ mod tests {
             reg_unauth,
             Err(MosooError::DomainSeparationFailed)
         ));
+    }
+
+    #[test]
+    fn test_canonical_sepolia_shielded_lockers_include_v1_through_v4() {
+        let cfg = TrustedBridgeConfig::canonical();
+        assert!(
+            cfg.is_trusted_shielded_locker(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_MOSOO_LOCKER)
+        );
+        assert!(cfg
+            .is_trusted_shielded_locker(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_MOSOO_LOCKER_V2));
+        assert!(cfg
+            .is_trusted_shielded_locker(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_MOSOO_LOCKER_V3));
+        assert!(cfg
+            .is_trusted_shielded_locker(ETH_SEPOLIA_CHAIN_ID, &CANONICAL_SEPOLIA_MOSOO_LOCKER_V4));
+        assert!(!cfg.is_trusted_shielded_locker(ETH_SEPOLIA_CHAIN_ID, &[0x99u8; 20]));
+        assert!(!cfg
+            .is_trusted_shielded_locker(ETH_MAINNET_CHAIN_ID, &CANONICAL_SEPOLIA_MOSOO_LOCKER_V4));
     }
 }

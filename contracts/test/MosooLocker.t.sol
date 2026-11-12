@@ -982,6 +982,13 @@ contract MosooLockerTest is Test {
         locker.setShieldedDepositsOnly(true);
         locker.setStrictFixedDenominationMode(true);
 
+        // Pre-commissioning guardian cancellation of pending privacy proposal still works if queued earlier,
+        // so test pre-commission propose -> guardian cancel BEFORE commissioning.
+        locker.proposeDisableShieldedDepositsOnly();
+        vm.prank(guardian);
+        locker.cancelPendingGovernance(8);
+        assertEq(locker.disableShieldedOnlyTimelockUnlock(), 0, "guardian cancel must clear unlock");
+
         address attester2 = address(0xA11CE3);
         address[] memory extra = new address[](1);
         extra[0] = attester2;
@@ -1004,10 +1011,137 @@ contract MosooLockerTest is Test {
             revert("direct setStandardDenomination post-commissioning MUST revert");
         } catch {}
 
-        // Timelocked relaxation works only after 48h and can be cancelled by guardian
-        locker.proposeDisableShieldedDepositsOnly();
-        vm.prank(guardian);
-        locker.cancelPendingGovernance(8);
-        assertEq(locker.disableShieldedOnlyTimelockUnlock(), 0, "guardian cancel must clear unlock");
+        // M-02: Once productionCommissioned AND privacy flags are enabled, even timelocked relaxation MUST revert permanently
+        try locker.proposeDisableShieldedDepositsOnly() {
+            revert("proposeDisableShieldedDepositsOnly MUST revert permanently once commissioned");
+        } catch {}
+        try locker.executeDisableShieldedDepositsOnly() {
+            revert("executeDisableShieldedDepositsOnly MUST revert permanently once commissioned");
+        } catch {}
+        try locker.proposeDisableStrictDenominationMode() {
+            revert("proposeDisableStrictDenominationMode MUST revert permanently once commissioned");
+        } catch {}
+        try locker.executeDisableStrictDenominationMode() {
+            revert("executeDisableStrictDenominationMode MUST revert permanently once commissioned");
+        } catch {}
+    }
+
+    function test_queued_withdrawal_payload_binding_prevents_swap() public {
+        vm.deal(user, 50 ether);
+        vm.prank(user);
+        locker.depositShieldedETH{value: 20 ether}(keccak256("large_dep_1"));
+
+        bytes32 burnNullifier = keccak256("large_shielded_burn_1");
+        bytes32 sourceInstance = bytes32(uint256(0x9999));
+        uint256 amount = 12 ether;
+        address payable recipient1 = payable(user);
+        address payable recipient2 = payable(address(0xCAFE));
+
+        bytes32 structHash1 = keccak256(
+            abi.encode(
+                locker.SHIELDED_BURN_ETH_TYPEHASH(),
+                burnNullifier,
+                sourceInstance,
+                recipient1,
+                amount
+            )
+        );
+        bytes32 digest1 = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash1));
+        (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(attesterPk, digest1);
+        bytes[] memory sigs1 = new bytes[](1);
+        sigs1[0] = abi.encodePacked(r1, s1, v1);
+
+        // 1st call queues the withdrawal and records payload hash
+        locker.unlockShieldedETH(burnNullifier, sourceInstance, amount, recipient1, sigs1);
+        uint256 unlockTime = locker.queuedWithdrawalUnlockTime(burnNullifier);
+        assertTrue(unlockTime > block.timestamp, "withdrawal should be queued");
+        assertTrue(locker.queuedWithdrawalPayloadHash(burnNullifier) != bytes32(0), "payload hash must be stored");
+
+        // Warp past 24h delay
+        vm.warp(unlockTime + 1);
+
+        // Attempt to swap recipient using same burnNullifier (even with valid signature) MUST revert WithdrawalPayloadMismatch
+        bytes32 structHashSwap = keccak256(
+            abi.encode(
+                locker.SHIELDED_BURN_ETH_TYPEHASH(),
+                burnNullifier,
+                sourceInstance,
+                recipient2,
+                amount
+            )
+        );
+        bytes32 digestSwap = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHashSwap));
+        (uint8 v2, bytes32 r2, bytes32 s2) = vm.sign(attesterPk, digestSwap);
+        bytes[] memory sigsSwap = new bytes[](1);
+        sigsSwap[0] = abi.encodePacked(r2, s2, v2);
+
+        try locker.unlockShieldedETH(burnNullifier, sourceInstance, amount, recipient2, sigsSwap) {
+            revert("swapped recipient MUST revert with WithdrawalPayloadMismatch");
+        } catch {}
+
+        // Original exact payload succeeds and clears queue + payload hash
+        locker.unlockShieldedETH(burnNullifier, sourceInstance, amount, recipient1, sigs1);
+        assertTrue(locker.executedBurns(burnNullifier), "original queued burn must execute");
+        assertEq(locker.queuedWithdrawalUnlockTime(burnNullifier), 0, "unlockTime cleared");
+        assertEq(locker.queuedWithdrawalPayloadHash(burnNullifier), bytes32(0), "payloadHash cleared");
+    }
+
+    function test_erc20_large_withdrawal_queue_and_payload_binding() public {
+        // Configure 50,000 token daily limit & 10,000 token large-withdrawal queue threshold
+        locker.proposeDailyWithdrawalLimitERC20(address(token), 50_000 ether);
+        locker.setLargeWithdrawalThresholdERC20(address(token), 10_000 ether);
+        vm.warp(block.timestamp + locker.GOVERNANCE_TIMELOCK_DELAY() + 1);
+        locker.executeDailyWithdrawalLimitERC20(address(token));
+
+        uint256 depositAmt = 20_000 ether;
+        vm.prank(user);
+        token.approve(address(locker), depositAmt);
+        vm.prank(user);
+        locker.depositShieldedERC20(address(token), depositAmt, keccak256("large_erc20_dep"));
+
+        bytes32 burnNullifier = keccak256("large_erc20_burn");
+        bytes32 sourceInstance = bytes32(uint256(0x9999));
+        uint256 withdrawAmt = 15_000 ether;
+        address recipient = user;
+
+        bytes32 structHash = keccak256(
+            abi.encode(
+                locker.SHIELDED_BURN_ERC20_TYPEHASH(),
+                burnNullifier,
+                sourceInstance,
+                address(token),
+                recipient,
+                withdrawAmt
+            )
+        );
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(attesterPk, digest);
+        bytes[] memory sigs = new bytes[](1);
+        sigs[0] = abi.encodePacked(r, s, v);
+
+        // 1st call queues large ERC-20 withdrawal without transferring tokens yet
+        uint256 balBefore = token.balanceOf(recipient);
+        locker.unlockShieldedERC20(burnNullifier, sourceInstance, address(token), withdrawAmt, recipient, sigs);
+        assertEq(token.balanceOf(recipient), balBefore, "queued ERC20 withdrawal must not transfer yet");
+        uint256 unlockTime = locker.queuedWithdrawalUnlockTime(burnNullifier);
+        assertTrue(unlockTime > block.timestamp, "ERC20 withdrawal must be queued");
+
+        // Immediate retry before 24h MUST revert
+        try locker.unlockShieldedERC20(burnNullifier, sourceInstance, address(token), withdrawAmt, recipient, sigs) {
+            revert("early ERC20 withdrawal retry MUST revert");
+        } catch {}
+
+        // After 24h delay, exact payload settles
+        vm.warp(unlockTime + 1);
+        locker.unlockShieldedERC20(burnNullifier, sourceInstance, address(token), withdrawAmt, recipient, sigs);
+        assertEq(token.balanceOf(recipient), balBefore + withdrawAmt, "ERC20 withdrawal should settle after delay");
+        assertEq(locker.queuedWithdrawalPayloadHash(burnNullifier), bytes32(0), "ERC20 payload hash cleared");
+
+        // Verify Sepolia canonical defaults match M-08 thresholds
+        assertEq(
+            locker.largeWithdrawalThresholdERC20(0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238),
+            10_000 * 10**6,
+            "Sepolia USDC large threshold mismatch"
+        );
     }
 }

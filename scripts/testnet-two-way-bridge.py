@@ -524,8 +524,8 @@ def main():
 
     print("\n" + "=" * 80)
     print(f"[+] TWO-WAY BRIDGE PIPELINE ({args.mode.upper()} MODE) COMPLETED")
-    print("  - Ethereum Sepolia : Queries live hardened v3 MosooLocker (0x374B...; shieldedDepositsOnly=true)")
-    print("                       (Earlier v1 0x7462... & v2 0xEFEf... preserved in sepolia.json history)")
+    print("  - Ethereum Sepolia : Queries live EIP-170 hardened v4 MosooLocker (0xF94e...; shieldedDepositsOnly=true)")
+    print("                       (Earlier v1 0x7462..., v2 0xEFEf... & v3 0x374B... preserved in sepolia.json history)")
     print("  - LEZ Steps 3-5    : Local Python state-machine simulation (no LEZ txs broadcast)")
     print("  - Invariant Check  : Locked asset delta matches simulated supply")
     print("=" * 80)

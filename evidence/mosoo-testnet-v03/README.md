@@ -22,7 +22,7 @@ This directory contains **first-party live deployment, local zkVM cycle simulati
 | **Split Pairing Job PDA** | `92x4rxU2z7uKvCX4RjWAkfNHgQJ4vLpWU4p2Xxo6KPkh` | Closed (`0` B shard after `Finish`) |
 
 > [!NOTE]
-> **Immutable Binary Provenance:** Deployed `Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg` and [`artifacts/programs/v0.3/mosoo_lc.bin`](../../artifacts/programs/v0.3/mosoo_lc.bin) (`ImageID 961a7e12...`) were compiled prior to the later workspace `mosoo-core` hardening patches (`crypto::is_supported_chain_or_configured` strict built-in chain validation and `TrustedBridgeConfig::is_trusted_shielded_locker` Sepolia v2 `0xEFEf...` default recognition). Because `Co5EYuBR...` is deployed `immutable = true`, it retains the pre-patch `TrustedBridgeConfig::canonical()` behavior unless redeployed to a new program account.
+> **Immutable Binary Provenance:** Deployed `Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg` and [`artifacts/programs/v0.3/mosoo_lc.bin`](../../artifacts/programs/v0.3/mosoo_lc.bin) (`ImageID 961a7e12...`) were compiled prior to the later workspace `mosoo-core` hardening patches (`crypto::is_supported_chain_or_configured` strict built-in chain validation, `TrustedBridgeConfig::is_trusted_shielded_locker` Sepolia v2/v3/v4 default recognition, and strict EIP-658 `status == [1u8]` validation). Because `Co5EYuBR...` is deployed `immutable = true`, it retains its deployed ImageID while the rebuilt hardened binary passes full `V03State` local cycle simulation; on-chain redeployment + additional live period rotations await public LEZ faucet replenishment (`EfQhKQAk... = 0 LEZ`, `1,106,702` lepta remaining locally vs `~101M` lepta needed).
 
 ---
 

@@ -30,7 +30,7 @@ contract MosooLocker {
     address public attesterAuthority;
     address public pendingAttesterAuthority;
     uint256 public authorityTimelockUnlock;
-    uint256 public constant AUTHORITY_CHANGE_DELAY = 1 days;
+    uint256 private constant AUTHORITY_CHANGE_DELAY = 1 days;
 
     /// @notice Multi-signer attester committee membership and M-of-N threshold quorum
     mapping(address => bool) public isAttester;
@@ -38,7 +38,7 @@ contract MosooLocker {
     uint256 public requiredQuorum;
 
     /// @notice Strict multi-attester threshold requirement for fully commissioned production release
-    uint256 public constant MIN_PRODUCTION_QUORUM = 2;
+    uint256 private constant MIN_PRODUCTION_QUORUM = 2;
 
     /// @notice Irreversible latch set once locker reaches production multi-attester commissioning
     bool public productionCommissioned;
@@ -74,68 +74,74 @@ contract MosooLocker {
         uint192 amount;
     }
 
-    uint256 public constant ROLLING_WINDOW = 1 days;
+    uint256 private constant ROLLING_WINDOW = 1 days;
 
     /// @notice Rolling daily withdrawal limit for ETH (0 = disabled/unlimited)
     uint256 public dailyWithdrawalLimitETH;
-    WithdrawalRecord[] private _ethWithdrawals;
-    uint256 private _ethWithdrawalHead;
-    uint256 private _rollingWithdrawnETH;
-
     /// @notice Rolling daily withdrawal limits for ERC-20 tokens (token => limit)
     mapping(address => uint256) public dailyWithdrawalLimitERC20;
-    mapping(address => WithdrawalRecord[]) private _erc20Withdrawals;
-    mapping(address => uint256) private _erc20WithdrawalHead;
-    mapping(address => uint256) private _rollingWithdrawnERC20;
+
+    /// @dev Unified rolling withdrawal history keyed by asset (address(0) = ETH, token = ERC-20)
+    mapping(address => WithdrawalRecord[]) private _withdrawalHistory;
+    mapping(address => uint256) private _withdrawalHead;
+    mapping(address => uint256) private _rollingWithdrawn;
 
     /// @notice Multi-signer governance timelock (2-day delay for attester/quorum modifications)
     uint256 public constant GOVERNANCE_TIMELOCK_DELAY = 2 days;
     /// @notice Maximum number of expired withdrawal records cleaned up per transaction to guarantee O(1) gas
-    uint256 public constant MAX_CLEANUP_BATCH = 32;
+    uint256 private constant MAX_CLEANUP_BATCH = 32;
     /// @notice Maximum number of records pruned in second-pass cleanup to bound gas on limit contention
-    uint256 public constant MAX_PASS2_CLEANUP_BATCH = 128;
+    uint256 private constant MAX_PASS2_CLEANUP_BATCH = 128;
 
-    uint256 public pendingQuorum;
+    uint256 private pendingQuorum;
     uint256 public quorumTimelockUnlock;
-    address public pendingAddAttester;
+    address private pendingAddAttester;
     uint256 public addAttesterTimelockUnlock;
-    address public pendingRemoveAttester;
-    uint256 public removeAttesterTimelockUnlock;
+    address private pendingRemoveAttester;
+    uint256 private removeAttesterTimelockUnlock;
     address public pendingGuardian;
     uint256 public guardianTimelockUnlock;
 
     /// @notice Timelocked rate-limit administration (2-day timelock delay)
-    uint256 public pendingDailyLimitETH;
+    uint256 private pendingDailyLimitETH;
     uint256 public dailyLimitETHTimelockUnlock;
-    bool public hasPendingDailyLimitETH;
+    bool private hasPendingDailyLimitETH;
 
-    mapping(address => uint256) public pendingDailyLimitERC20;
-    mapping(address => uint256) public dailyLimitERC20TimelockUnlock;
-    mapping(address => bool) public hasPendingDailyLimitERC20;
+    mapping(address => uint256) private pendingDailyLimitERC20;
+    mapping(address => uint256) private dailyLimitERC20TimelockUnlock;
+    mapping(address => bool) private hasPendingDailyLimitERC20;
 
     /// @notice Timelocked security & privacy relaxation governance (2-day timelock + guardian cancellable)
-    uint256 public disableAllowlistTimelockUnlock;
+    uint256 private disableAllowlistTimelockUnlock;
     uint256 public disableShieldedOnlyTimelockUnlock;
-    uint256 public disableStrictDenomTimelockUnlock;
-    address public pendingTokenAllowedAddr;
-    bool public pendingTokenAllowedFlag;
-    uint256 public tokenAllowedTimelockUnlock;
-    uint256 public pendingDenomAmount;
-    bool public pendingDenomAllowed;
-    uint256 public denomTimelockUnlock;
+    uint256 private disableStrictDenomTimelockUnlock;
+    address private pendingTokenAllowedAddr;
+    bool private pendingTokenAllowedFlag;
+    uint256 private tokenAllowedTimelockUnlock;
+    uint256 private pendingDenomAmount;
+    bool private pendingDenomAllowed;
+    uint256 private denomTimelockUnlock;
 
     /// @notice Large withdrawal threshold requiring mandatory timelock delay
-    uint256 public constant LARGE_WITHDRAWAL_THRESHOLD_ETH = 10 ether;
-    uint256 public constant LARGE_WITHDRAWAL_DELAY = 1 days;
+    uint256 private constant LARGE_WITHDRAWAL_THRESHOLD_ETH = 10 ether;
+    uint256 private constant LARGE_WITHDRAWAL_DELAY = 1 days;
+
+    /// @notice Per-token large withdrawal threshold requiring mandatory 24h timelock delay (0 = disabled).
+    mapping(address => uint256) public largeWithdrawalThresholdERC20;
+    mapping(address => uint256) private pendingLargeThresholdERC20;
+    mapping(address => uint256) private largeThresholdERC20TimelockUnlock;
+    mapping(address => bool) private hasPendingLargeThresholdERC20;
 
     /// @notice Queued large withdrawals: burnId => executableTimestamp
     mapping(bytes32 => uint256) public queuedWithdrawalUnlockTime;
+    /// @notice Bound payload hash for queued withdrawals (prevents parameter swapping post-queue)
+    mapping(bytes32 => bytes32) public queuedWithdrawalPayloadHash;
 
     /// @notice Permanently cancelled burns (cannot be re-queued or unlocked by anyone)
     mapping(bytes32 => bool) public cancelledBurns;
 
     // --- EIP-712 Domain Separation ---
-    bytes32 public constant EIP712_DOMAIN_TYPEHASH = keccak256(
+    bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
 
@@ -143,7 +149,7 @@ contract MosooLocker {
         "BurnETH(bytes32 burnId,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
     );
 
-    bytes32 public constant BURN_ERC20_TYPEHASH = keccak256(
+    bytes32 private constant BURN_ERC20_TYPEHASH = keccak256(
         "BurnERC20(bytes32 burnId,address token,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
     );
 
@@ -152,7 +158,7 @@ contract MosooLocker {
         "BurnETHV2(bytes32 burnId,bytes32 sourceInstance,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
     );
 
-    bytes32 public constant BURN_ERC20_V2_TYPEHASH = keccak256(
+    bytes32 private constant BURN_ERC20_V2_TYPEHASH = keccak256(
         "BurnERC20V2(bytes32 burnId,bytes32 sourceInstance,address token,address recipient,uint256 amount,bytes32 lezOwner,uint64 burnNonce,uint64 lezSlot)"
     );
 
@@ -183,8 +189,8 @@ contract MosooLocker {
     uint256 private _status;
 
     // --- RFP-022 Privacy-Preserving Shielded Commitment Pool & Incremental Merkle Tree ---
-    uint32 public constant MERKLE_TREE_DEPTH = 20;
-    bytes32 public constant EMPTY_LEAF_HASH = keccak256("mosoo_empty_leaf_v1");
+    uint32 private constant MERKLE_TREE_DEPTH = 20;
+    bytes32 private constant EMPTY_LEAF_HASH = keccak256("mosoo_empty_leaf_v1");
     uint32 public nextCommitmentIndex;
     bytes32[20] private _filledSubtrees;
     bytes32 public currentCommitmentRoot;
@@ -272,6 +278,8 @@ contract MosooLocker {
     event BurnPermanentlyCancelled(bytes32 indexed burnId, address indexed cancelledBy);
     event DailyWithdrawalLimitUpdatedETH(uint256 oldLimit, uint256 newLimit);
     event DailyWithdrawalLimitUpdatedERC20(address indexed token, uint256 oldLimit, uint256 newLimit);
+    event LargeWithdrawalThresholdERC20Updated(address indexed token, uint256 oldThreshold, uint256 newThreshold);
+    event LargeWithdrawalThresholdERC20Proposed(address indexed token, uint256 currentThreshold, uint256 proposedThreshold, uint256 unlockTimestamp);
     event QuorumChangeProposed(uint256 currentQuorum, uint256 proposedQuorum, uint256 unlockTimestamp);
     event AttesterAddProposed(address indexed proposedAttester, uint256 unlockTimestamp);
     event AttesterRemoveProposed(address indexed proposedAttester, uint256 unlockTimestamp);
@@ -323,23 +331,41 @@ contract MosooLocker {
     error InvalidDenomination(uint256 amount);
     error InvalidDailyLimit();
     error DailyLimitNotConfigured();
+    error WithdrawalPayloadMismatch();
+    error PrivacySettingLocked();
 
     // --- Modifiers ---
 
     modifier onlyOwner() {
-        if (msg.sender != owner) revert Unauthorized();
+        _checkOwner();
         _;
     }
 
     modifier whenNotPaused() {
-        if (paused) revert ContractPaused();
+        _checkNotPaused();
         _;
     }
 
     modifier nonReentrant() {
+        _nonReentrantBefore();
+        _;
+        _nonReentrantAfter();
+    }
+
+    function _checkOwner() internal view {
+        if (msg.sender != owner) revert Unauthorized();
+    }
+
+    function _checkNotPaused() internal view {
+        if (paused) revert ContractPaused();
+    }
+
+    function _nonReentrantBefore() internal {
         if (_status == _ENTERED) revert ReentrancyGuardReentrantCall();
         _status = _ENTERED;
-        _;
+    }
+
+    function _nonReentrantAfter() internal {
         _status = _NOT_ENTERED;
     }
 
@@ -372,6 +398,12 @@ contract MosooLocker {
         uint256 oldQuorum = requiredQuorum;
         requiredQuorum = initialQuorum;
         productionCommissioned = true;
+        if (shieldedDepositsOnly) {
+            disableShieldedOnlyTimelockUnlock = 0;
+        }
+        if (strictFixedDenominationMode) {
+            disableStrictDenomTimelockUnlock = 0;
+        }
         emit QuorumUpdated(oldQuorum, requiredQuorum);
     }
 
@@ -410,6 +442,8 @@ contract MosooLocker {
         isTokenAllowed[sepoliaUSDT] = true;
         dailyWithdrawalLimitERC20[sepoliaUSDC] = 50_000 * 10**6; // 50,000 USDC per 24h
         dailyWithdrawalLimitERC20[sepoliaUSDT] = 50_000 * 10**6; // 50,000 USDT per 24h
+        largeWithdrawalThresholdERC20[sepoliaUSDC] = 10_000 * 10**6; // 10,000 USDC mandatory 24h queue
+        largeWithdrawalThresholdERC20[sepoliaUSDT] = 10_000 * 10**6; // 10,000 USDT mandatory 24h queue
 
         // Initialize Depth-20 incremental commitment Merkle tree zeros (RFP-022 shielded pool)
         bytes32 currentZero = EMPTY_LEAF_HASH;
@@ -436,6 +470,8 @@ contract MosooLocker {
         emit DailyWithdrawalLimitUpdatedETH(0, 100 ether);
         emit DailyWithdrawalLimitUpdatedERC20(sepoliaUSDC, 0, 50_000 * 10**6);
         emit DailyWithdrawalLimitUpdatedERC20(sepoliaUSDT, 0, 50_000 * 10**6);
+        emit LargeWithdrawalThresholdERC20Updated(sepoliaUSDC, 0, 10_000 * 10**6);
+        emit LargeWithdrawalThresholdERC20Updated(sepoliaUSDT, 0, 10_000 * 10**6);
     }
 
     // --- Deposit Functions (ETH -> LEZ) ---
@@ -508,15 +544,8 @@ contract MosooLocker {
         returns (uint64 nonce)
     {
         if (shieldedDepositsOnly) revert ShieldedDepositsOnlyActive();
-        if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || lezRecipient == bytes32(0)) revert ZeroAddress();
-        if (token.code.length == 0) revert ZeroAddress();
-        if (tokenAllowlistEnabled && !isTokenAllowed[token]) revert TokenNotAllowed();
-
-        uint256 balanceBefore = _getTokenBalance(token, address(this));
-        _safeTransferFrom(token, msg.sender, address(this), amount);
-        uint256 actualAmount = _getTokenBalance(token, address(this)) - balanceBefore;
-        if (actualAmount == 0) revert ZeroAmount();
+        if (lezRecipient == bytes32(0)) revert ZeroAddress();
+        uint256 actualAmount = _pullERC20Deposit(token, amount);
 
         depositNonce += 1;
         nonce = depositNonce;
@@ -540,16 +569,8 @@ contract MosooLocker {
         nonReentrant
         returns (uint32 leafIndex, bytes32 newRoot)
     {
-        if (amount == 0) revert ZeroAmount();
-        if (token == address(0)) revert ZeroAddress();
         if (commitment == bytes32(0)) revert ZeroCommitment();
-        if (token.code.length == 0) revert ZeroAddress();
-        if (tokenAllowlistEnabled && !isTokenAllowed[token]) revert TokenNotAllowed();
-
-        uint256 balanceBefore = _getTokenBalance(token, address(this));
-        _safeTransferFrom(token, msg.sender, address(this), amount);
-        uint256 actualAmount = _getTokenBalance(token, address(this)) - balanceBefore;
-        if (actualAmount == 0) revert ZeroAmount();
+        uint256 actualAmount = _pullERC20Deposit(token, amount);
         if (strictFixedDenominationMode && !isStandardDenomination[actualAmount]) {
             revert InvalidDenomination(actualAmount);
         }
@@ -561,6 +582,18 @@ contract MosooLocker {
         (leafIndex, newRoot) = _insertCommitment(commitment);
 
         emit DepositCommitted(commitment, token, actualAmount, leafIndex, newRoot, nonce);
+    }
+
+    function _pullERC20Deposit(address token, uint256 amount) internal returns (uint256 actualAmount) {
+        if (amount == 0) revert ZeroAmount();
+        if (token == address(0)) revert ZeroAddress();
+        if (token.code.length == 0) revert ZeroAddress();
+        if (tokenAllowlistEnabled && !isTokenAllowed[token]) revert TokenNotAllowed();
+
+        uint256 balanceBefore = _getTokenBalance(token, address(this));
+        _safeTransferFrom(token, msg.sender, address(this), amount);
+        actualAmount = _getTokenBalance(token, address(this)) - balanceBefore;
+        if (actualAmount == 0) revert ZeroAmount();
     }
 
     // --- Incremental Commitment Merkle Tree Helpers (RFP-022 Privacy Pool) ---
@@ -657,70 +690,8 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        if (!legacyRoutesEnabled || isCommissioned()) revert LegacyRoutesDisabled();
-        if (amount == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
-
-        // 1. Verify burnId canonical derivation: keccak256("mosoo_burn_v1" || chain_id || lezOwner || recipient || amount || nonce || slot)
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_v1",
-                block.chainid,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        // 2. Verify signature using EIP-712 structured data (strictly binding verifyingContract address(this))
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ETH_TYPEHASH,
-                burnId,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyBurnSignature(structHash, attestationSignature)) {
-            revert InvalidBurnProof();
-        }
-
-        // 3. Defense-in-Depth: Timelock delay for large withdrawals (>= 10 ETH)
-        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
-            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
-            if (unlockTime == 0) {
-                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
-                queuedWithdrawalUnlockTime[burnId] = unlockTime;
-                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
-                return;
-            }
-            if (block.timestamp < unlockTime) {
-                revert LargeWithdrawalPending(unlockTime);
-            }
-        }
-
-        // 4. Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
-        _checkAndRecordRollingWithdrawalETH(amount);
-
-        // 5. Mark burn nullifier as spent (prevents replay)
-        executedBurns[burnId] = true;
-        totalUnlockedETH += amount;
-        totalLockedETH -= amount;
-
-        // 6. Transfer ETH to recipient
-        (bool sent, ) = recipient.call{value: amount}("");
-        if (!sent) revert ETHTransferFailed();
-
-        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+        bytes[] memory empty;
+        _unlockETHCommon(burnId, bytes32(0), false, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
     }
 
     /**
@@ -745,57 +716,8 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        if (!legacyRoutesEnabled || isCommissioned()) revert LegacyRoutesDisabled();
-        if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
-        if (token.code.length == 0) revert ZeroAddress();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
-
-        // 1. Verify burnId canonical derivation for ERC-20
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_erc20_v1",
-                block.chainid,
-                token,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        // 2. Verify signature using EIP-712 structured data (strictly binding verifyingContract address(this))
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ERC20_TYPEHASH,
-                burnId,
-                token,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyBurnSignature(structHash, attestationSignature)) {
-            revert InvalidBurnProof();
-        }
-
-        // 3. Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
-        _checkAndRecordRollingWithdrawalERC20(token, amount);
-
-        // 4. Mark burn nullifier and update accounting
-        executedBurns[burnId] = true;
-        totalLockedERC20[token] -= amount;
-
-        // 5. Transfer tokens to recipient
-        _safeTransfer(token, recipient, amount);
-
-        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+        bytes[] memory empty;
+        _unlockERC20Common(burnId, bytes32(0), false, token, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
     }
 
     /**
@@ -820,72 +742,8 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
-        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
-
-        // 1. Verify burnId canonical derivation strictly binding sourceInstance (Finding P2 / Cross-Instance Domain Separation)
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_v2",
-                block.chainid,
-                sourceInstance,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        // 2. Verify signature using EIP-712 structured data strictly binding sourceInstance
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ETH_V2_TYPEHASH,
-                burnId,
-                sourceInstance,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyBurnSignature(structHash, attestationSignature)) {
-            revert InvalidBurnProof();
-        }
-
-        // 3. Timelock delay for large withdrawals
-        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
-            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
-            if (unlockTime == 0) {
-                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
-                queuedWithdrawalUnlockTime[burnId] = unlockTime;
-                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
-                return;
-            }
-            if (block.timestamp < unlockTime) {
-                revert LargeWithdrawalPending(unlockTime);
-            }
-        }
-
-        // 4. Rolling limit check
-        _checkAndRecordRollingWithdrawalETH(amount);
-
-        // 5. Mark burn nullifier as spent
-        executedBurns[burnId] = true;
-        totalUnlockedETH += amount;
-        totalLockedETH -= amount;
-
-        // 6. Transfer ETH to recipient
-        (bool sent, ) = recipient.call{value: amount}("");
-        if (!sent) revert ETHTransferFailed();
-
-        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+        bytes[] memory empty;
+        _unlockETHCommon(burnId, sourceInstance, true, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
     }
 
     /**
@@ -903,54 +761,8 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
-        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        if (token.code.length == 0) revert ZeroAddress();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
-
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_erc20_v2",
-                block.chainid,
-                sourceInstance,
-                token,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ERC20_V2_TYPEHASH,
-                burnId,
-                sourceInstance,
-                token,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyBurnSignature(structHash, attestationSignature)) {
-            revert InvalidBurnProof();
-        }
-
-        _checkAndRecordRollingWithdrawalERC20(token, amount);
-
-        executedBurns[burnId] = true;
-        totalLockedERC20[token] -= amount;
-
-        _safeTransfer(token, recipient, amount);
-
-        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+        bytes[] memory empty;
+        _unlockERC20Common(burnId, sourceInstance, true, token, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
     }
 
     /**
@@ -986,72 +798,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
-        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
-
-        // 1. Verify burnId canonical derivation strictly binding sourceInstance (Finding P2 / Cross-Instance Domain Separation)
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_v2",
-                block.chainid,
-                sourceInstance,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        // 2. Verify M-of-N threshold signatures using EIP-712 structured data strictly binding sourceInstance
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ETH_V2_TYPEHASH,
-                burnId,
-                sourceInstance,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyQuorumSignatures(structHash, signatures)) {
-            revert InvalidBurnProof();
-        }
-
-        // 3. Timelock delay for large withdrawals
-        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
-            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
-            if (unlockTime == 0) {
-                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
-                queuedWithdrawalUnlockTime[burnId] = unlockTime;
-                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
-                return;
-            }
-            if (block.timestamp < unlockTime) {
-                revert LargeWithdrawalPending(unlockTime);
-            }
-        }
-
-        // 4. Rolling limit check
-        _checkAndRecordRollingWithdrawalETH(amount);
-
-        // 5. Mark burn nullifier as spent
-        executedBurns[burnId] = true;
-        totalUnlockedETH += amount;
-        totalLockedETH -= amount;
-
-        // 6. Transfer ETH to recipient
-        (bool sent, ) = recipient.call{value: amount}("");
-        if (!sent) revert ETHTransferFailed();
-
-        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+        _unlockETHCommon(burnId, sourceInstance, true, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
     }
 
     /**
@@ -1078,59 +825,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
-        if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        if (token.code.length == 0) revert ZeroAddress();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
-
-        // 1. Verify burnId canonical derivation strictly binding sourceInstance
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_erc20_v2",
-                block.chainid,
-                sourceInstance,
-                token,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        // 2. Verify M-of-N threshold signatures using EIP-712 structured data strictly binding sourceInstance
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ERC20_V2_TYPEHASH,
-                burnId,
-                sourceInstance,
-                token,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyQuorumSignatures(structHash, signatures)) {
-            revert InvalidBurnProof();
-        }
-
-        // 3. Rolling limit check
-        _checkAndRecordRollingWithdrawalERC20(token, amount);
-
-        // 4. Mark burn nullifier as spent
-        executedBurns[burnId] = true;
-        totalLockedERC20[token] -= amount;
-
-        // 5. Transfer ERC-20 tokens to recipient
-        _safeTransfer(token, recipient, amount);
-
-        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+        _unlockERC20Common(burnId, sourceInstance, true, token, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
     }
 
     /**
@@ -1145,12 +840,8 @@ contract MosooLocker {
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
         if (burnNullifier == bytes32(0)) revert InvalidBurnProof();
-        if (amount == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
         if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        if (executedBurns[burnNullifier]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnNullifier]) revert BurnCancelled();
-        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
+        _validateETHUnlock(burnNullifier, amount, recipient);
 
         bytes32 structHash = keccak256(
             abi.encode(
@@ -1165,29 +856,7 @@ contract MosooLocker {
             revert InvalidBurnProof();
         }
 
-        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
-            uint256 unlockTime = queuedWithdrawalUnlockTime[burnNullifier];
-            if (unlockTime == 0) {
-                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
-                queuedWithdrawalUnlockTime[burnNullifier] = unlockTime;
-                emit WithdrawalQueued(burnNullifier, recipient, amount, unlockTime);
-                return;
-            }
-            if (block.timestamp < unlockTime) {
-                revert LargeWithdrawalPending(unlockTime);
-            }
-        }
-
-        _checkAndRecordRollingWithdrawalETH(amount);
-
-        executedBurns[burnNullifier] = true;
-        totalUnlockedETH += amount;
-        totalLockedETH -= amount;
-
-        (bool sent, ) = recipient.call{value: amount}("");
-        if (!sent) revert ETHTransferFailed();
-
-        emit UnlockedShieldedETH(burnNullifier, recipient, amount);
+        _settleETHUnlock(burnNullifier, sourceInstance, recipient, amount, 0, true);
     }
 
     /**
@@ -1202,13 +871,8 @@ contract MosooLocker {
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
         if (burnNullifier == bytes32(0)) revert InvalidBurnProof();
-        if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
         if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        if (token.code.length == 0) revert ZeroAddress();
-        if (executedBurns[burnNullifier]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnNullifier]) revert BurnCancelled();
-        if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+        _validateERC20Unlock(burnNullifier, token, amount, recipient);
 
         bytes32 structHash = keccak256(
             abi.encode(
@@ -1224,14 +888,7 @@ contract MosooLocker {
             revert InvalidBurnProof();
         }
 
-        _checkAndRecordRollingWithdrawalERC20(token, amount);
-
-        executedBurns[burnNullifier] = true;
-        totalLockedERC20[token] -= amount;
-
-        _safeTransfer(token, recipient, amount);
-
-        emit UnlockedShieldedERC20(burnNullifier, token, recipient, amount);
+        _settleERC20Unlock(burnNullifier, sourceInstance, token, recipient, amount, 0, true);
     }
 
     function _verifyFlexibleSignatures(
@@ -1253,65 +910,7 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
-        if (recipient == address(0)) revert ZeroAddress();
-        if (amount == 0) revert ZeroAmount();
-        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
-        if (cancelledBurns[burnId]) revert BurnCancelled();
-        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
-
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_v1",
-                block.chainid,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ETH_TYPEHASH,
-                burnId,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyQuorumSignatures(structHash, signatures)) {
-            revert InvalidBurnProof();
-        }
-
-        if (amount >= LARGE_WITHDRAWAL_THRESHOLD_ETH) {
-            uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
-            if (unlockTime == 0) {
-                unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
-                queuedWithdrawalUnlockTime[burnId] = unlockTime;
-                emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
-                return;
-            }
-            if (block.timestamp < unlockTime) {
-                revert LargeWithdrawalPending(unlockTime);
-            }
-        }
-
-        // Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
-        _checkAndRecordRollingWithdrawalETH(amount);
-
-        executedBurns[burnId] = true;
-        totalUnlockedETH += amount;
-        totalLockedETH -= amount;
-
-        (bool sent, ) = recipient.call{value: amount}("");
-        if (!sent) revert ETHTransferFailed();
-
-        emit UnlockedETH(burnId, recipient, amount, lezSlot);
+        _unlockETHCommon(burnId, bytes32(0), false, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
     }
 
     /**
@@ -1335,53 +934,151 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        if (!legacyRoutesEnabled) revert LegacyRoutesDisabled();
+        _unlockERC20Common(burnId, bytes32(0), false, token, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
+    }
+
+    function _validateETHUnlock(bytes32 burnId, uint256 amount, address recipient) internal view {
+        if (amount == 0) revert ZeroAmount();
+        if (recipient == address(0)) revert ZeroAddress();
+        if (executedBurns[burnId]) revert BurnAlreadyExecuted();
+        if (cancelledBurns[burnId]) revert BurnCancelled();
+        if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
+    }
+
+    function _validateERC20Unlock(bytes32 burnId, address token, uint256 amount, address recipient) internal view {
         if (amount == 0) revert ZeroAmount();
         if (token == address(0) || recipient == address(0)) revert ZeroAddress();
         if (token.code.length == 0) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
         if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
+    }
 
-        bytes32 expectedBurnId = keccak256(
-            abi.encodePacked(
-                "mosoo_burn_erc20_v1",
-                block.chainid,
-                token,
-                lezOwner,
-                recipient,
-                amount,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (burnId != expectedBurnId) revert InvalidBurnProof();
-
-        bytes32 structHash = keccak256(
-            abi.encode(
-                BURN_ERC20_TYPEHASH,
-                burnId,
-                token,
-                recipient,
-                amount,
-                lezOwner,
-                burnNonce,
-                lezSlot
-            )
-        );
-        if (!_verifyQuorumSignatures(structHash, signatures)) {
+    function _verifyModeSignature(
+        bytes32 structHash,
+        bool isQuorum,
+        bytes memory singleSig,
+        bytes[] memory quorumSigs
+    ) internal view {
+        if (!(isQuorum ? _verifyQuorumSignatures(structHash, quorumSigs) : _verifyBurnSignature(structHash, singleSig))) {
             revert InvalidBurnProof();
         }
+    }
 
-        // Defense-in-Depth: True rolling 24-hour continuous sliding volume limit check
+    function _unlockETHCommon(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        bool isV2,
+        uint256 amount,
+        address payable recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bool isQuorum,
+        bytes memory singleSig,
+        bytes[] memory quorumSigs
+    ) internal {
+        if (isV2) {
+            if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        } else if (!legacyRoutesEnabled || (!isQuorum && isCommissioned())) {
+            revert LegacyRoutesDisabled();
+        }
+        _validateETHUnlock(burnId, amount, recipient);
+
+        bytes32 expectedBurnId = isV2
+            ? keccak256(abi.encodePacked("mosoo_burn_v2", block.chainid, sourceInstance, lezOwner, recipient, amount, burnNonce, lezSlot))
+            : keccak256(abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot));
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        bytes32 structHash = isV2
+            ? keccak256(abi.encode(BURN_ETH_V2_TYPEHASH, burnId, sourceInstance, recipient, amount, lezOwner, burnNonce, lezSlot))
+            : keccak256(abi.encode(BURN_ETH_TYPEHASH, burnId, recipient, amount, lezOwner, burnNonce, lezSlot));
+        _verifyModeSignature(structHash, isQuorum, singleSig, quorumSigs);
+        _settleETHUnlock(burnId, sourceInstance, recipient, amount, lezSlot, false);
+    }
+
+    function _unlockERC20Common(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        bool isV2,
+        address token,
+        uint256 amount,
+        address recipient,
+        bytes32 lezOwner,
+        uint64 burnNonce,
+        uint64 lezSlot,
+        bool isQuorum,
+        bytes memory singleSig,
+        bytes[] memory quorumSigs
+    ) internal {
+        if (isV2) {
+            if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        } else if (!legacyRoutesEnabled || (!isQuorum && isCommissioned())) {
+            revert LegacyRoutesDisabled();
+        }
+        _validateERC20Unlock(burnId, token, amount, recipient);
+
+        bytes32 expectedBurnId = isV2
+            ? keccak256(abi.encodePacked("mosoo_burn_erc20_v2", block.chainid, sourceInstance, token, lezOwner, recipient, amount, burnNonce, lezSlot))
+            : keccak256(abi.encodePacked("mosoo_burn_erc20_v1", block.chainid, token, lezOwner, recipient, amount, burnNonce, lezSlot));
+        if (burnId != expectedBurnId) revert InvalidBurnProof();
+
+        bytes32 structHash = isV2
+            ? keccak256(abi.encode(BURN_ERC20_V2_TYPEHASH, burnId, sourceInstance, token, recipient, amount, lezOwner, burnNonce, lezSlot))
+            : keccak256(abi.encode(BURN_ERC20_TYPEHASH, burnId, token, recipient, amount, lezOwner, burnNonce, lezSlot));
+        _verifyModeSignature(structHash, isQuorum, singleSig, quorumSigs);
+        _settleERC20Unlock(burnId, sourceInstance, token, recipient, amount, lezSlot, false);
+    }
+
+    function _settleETHUnlock(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        address payable recipient,
+        uint256 amount,
+        uint64 lezSlot,
+        bool isShielded
+    ) internal {
+        if (_enforceLargeWithdrawalDelay(burnId, address(0), recipient, amount, sourceInstance, LARGE_WITHDRAWAL_THRESHOLD_ETH)) {
+            return;
+        }
+        _checkAndRecordRollingWithdrawalETH(amount);
+        executedBurns[burnId] = true;
+        totalUnlockedETH += amount;
+        totalLockedETH -= amount;
+
+        (bool sent, ) = recipient.call{value: amount}("");
+        if (!sent) revert ETHTransferFailed();
+
+        if (isShielded) {
+            emit UnlockedShieldedETH(burnId, recipient, amount);
+        } else {
+            emit UnlockedETH(burnId, recipient, amount, lezSlot);
+        }
+    }
+
+    function _settleERC20Unlock(
+        bytes32 burnId,
+        bytes32 sourceInstance,
+        address token,
+        address recipient,
+        uint256 amount,
+        uint64 lezSlot,
+        bool isShielded
+    ) internal {
+        if (_enforceLargeWithdrawalDelay(burnId, token, recipient, amount, sourceInstance, largeWithdrawalThresholdERC20[token])) {
+            return;
+        }
         _checkAndRecordRollingWithdrawalERC20(token, amount);
-
         executedBurns[burnId] = true;
         totalLockedERC20[token] -= amount;
 
         _safeTransfer(token, recipient, amount);
 
-        emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+        if (isShielded) {
+            emit UnlockedShieldedERC20(burnId, token, recipient, amount);
+        } else {
+            emit UnlockedERC20(burnId, token, recipient, amount, lezSlot);
+        }
     }
 
     /// @notice Propose rolling daily withdrawal volume cap for native ETH subject to 2-day timelock
@@ -1395,10 +1092,7 @@ contract MosooLocker {
 
     /// @notice Execute proposed daily withdrawal limit for ETH after timelock delay
     function executeDailyWithdrawalLimitETH() external onlyOwner {
-        if (!hasPendingDailyLimitETH) revert NoPendingGovernanceAction();
-        if (block.timestamp < dailyLimitETHTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, dailyLimitETHTimelockUnlock);
-        }
+        _requireFlaggedTimelock(hasPendingDailyLimitETH, dailyLimitETHTimelockUnlock);
         if (pendingDailyLimitETH == 0) revert InvalidDailyLimit();
         uint256 oldLimit = dailyWithdrawalLimitETH;
         dailyWithdrawalLimitETH = pendingDailyLimitETH;
@@ -1421,10 +1115,7 @@ contract MosooLocker {
     /// @notice Execute proposed daily withdrawal limit for an ERC-20 token after timelock delay
     function executeDailyWithdrawalLimitERC20(address token) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
-        if (!hasPendingDailyLimitERC20[token]) revert NoPendingGovernanceAction();
-        if (block.timestamp < dailyLimitERC20TimelockUnlock[token]) {
-            revert GovernanceTimelockActive(block.timestamp, dailyLimitERC20TimelockUnlock[token]);
-        }
+        _requireFlaggedTimelock(hasPendingDailyLimitERC20[token], dailyLimitERC20TimelockUnlock[token]);
         if (pendingDailyLimitERC20[token] == 0) revert InvalidDailyLimit();
         uint256 oldLimit = dailyWithdrawalLimitERC20[token];
         dailyWithdrawalLimitERC20[token] = pendingDailyLimitERC20[token];
@@ -1444,210 +1135,189 @@ contract MosooLocker {
         revert DirectGovernanceDeprecated();
     }
 
+    /// @notice Pre-commissioning direct configuration for ERC-20 large-withdrawal 24h queue threshold (0 disables).
+    function setLargeWithdrawalThresholdERC20(address token, uint256 threshold) external onlyOwner {
+        if (productionCommissioned) revert DirectGovernanceDeprecated();
+        if (token == address(0)) revert ZeroAddress();
+        uint256 oldThreshold = largeWithdrawalThresholdERC20[token];
+        largeWithdrawalThresholdERC20[token] = threshold;
+        emit LargeWithdrawalThresholdERC20Updated(token, oldThreshold, threshold);
+    }
+
+    /// @notice Propose an ERC-20 large-withdrawal 24h queue threshold change subject to 2-day timelock.
+    function proposeLargeWithdrawalThresholdERC20(address token, uint256 newThreshold) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        pendingLargeThresholdERC20[token] = newThreshold;
+        hasPendingLargeThresholdERC20[token] = true;
+        largeThresholdERC20TimelockUnlock[token] = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        emit LargeWithdrawalThresholdERC20Proposed(
+            token,
+            largeWithdrawalThresholdERC20[token],
+            newThreshold,
+            largeThresholdERC20TimelockUnlock[token]
+        );
+    }
+
+    /// @notice Execute proposed ERC-20 large-withdrawal threshold after 2-day timelock delay.
+    function executeLargeWithdrawalThresholdERC20(address token) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        _requireFlaggedTimelock(hasPendingLargeThresholdERC20[token], largeThresholdERC20TimelockUnlock[token]);
+        uint256 oldThreshold = largeWithdrawalThresholdERC20[token];
+        largeWithdrawalThresholdERC20[token] = pendingLargeThresholdERC20[token];
+        hasPendingLargeThresholdERC20[token] = false;
+        pendingLargeThresholdERC20[token] = 0;
+        largeThresholdERC20TimelockUnlock[token] = 0;
+        emit LargeWithdrawalThresholdERC20Updated(token, oldThreshold, largeWithdrawalThresholdERC20[token]);
+    }
+
+    /// @notice Guardian/owner cancellation for pending ERC-20 large-withdrawal threshold updates.
+    function cancelPendingLargeThresholdERC20(address token) external {
+        _checkOwnerOrGuardian();
+        if (token == address(0) || !hasPendingLargeThresholdERC20[token]) revert NoPendingGovernanceAction();
+        hasPendingLargeThresholdERC20[token] = false;
+        pendingLargeThresholdERC20[token] = 0;
+        largeThresholdERC20TimelockUnlock[token] = 0;
+        emit PendingGovernanceCancelled("largeThresholdERC20", msg.sender);
+    }
+
     /// @notice Cancel a queued large withdrawal in an emergency (guardian or owner)
     /// @dev Permanently vetoes the burnId, preventing any re-queue or future withdrawal.
     function cancelQueuedWithdrawal(bytes32 burnId) external {
-        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        _checkOwnerOrGuardian();
         if (queuedWithdrawalUnlockTime[burnId] == 0) revert NoQueuedWithdrawal();
         queuedWithdrawalUnlockTime[burnId] = 0;
+        delete queuedWithdrawalPayloadHash[burnId];
         cancelledBurns[burnId] = true;
         emit QueuedWithdrawalCancelled(burnId, msg.sender);
     }
 
     /// @notice Permanently veto and invalidate any burn authorization (guardian or owner)
     function cancelBurn(bytes32 burnId) external {
-        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        _checkOwnerOrGuardian();
         queuedWithdrawalUnlockTime[burnId] = 0;
+        delete queuedWithdrawalPayloadHash[burnId];
         cancelledBurns[burnId] = true;
         emit BurnPermanentlyCancelled(burnId, msg.sender);
     }
 
     // --- Internal Helpers ---
 
+    /// @dev Enforces mandatory 24h queue delay for large ETH/ERC-20 withdrawals, binding exact payload
+    ///      `(chainId, verifyingContract, asset, recipient, amount, sourceInstance)` so parameters
+    ///      cannot be substituted between queue creation and settlement.
+    function _enforceLargeWithdrawalDelay(
+        bytes32 burnId,
+        address asset,
+        address recipient,
+        uint256 amount,
+        bytes32 sourceInstance,
+        uint256 threshold
+    ) internal returns (bool queued) {
+        if (threshold == 0 || amount < threshold) {
+            return false;
+        }
+        bytes32 payloadHash = keccak256(
+            abi.encode(block.chainid, address(this), asset, recipient, amount, sourceInstance)
+        );
+        uint256 unlockTime = queuedWithdrawalUnlockTime[burnId];
+        if (unlockTime == 0) {
+            unlockTime = block.timestamp + LARGE_WITHDRAWAL_DELAY;
+            queuedWithdrawalUnlockTime[burnId] = unlockTime;
+            queuedWithdrawalPayloadHash[burnId] = payloadHash;
+            emit WithdrawalQueued(burnId, recipient, amount, unlockTime);
+            return true;
+        }
+        if (queuedWithdrawalPayloadHash[burnId] != payloadHash) {
+            revert WithdrawalPayloadMismatch();
+        }
+        if (block.timestamp < unlockTime) {
+            revert LargeWithdrawalPending(unlockTime);
+        }
+        delete queuedWithdrawalUnlockTime[burnId];
+        delete queuedWithdrawalPayloadHash[burnId];
+        return false;
+    }
+
     // --- Continuous Rolling 24-Hour Helpers ---
 
     function _checkAndRecordRollingWithdrawalETH(uint256 amount) internal {
-        if (dailyWithdrawalLimitETH == 0) revert InvalidDailyLimit();
-
-        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
-        uint256 head = _ethWithdrawalHead;
-        uint256 len = _ethWithdrawals.length;
-        uint256 rolling = _rollingWithdrawnETH;
-        uint256 cleaned = 0;
-
-        // Pass 1: Bounded cleanup for normal gas efficiency
-        while (head < len && _ethWithdrawals[head].timestamp < cutoff && cleaned < MAX_CLEANUP_BATCH) {
-            rolling -= _ethWithdrawals[head].amount;
-            delete _ethWithdrawals[head];
-            head++;
-            cleaned++;
-        }
-
-        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning expired records
-        // up to MAX_PASS2_CLEANUP_BATCH so valid withdrawals are not blocked by uncleaned records,
-        // while strictly bounding maximum per-call gas expenditure (predictable gas defense)
-        if (rolling + amount > dailyWithdrawalLimitETH) {
-            uint256 pass2Cleaned = 0;
-            while (head < len && _ethWithdrawals[head].timestamp < cutoff && pass2Cleaned < MAX_PASS2_CLEANUP_BATCH) {
-                rolling -= _ethWithdrawals[head].amount;
-                delete _ethWithdrawals[head];
-                head++;
-                pass2Cleaned++;
-            }
-        }
-
-        _ethWithdrawalHead = head;
-
-        if (rolling + amount > dailyWithdrawalLimitETH) {
-            revert DailyLimitExceeded(amount, dailyWithdrawalLimitETH - rolling);
-        }
-
-        if (head == len) {
-            assembly {
-                sstore(_ethWithdrawals.slot, 0)
-            }
-            _ethWithdrawalHead = 0;
-        }
-
-        if (amount > type(uint192).max) revert AmountExceedsUint192();
-        _rollingWithdrawnETH = rolling + amount;
-        _ethWithdrawals.push(WithdrawalRecord({
-            timestamp: uint64(block.timestamp),
-            amount: uint192(amount)
-        }));
+        uint256 limit = dailyWithdrawalLimitETH;
+        if (limit == 0) revert InvalidDailyLimit();
+        _checkAndRecordRollingWithdrawal(address(0), amount, limit);
     }
 
     function _checkAndRecordRollingWithdrawalERC20(address token, uint256 amount) internal {
         uint256 limit = dailyWithdrawalLimitERC20[token];
         if (limit == 0) revert DailyLimitNotConfigured();
+        _checkAndRecordRollingWithdrawal(token, amount, limit);
+    }
 
-        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
-        uint256 head = _erc20WithdrawalHead[token];
-        WithdrawalRecord[] storage history = _erc20Withdrawals[token];
+    function _pruneHistoryBatch(
+        address asset,
+        uint256 maxItems,
+        uint256 cutoff
+    ) internal returns (uint256 prunedCount, uint256 rolling) {
+        uint256 head = _withdrawalHead[asset];
+        WithdrawalRecord[] storage history = _withdrawalHistory[asset];
         uint256 len = history.length;
-        uint256 rolling = _rollingWithdrawnERC20[token];
-        uint256 cleaned = 0;
+        rolling = _rollingWithdrawn[asset];
 
-        // Pass 1: Bounded cleanup for normal gas efficiency
-        while (head < len && history[head].timestamp < cutoff && cleaned < MAX_CLEANUP_BATCH) {
+        while (head < len && history[head].timestamp < cutoff && prunedCount < maxItems) {
             rolling -= history[head].amount;
             delete history[head];
             head++;
-            cleaned++;
+            prunedCount++;
         }
-
-        // Pass 2: If the proposed withdrawal would exceed limit, continue pruning expired records
-        // up to MAX_PASS2_CLEANUP_BATCH so valid withdrawals are not blocked by uncleaned records,
-        // while strictly bounding maximum per-call gas expenditure (predictable gas defense)
-        if (rolling + amount > limit) {
-            uint256 pass2Cleaned = 0;
-            while (head < len && history[head].timestamp < cutoff && pass2Cleaned < MAX_PASS2_CLEANUP_BATCH) {
-                rolling -= history[head].amount;
-                delete history[head];
-                head++;
-                pass2Cleaned++;
-            }
-        }
-
-        _erc20WithdrawalHead[token] = head;
-
-        if (rolling + amount > limit) {
-            revert DailyLimitExceeded(amount, limit - rolling);
-        }
+        _withdrawalHead[asset] = head;
+        _rollingWithdrawn[asset] = rolling;
 
         if (head == len) {
             assembly {
                 sstore(history.slot, 0)
             }
-            _erc20WithdrawalHead[token] = 0;
+            _withdrawalHead[asset] = 0;
+        }
+    }
+
+    function _checkAndRecordRollingWithdrawal(address asset, uint256 amount, uint256 limit) internal {
+        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
+        (, uint256 rolling) = _pruneHistoryBatch(asset, MAX_CLEANUP_BATCH, cutoff);
+
+        if (rolling + amount > limit) {
+            (, rolling) = _pruneHistoryBatch(asset, MAX_PASS2_CLEANUP_BATCH, cutoff);
+        }
+
+        if (rolling + amount > limit) {
+            revert DailyLimitExceeded(amount, limit - rolling);
         }
 
         if (amount > type(uint192).max) revert AmountExceedsUint192();
-        _rollingWithdrawnERC20[token] = rolling + amount;
-        history.push(WithdrawalRecord({
+        _rollingWithdrawn[asset] = rolling + amount;
+        _withdrawalHistory[asset].push(WithdrawalRecord({
             timestamp: uint64(block.timestamp),
             amount: uint192(amount)
         }));
     }
 
     /// @notice Permissionless pruning function to clean expired ETH withdrawal records from history
-    /// @param maxBatch Maximum number of records to prune in this transaction (0 = default MAX_CLEANUP_BATCH)
-    /// @return prunedCount Number of expired records successfully deleted
     function pruneExpiredWithdrawalsETH(uint256 maxBatch) external returns (uint256 prunedCount) {
         if (maxBatch == 0) maxBatch = MAX_CLEANUP_BATCH;
         uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
-        uint256 head = _ethWithdrawalHead;
-        uint256 len = _ethWithdrawals.length;
-        uint256 rolling = _rollingWithdrawnETH;
-
-        while (head < len && _ethWithdrawals[head].timestamp < cutoff && prunedCount < maxBatch) {
-            rolling -= _ethWithdrawals[head].amount;
-            delete _ethWithdrawals[head];
-            head++;
-            prunedCount++;
-        }
-        _ethWithdrawalHead = head;
-        _rollingWithdrawnETH = rolling;
-
-        if (head == len) {
-            assembly {
-                sstore(_ethWithdrawals.slot, 0)
-            }
-            _ethWithdrawalHead = 0;
-        }
+        (prunedCount, ) = _pruneHistoryBatch(address(0), maxBatch, cutoff);
     }
 
     /// @notice Permissionless pruning function to clean expired ERC-20 withdrawal records from history
-    /// @param token The ERC-20 token address to prune
-    /// @param maxBatch Maximum number of records to prune in this transaction (0 = default MAX_CLEANUP_BATCH)
-    /// @return prunedCount Number of expired records successfully deleted
     function pruneExpiredWithdrawalsERC20(address token, uint256 maxBatch) external returns (uint256 prunedCount) {
         if (maxBatch == 0) maxBatch = MAX_CLEANUP_BATCH;
         uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
-        uint256 head = _erc20WithdrawalHead[token];
-        WithdrawalRecord[] storage history = _erc20Withdrawals[token];
-        uint256 len = history.length;
-        uint256 rolling = _rollingWithdrawnERC20[token];
-
-        while (head < len && history[head].timestamp < cutoff && prunedCount < maxBatch) {
-            rolling -= history[head].amount;
-            delete history[head];
-            head++;
-            prunedCount++;
-        }
-        _erc20WithdrawalHead[token] = head;
-        _rollingWithdrawnERC20[token] = rolling;
-
-        if (head == len) {
-            assembly {
-                sstore(history.slot, 0)
-            }
-            _erc20WithdrawalHead[token] = 0;
-        }
+        (prunedCount, ) = _pruneHistoryBatch(token, maxBatch, cutoff);
     }
 
-    /// @notice Returns the current rolling 24-hour volume withdrawn for native ETH
-    function getRollingWithdrawnETH() public view returns (uint256) {
-        if (dailyWithdrawalLimitETH == 0) return 0;
+    function _getRollingWithdrawn(address asset) internal view returns (uint256) {
         uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
-        uint256 rolling = _rollingWithdrawnETH;
-        for (uint256 i = _ethWithdrawalHead; i < _ethWithdrawals.length; i++) {
-            if (_ethWithdrawals[i].timestamp < cutoff) {
-                rolling -= _ethWithdrawals[i].amount;
-            } else {
-                break;
-            }
-        }
-        return rolling;
-    }
-
-    /// @notice Returns the current rolling 24-hour volume withdrawn for an ERC-20 token
-    function getRollingWithdrawnERC20(address token) public view returns (uint256) {
-        if (dailyWithdrawalLimitERC20[token] == 0) return 0;
-        uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
-        uint256 rolling = _rollingWithdrawnERC20[token];
-        WithdrawalRecord[] storage history = _erc20Withdrawals[token];
-        for (uint256 i = _erc20WithdrawalHead[token]; i < history.length; i++) {
+        uint256 rolling = _rollingWithdrawn[asset];
+        WithdrawalRecord[] storage history = _withdrawalHistory[asset];
+        for (uint256 i = _withdrawalHead[asset]; i < history.length; i++) {
             if (history[i].timestamp < cutoff) {
                 rolling -= history[i].amount;
             } else {
@@ -1655,6 +1325,18 @@ contract MosooLocker {
             }
         }
         return rolling;
+    }
+
+    /// @notice Returns the current rolling 24-hour volume withdrawn for native ETH
+    function getRollingWithdrawnETH() public view returns (uint256) {
+        if (dailyWithdrawalLimitETH == 0) return 0;
+        return _getRollingWithdrawn(address(0));
+    }
+
+    /// @notice Returns the current rolling 24-hour volume withdrawn for an ERC-20 token
+    function getRollingWithdrawnERC20(address token) public view returns (uint256) {
+        if (dailyWithdrawalLimitERC20[token] == 0) return 0;
+        return _getRollingWithdrawn(token);
     }
 
     function dailyWithdrawnETH() external view returns (uint256) {
@@ -1665,18 +1347,18 @@ contract MosooLocker {
         return getRollingWithdrawnERC20(token);
     }
 
+    function _eip712Digest(bytes32 structHash) internal view returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash));
+    }
+
     function _verifyBurnSignature(
         bytes32 structHash,
-        bytes calldata signature
+        bytes memory signature
     ) internal view returns (bool) {
         if (requiredQuorum > 1) {
-            // When M-of-N quorum > 1, callers must invoke unlockETHWithQuorum / unlockERC20WithQuorum
             return false;
         }
-        bytes32 eip712Digest = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
-        );
-        address signer = _recoverSigner(eip712Digest, signature);
+        address signer = _recoverSigner(_eip712Digest(structHash), signature);
         if (signer == address(0) || !isAttester[signer]) {
             return false;
         }
@@ -1688,14 +1370,12 @@ contract MosooLocker {
 
     function _verifyQuorumSignatures(
         bytes32 structHash,
-        bytes[] calldata signatures
+        bytes[] memory signatures
     ) internal view returns (bool) {
         if (signatures.length < requiredQuorum) {
             return false;
         }
-        bytes32 eip712Digest = keccak256(
-            abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR(), structHash)
-        );
+        bytes32 eip712Digest = _eip712Digest(structHash);
         address lastSigner = address(0);
         uint256 validCount = 0;
 
@@ -1745,21 +1425,33 @@ contract MosooLocker {
     }
 
     function _safeTransfer(address token, address to, uint256 amount) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(0xa9059cbb, to, amount));
+    }
+
+    function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
+        _callOptionalReturn(token, abi.encodeWithSelector(0x23b872dd, from, to, amount));
+    }
+
+    function _callOptionalReturn(address token, bytes memory data) internal {
         if (token.code.length == 0) revert ZeroAddress();
-        bytes memory data = abi.encodeWithSelector(0xa9059cbb, to, amount);
         (bool success, bytes memory returnData) = token.call(data);
         if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
             revert ERC20TransferFailed();
         }
     }
 
-    function _safeTransferFrom(address token, address from, address to, uint256 amount) internal {
-        if (token.code.length == 0) revert ZeroAddress();
-        bytes memory data = abi.encodeWithSelector(0x23b872dd, from, to, amount);
-        (bool success, bytes memory returnData) = token.call(data);
-        if (!success || (returnData.length != 0 && !abi.decode(returnData, (bool)))) {
-            revert ERC20TransferFailed();
-        }
+    function _requireTimelock(uint256 unlockTime) internal view {
+        if (unlockTime == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < unlockTime) revert GovernanceTimelockActive(block.timestamp, unlockTime);
+    }
+
+    function _requireFlaggedTimelock(bool hasPending, uint256 unlockTime) internal view {
+        if (!hasPending) revert NoPendingGovernanceAction();
+        if (block.timestamp < unlockTime) revert GovernanceTimelockActive(block.timestamp, unlockTime);
+    }
+
+    function _checkOwnerOrGuardian() internal view {
+        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
     }
 
     function _getTokenBalance(address token, address account) internal view returns (uint256) {
@@ -1830,10 +1522,7 @@ contract MosooLocker {
     }
 
     function executeQuorum() external onlyOwner {
-        if (pendingQuorum == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < quorumTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, quorumTimelockUnlock);
-        }
+        _requireFlaggedTimelock(pendingQuorum != 0, quorumTimelockUnlock);
         if (pendingQuorum > attesterCount) revert InvalidQuorum();
         if (productionCommissioned && pendingQuorum < MIN_PRODUCTION_QUORUM) revert InvalidQuorum();
         uint256 oldQuorum = requiredQuorum;
@@ -1855,10 +1544,7 @@ contract MosooLocker {
     }
 
     function executeAddAttester() external onlyOwner {
-        if (pendingAddAttester == address(0)) revert NoPendingGovernanceAction();
-        if (block.timestamp < addAttesterTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, addAttesterTimelockUnlock);
-        }
+        _requireFlaggedTimelock(pendingAddAttester != address(0), addAttesterTimelockUnlock);
         if (isAttester[pendingAddAttester]) revert AttesterAlreadyExists();
         address attester = pendingAddAttester;
         isAttester[attester] = true;
@@ -1878,10 +1564,7 @@ contract MosooLocker {
     }
 
     function executeRemoveAttester() external onlyOwner {
-        if (pendingRemoveAttester == address(0)) revert NoPendingGovernanceAction();
-        if (block.timestamp < removeAttesterTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, removeAttesterTimelockUnlock);
-        }
+        _requireFlaggedTimelock(pendingRemoveAttester != address(0), removeAttesterTimelockUnlock);
         if (!isAttester[pendingRemoveAttester]) revert AttesterNotFound();
         if (attesterCount <= 1) revert InvalidQuorum();
         if (attesterCount - 1 < requiredQuorum) revert InvalidQuorum();
@@ -1897,58 +1580,60 @@ contract MosooLocker {
     }
 
     function cancelPendingGovernance(uint8 actionType) external {
-        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        _checkOwnerOrGuardian();
+        string memory action;
         if (actionType == 1) {
             pendingQuorum = 0;
             quorumTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("quorum", msg.sender);
+            action = "quorum";
         } else if (actionType == 2) {
             pendingAddAttester = address(0);
             addAttesterTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("addAttester", msg.sender);
+            action = "addAttester";
         } else if (actionType == 3) {
             pendingRemoveAttester = address(0);
             removeAttesterTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("removeAttester", msg.sender);
+            action = "removeAttester";
         } else if (actionType == 4) {
             hasPendingDailyLimitETH = false;
             pendingDailyLimitETH = 0;
             dailyLimitETHTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("dailyLimitETH", msg.sender);
+            action = "dailyLimitETH";
         } else if (actionType == 5) {
             pendingGuardian = address(0);
             guardianTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("guardian", msg.sender);
+            action = "guardian";
         } else if (actionType == 6) {
             pendingAttesterAuthority = address(0);
             authorityTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("attesterAuthority", msg.sender);
+            action = "attesterAuthority";
         } else if (actionType == 7) {
             disableAllowlistTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("disableAllowlist", msg.sender);
+            action = "disableAllowlist";
         } else if (actionType == 8) {
             disableShieldedOnlyTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("disableShieldedOnly", msg.sender);
+            action = "disableShieldedOnly";
         } else if (actionType == 9) {
             disableStrictDenomTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("disableStrictDenom", msg.sender);
+            action = "disableStrictDenom";
         } else if (actionType == 10) {
             pendingTokenAllowedAddr = address(0);
             pendingTokenAllowedFlag = false;
             tokenAllowedTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("tokenAllowed", msg.sender);
+            action = "tokenAllowed";
         } else if (actionType == 11) {
             pendingDenomAmount = 0;
             pendingDenomAllowed = false;
             denomTimelockUnlock = 0;
-            emit PendingGovernanceCancelled("standardDenom", msg.sender);
+            action = "standardDenom";
         } else {
             revert NoPendingGovernanceAction();
         }
+        emit PendingGovernanceCancelled(action, msg.sender);
     }
 
     function cancelPendingGovernanceERC20(address token) external {
-        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        _checkOwnerOrGuardian();
         if (token == address(0) || !hasPendingDailyLimitERC20[token]) revert NoPendingGovernanceAction();
         hasPendingDailyLimitERC20[token] = false;
         pendingDailyLimitERC20[token] = 0;
@@ -1986,10 +1671,7 @@ contract MosooLocker {
     }
 
     function executeTokenAllowed() external onlyOwner {
-        if (tokenAllowedTimelockUnlock == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < tokenAllowedTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, tokenAllowedTimelockUnlock);
-        }
+        _requireTimelock(tokenAllowedTimelockUnlock);
         address token = pendingTokenAllowedAddr;
         bool allowed = pendingTokenAllowedFlag;
         pendingTokenAllowedAddr = address(0);
@@ -2034,54 +1716,61 @@ contract MosooLocker {
     }
 
     function executeDisableTokenAllowlist() external onlyOwner {
-        if (disableAllowlistTimelockUnlock == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < disableAllowlistTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, disableAllowlistTimelockUnlock);
-        }
+        _requireTimelock(disableAllowlistTimelockUnlock);
         disableAllowlistTimelockUnlock = 0;
         tokenAllowlistEnabled = false;
         emit TokenAllowlistToggled(false);
     }
 
+    function _requirePrivacyMutable(bool enabled) internal view {
+        if (productionCommissioned && enabled) {
+            revert PrivacySettingLocked();
+        }
+    }
+
     function setShieldedDepositsOnly(bool enabled) external onlyOwner {
-        if (!enabled && (shieldedDepositsOnly || productionCommissioned)) {
-            revert DirectGovernanceDeprecated();
+        if (!enabled) {
+            _requirePrivacyMutable(shieldedDepositsOnly);
+            if (shieldedDepositsOnly || productionCommissioned) {
+                revert DirectGovernanceDeprecated();
+            }
         }
         shieldedDepositsOnly = enabled;
         emit ShieldedDepositsOnlyToggled(enabled);
     }
 
     function proposeDisableShieldedDepositsOnly() external onlyOwner {
+        _requirePrivacyMutable(shieldedDepositsOnly);
         disableShieldedOnlyTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
     }
 
     function executeDisableShieldedDepositsOnly() external onlyOwner {
-        if (disableShieldedOnlyTimelockUnlock == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < disableShieldedOnlyTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, disableShieldedOnlyTimelockUnlock);
-        }
+        _requirePrivacyMutable(shieldedDepositsOnly);
+        _requireTimelock(disableShieldedOnlyTimelockUnlock);
         disableShieldedOnlyTimelockUnlock = 0;
         shieldedDepositsOnly = false;
         emit ShieldedDepositsOnlyToggled(false);
     }
 
     function setStrictFixedDenominationMode(bool enabled) external onlyOwner {
-        if (!enabled && (strictFixedDenominationMode || productionCommissioned)) {
-            revert DirectGovernanceDeprecated();
+        if (!enabled) {
+            _requirePrivacyMutable(strictFixedDenominationMode);
+            if (strictFixedDenominationMode || productionCommissioned) {
+                revert DirectGovernanceDeprecated();
+            }
         }
         strictFixedDenominationMode = enabled;
         emit StrictDenominationModeToggled(enabled);
     }
 
     function proposeDisableStrictDenominationMode() external onlyOwner {
+        _requirePrivacyMutable(strictFixedDenominationMode);
         disableStrictDenomTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
     }
 
     function executeDisableStrictDenominationMode() external onlyOwner {
-        if (disableStrictDenomTimelockUnlock == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < disableStrictDenomTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, disableStrictDenomTimelockUnlock);
-        }
+        _requirePrivacyMutable(strictFixedDenominationMode);
+        _requireTimelock(disableStrictDenomTimelockUnlock);
         disableStrictDenomTimelockUnlock = 0;
         strictFixedDenominationMode = false;
         emit StrictDenominationModeToggled(false);
@@ -2102,10 +1791,7 @@ contract MosooLocker {
     }
 
     function executeStandardDenomination() external onlyOwner {
-        if (denomTimelockUnlock == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < denomTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, denomTimelockUnlock);
-        }
+        _requireTimelock(denomTimelockUnlock);
         uint256 denomination = pendingDenomAmount;
         bool allowed = pendingDenomAllowed;
         pendingDenomAmount = 0;
@@ -2124,10 +1810,7 @@ contract MosooLocker {
     }
 
     function executeGuardian() external onlyOwner {
-        if (pendingGuardian == address(0)) revert NoPendingGovernanceAction();
-        if (block.timestamp < guardianTimelockUnlock) {
-            revert GovernanceTimelockActive(block.timestamp, guardianTimelockUnlock);
-        }
+        _requireFlaggedTimelock(pendingGuardian != address(0), guardianTimelockUnlock);
         if (pendingGuardian == owner) revert GuardianMustNotBeOwner();
         address oldGuardian = guardian;
         guardian = pendingGuardian;
@@ -2142,7 +1825,7 @@ contract MosooLocker {
     }
 
     function emergencyPause() external {
-        if (msg.sender != owner && msg.sender != guardian) revert Unauthorized();
+        _checkOwnerOrGuardian();
         paused = true;
         emit PausedStateChanged(true);
     }
