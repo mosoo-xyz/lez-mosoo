@@ -3,9 +3,9 @@
 This document records verifiable execution manifests, state transitions, gas consumption, and cryptographic test vectors for the **Mosoo Ethereum Consensus & State Attestation Module** simulated against the Logos Execution Zone (LEZ) v0.4 specifications.
 
 > [!NOTE]
-> **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's **offline** Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../mosoo-core/tests/sequencer_e2e_tests.rs). Public LEZ `v0.4` is **unreleased upstream** (`v0.3.1` is latest); this offline harness models target LEZ `v0.4` state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction).
+> **Environment & Transparency Notice:** The transaction hashes, gas metrics, and account manifests in this document are produced deterministically by Mosoo's **offline** Standalone LEZ Sequencer test harness in [`tests/sequencer_e2e_tests.rs`](../mosoo-core/tests/sequencer_e2e_tests.rs). Upstream `logos-execution-zone` has published stable `v0.3.2` (`2026-10-29`) and pre-release `v0.4.0-rc3` (`2026-11-11`), while the public LEZ testnet RPC currently runs `v0.3.1`; this offline harness models target LEZ `v0.4` state transitions, opcode dispatch, PDA creations, and gas accounting (< 10M cap per transaction).
 > 
-> In addition, [`scripts/verify-mosoo-lez.py`](../scripts/verify-mosoo-lez.py) verifies live `mosoo_lc` on public LEZ v0.3.1 (`https://testnet.lez.logos.co`, `Co5EYuBR...`), and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) queries live Ethereum Sepolia (`MosooLocker` v4 at `0xF94eA0F9...`) paired with offline Steps 3–5 LEZ state-machine simulation. Deployment of `mosoo-guest` to LEZ `v0.4` awaits upstream public `v0.4` release.
+> In addition, [`scripts/verify-mosoo-lez.py`](../scripts/verify-mosoo-lez.py) verifies live `mosoo_lc` on public LEZ v0.3.1 (`https://testnet.lez.logos.co`, `Co5EYuBR...`), and [`scripts/testnet-two-way-bridge.py --mode live`](../scripts/testnet-two-way-bridge.py) queries live Ethereum Sepolia (`MosooLocker` v4 at `0xF94eA0F9...`) paired with offline Steps 3–5 LEZ state-machine simulation. Deployment of `mosoo-guest` to public LEZ `v0.4` awaits final `v0.4.0` release and public `v0.4` testnet availability.
 
 ---
 
@@ -13,7 +13,7 @@ This document records verifiable execution manifests, state transitions, gas con
 
 RFP-021 requires verification conforming to Logos Execution Zone specifications. The table below outlines our active offline verification harness and roadmap to public testnet deployment:
 
-| Parameter | LEZ Standalone Sequencer Harness (Offline / CI) | Target Public Devnet (v0.4 — Unreleased Upstream) |
+| Parameter | LEZ Standalone Sequencer Harness (Offline / CI) | Target Public Devnet (v0.4.0-rc3 Pre-Release / Public RPC Unlaunched) |
 | :--- | :--- | :--- |
 | **Environment** | Offline In-Memory Sequencer & State Machine (`LezRuntimeAdapter`) | Logos Public Testnet v0.4 (awaiting upstream launch) |
 | **LEZ Spec Conformance** | Target `v0.4` CPI & PDA Conformance (`lez_v04_acceptance_tests.rs`) | Public v0.4 Testnet release by Logos Core |

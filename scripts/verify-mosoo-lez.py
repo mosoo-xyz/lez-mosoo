@@ -6,7 +6,7 @@ Independently verifies Mosoo's OWN deployed Light Client program (`mosoo_lc`,
 built from `programs/mosoo-lez-v03` + `mosoo-core`) on the public LEZ v0.3.1
 testnet (`https://testnet.lez.logos.co`) over strict TLS:
   1. Sequencer health, block height, and protocol gas caps (10M exec / 1M stor).
-  2. Attribution separation: confirms deployed program_id is NOT external `sextant_lc`.
+  2. Attribution separation: confirms deployed program_id is independent and distinct from unassociated testnet programs.
   3. Local binary artifact integrity (`artifacts/programs/v0.3/mosoo_lc.{bin,sha256,image_id.json}`).
   4. On-chain ProgramHeader (`immutable == true`, committed ImageID, first_segment pointer).
   5. All 6 on-chain ELF segment shards, linked pointer chain (`0->1->2->3->4->5->None`),
@@ -37,7 +37,7 @@ from pathlib import Path
 
 DEFAULT_RPC = "https://testnet.lez.logos.co"
 LOADER_B58 = "JAQ5MVHbCkSYRzXunsrNuM2m1LS859PGveHfoYPAmcvZ"
-SEXTANT_REF_PROGRAM = "DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf"
+UNASSOCIATED_REF_PROGRAM = "DQprfeSk1wPCW1oJYaqsGDg5b95sXygSticDYFeJCfuf"
 GAS_CAP_EXEC = 10_000_000
 GAS_CAP_STOR = 1_000_000
 B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
@@ -226,8 +226,8 @@ def main():
         f"Gas caps match LEZ spec (exec={fee_state.get('max_gas_exec'):,}, stor={fee_state.get('max_gas_stor'):,})",
     )
     report(
-        prog_id != SEXTANT_REF_PROGRAM,
-        f"Distinct from external reference sextant_lc ({SEXTANT_REF_PROGRAM[:12]}...)",
+        prog_id != UNASSOCIATED_REF_PROGRAM,
+        f"Distinct from unassociated testnet program ({UNASSOCIATED_REF_PROGRAM[:12]}...)",
     )
 
     print("\n--- [2/5] Local Artifact & Binary Determinism ---")

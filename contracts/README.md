@@ -18,7 +18,10 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
   - The transaction receipt is included in the Ethereum execution block, verified via Merkle-Patricia Trie (MPT) inclusion proofs inside `mosoo-core` / `mosoo-guest`, and claimed privately on LEZ using the commitment preimage (`secret`, `nullifier_secret`) and unlinkable `claim_nullifier`.
 
 - **Burn & Unlock Path (LEZ -> ETH / ERC-20)**:
-  - **Shielded Outbound Unlock (RFP-022)**:
+  - **Trustless RISC Zero Outbound ZK Unlock (`MosooZkBurnVerifier.sol` + `MosooLocker.unlockShieldedWithZkProof`)**:
+    - `MosooZkBurnVerifier.sol` (`5,996 B`) implements `IRiscZeroVerifier` verification (`sha256(journal)` + immutable `outboundBurnImageId`, `lezStateTransitionImageId`, & `expectedSourceInstance`), permissionless chained LEZ state-root advancement (`advanceLezStateRootWithProof`, `224`-byte ABI) with non-launderable pure-ZK lineage tracking (`isPureZkRoot` & `latestPureZkRoot` rollback on `enableZkStrictMode`), strict upper-zero ABI padding validation (`288`-byte `OutboundBurnJournal`), and an irreversible `enableZkStrictMode()` latch.
+    - `MosooLocker.unlockShieldedWithZkProof(bytes seal, bytes journal)` (`24,374 B` EIP-170 runtime bytecode) delegates verification to the timelocked `zkBurnVerifier` (`proposeZkBurnVerifier` / `executeZkBurnVerifier`) and enforces replay nullifiers, guardian vetoes, rolling daily caps, and 24h large-withdrawal delays. *(Pending live `IRiscZeroVerifier` router wiring and Sepolia redeployment; live Sepolia v4 `0xF94eA0F9...` currently uses the `2-of-2` attester path.)*
+  - **Shielded Attester Quorum Unlock (RFP-022)**:
     - `unlockShieldedETH(bytes32 burnNullifier, bytes32 sourceInstance, uint256 amount, address payable recipient, bytes[] signatures)` and `unlockShieldedERC20(...)` release funds using only an opaque `burnNullifier` without leaking `lezOwner`, `burnNonce`, or `lezSlot` on L1.
   - **Instance-Bound Explicit Unlock**:
     - `unlockETHWithInstance`, `unlockETHWithInstanceAndQuorum`, and ERC-20 counterparts verify burn receipts with EIP-712 domain separation and replay nullifiers (`executedBurns`).
@@ -26,7 +29,7 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
   - Releases locked ETH directly to `recipient`.
 
 > [!NOTE]
-> `MosooLocker` **v2** (including `depositShieldedETH`, `DepositCommitted`, `unlockShieldedETH`, `strictFixedDenominationMode`, and `2-of-2` production quorum via `commissionLocker`) is now deployed and verified live on Ethereum Sepolia at [`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`](https://sepolia.etherscan.io/address/0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b) (block `12113191`). The earlier v1 contract (`0x74625D146B8d9413F3c3976B323d94A739be7856`, block `11989329`) is preserved in `contracts/deployments/sepolia.json` under `previousV1Deployment`.
+> `MosooLocker` **v4** (including `depositShieldedETH`, `DepositCommitted`, `unlockShieldedETH`, `strictFixedDenominationMode`, payload-bound large withdrawal 24h queue, irreversible privacy flags post-commissioning, legacy retirement, and `2-of-2` production quorum via `commissionLocker`) is live on Ethereum Sepolia at [`0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd`](https://sepolia.etherscan.io/address/0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd) (block `12119389`). Historical v3 (`0x374B...`), v2 (`0xEFEf...`), and v1 (`0x7462...`) deployments are preserved in `contracts/deployments/sepolia.json`.
 
 - **Trust Model & Security Guarantees**:
   - **Asymmetric Hybrid Trust Model**:
@@ -52,7 +55,7 @@ The core vault and settlement contract deployed on Ethereum (Mainnet / Sepolia /
 
 ## EVM Verification & Foundry Testing
 
-The contract test suite is written in Solidity under [`test/MosooLocker.t.sol`](./test/MosooLocker.t.sol) and configured via [`foundry.toml`](../foundry.toml).
+The contract test suites are written in Solidity under [`test/MosooLocker.t.sol`](./test/MosooLocker.t.sol) (`27` tests) and [`test/MosooZkBurnVerifier.t.sol`](./test/MosooZkBurnVerifier.t.sol) (`4` tests) and configured via [`foundry.toml`](../foundry.toml).
 
 ```console
 # Run Solidity unit and fuzz tests with Foundry
@@ -63,6 +66,8 @@ forge test -vvv
 
 | Network | Contract | Address | Transaction Hash | Explorer |
 | :--- | :--- | :--- | :--- | :--- |
-| **Ethereum Sepolia (v2 — Commissioned 2-of-2)** | `MosooLocker` v2 | `0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b` | `0xa13c8e1df8018335fdcb957d1ba257ccf32264c4ffe1cea32b319f2ae627a999` | [Sepolia Etherscan](https://sepolia.etherscan.io/address/0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b) |
+| **Ethereum Sepolia (Active v4 — Commissioned 2-of-2)** | `MosooLocker` v4 | `0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd` | `0x2af69c9cc3c5eb68ade512f4f913e361f1b369d29cb8cf69657cb3e58b70959a` | [Sepolia Etherscan](https://sepolia.etherscan.io/address/0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd) |
+| **Ethereum Sepolia (v3 Historical)** | `MosooLocker` v3 | `0x374B9F073A6aC1aF2c147392319499e35E8C7e82` | `0x2fd1d318d43a5a82f1bed7d94e95610eee1919c5676f0490407c4af1b57102a7` | [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x374B9F073A6aC1aF2c147392319499e35E8C7e82) |
+| **Ethereum Sepolia (v2 Historical)** | `MosooLocker` v2 | `0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b` | `0xa13c8e1df8018335fdcb957d1ba257ccf32264c4ffe1cea32b319f2ae627a999` | [Sepolia Etherscan](https://sepolia.etherscan.io/address/0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b) |
 | **Ethereum Sepolia (v1 Historical)** | `MosooLocker` v1 | `0x74625D146B8d9413F3c3976B323d94A739be7856` | `0x1b492d89631c7fb398008285e777781d95f48c1a07c9d6ca2d6be5459941b28b` | [Sepolia Etherscan](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856) |
 

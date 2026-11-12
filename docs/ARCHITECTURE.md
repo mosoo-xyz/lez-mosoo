@@ -58,23 +58,24 @@ lez-mosoo/
 │   ├── src/predicate.rs       # Dynamic predicate evaluation engine & V2 Statement ID derivation
 │   ├── src/spel.rs            # SPEL program account/PDA schema helpers
 │   ├── src/types.rs           # Account schemas, HeaderRecord, InstanceAccount, TrustedBridgeConfig
-│   ├── src/error.rs           # Typed MosooError hierarchy
-│   └── tests/                 # 9 integration & adversarial test suites (173 tests)
+│   ├── src/error.rs           # Typed MosooError hierarchy (plus src/outbound_zk.rs for ABI & burn witness)
+│   └── tests/                 # 9 integration & adversarial test suites (174 tests)
 │       ├── lez_v04_acceptance_tests.rs  # 4 offline LEZ v0.4-target conformance tests
 │       ├── adversarial_mutation_tests/  # 50 tests across 4 submodules
 │       ├── security_hardening_tests/    # 58 regression tests across 4 submodules
 │       ├── real_chain_vectors_tests.rs  # 4 tests on real Mainnet Fulu, Sepolia Gloas & Hoodi Fulu vectors
-│       └── ...                          # bridge (23), lc (22), privacy (6), seq (4), e2e (2)
+│       └── ...                          # bridge (24), lc (22), privacy (6), seq (4), e2e (2)
 ├── daemon/                    # Autonomous consensus update daemon (`mosoo-daemon`)
-│   └── src/                   # main.rs (polling, jitter 1.0x–2.5x, proxy routing) + tests.rs (17 tests)
+│   └── src/                   # main.rs (polling, jitter 1.0x–2.5x, proxy routing) + tests.rs (18 tests)
 ├── cli/                       # Developer command-line interface (`mosoo-cli`)
 │   └── src/                   # main.rs, demo.rs, attest.rs, consensus.rs + tests.rs (7 tests)
 ├── consumers/                 # Reference consumer implementations
 │   ├── erc20-receiver/src/    # lib.rs + tests.rs (event-log proof consumer, shielded claims, nullifiers)
 │   └── ether-receiver/src/    # lib.rs + tests.rs (account balance / ETH deposit consumer, mETH ledger)
 ├── contracts/                 # Ethereum escrow & settlement contracts
-│   ├── MosooLocker.sol        # EIP-170 hardened v4 live on Sepolia (0xF94eA0F9...); v1/v2/v3 historical
-│   └── test/MosooLocker.t.sol # 26/26 Foundry unit and fuzz tests (verified locally & in CI)
+│   ├── MosooLocker.sol        # EIP-170 hardened v4 live on Sepolia (0xF94eA0F9...); source adds ZK unlock (24,374 B)
+│   ├── MosooZkBurnVerifier.sol# Modular RISC Zero IRiscZeroVerifier outbound burn & root verifier (5,996 B)
+│   └── test/                  # 31/31 Foundry tests (MosooLocker.t.sol 27 + MosooZkBurnVerifier.t.sol 4)
 ├── vectors/                   # Live Ethereum Beacon Chain JSON fixtures (Sepolia Gloas, Hoodi Fulu)
 └── docs/                      # Architectural, deployment, migration, and security documentation
 ```

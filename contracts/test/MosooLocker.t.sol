@@ -1024,6 +1024,48 @@ contract MosooLockerTest is Test {
         try locker.executeDisableStrictDenominationMode() {
             revert("executeDisableStrictDenominationMode MUST revert permanently once commissioned");
         } catch {}
+        try locker.proposeDisableTokenAllowlist() {
+            revert("proposeDisableTokenAllowlist MUST revert permanently once commissioned");
+        } catch {}
+        try locker.executeDisableTokenAllowlist() {
+            revert("executeDisableTokenAllowlist MUST revert permanently once commissioned");
+        } catch {}
+
+        // M-03: Zero large-withdrawal threshold for ERC-20 rejected post-commissioning
+        try locker.proposeLargeWithdrawalThresholdERC20(address(token), 0) {
+            revert("proposeLargeWithdrawalThresholdERC20(0) MUST revert post-commissioning");
+        } catch {}
+    }
+
+    function test_production_commissioned_m02_m03_invariants() public {
+        // Pre-commissioning: non-zero proposeLargeWithdrawalThresholdERC20 works
+        locker.proposeLargeWithdrawalThresholdERC20(address(token), 5_000 * 10**18);
+
+        // Commission locker
+        address attester2 = address(0xA11CE4);
+        address[] memory extra = new address[](1);
+        extra[0] = attester2;
+        locker.commissionLocker(extra, 2);
+        assertTrue(locker.productionCommissioned(), "productionCommissioned must be true");
+
+        // M-02: Disabling token allowlist permanently locked post-commissioning
+        try locker.proposeDisableTokenAllowlist() {
+            revert("proposeDisableTokenAllowlist MUST revert post-commissioning");
+        } catch {}
+
+        try locker.executeDisableTokenAllowlist() {
+            revert("executeDisableTokenAllowlist MUST revert post-commissioning");
+        } catch {}
+
+        // M-03: Proposing zero threshold post-commissioning MUST revert with ZeroAmount
+        try locker.proposeLargeWithdrawalThresholdERC20(address(token), 0) {
+            revert("proposeLargeWithdrawalThresholdERC20(0) MUST revert post-commissioning");
+        } catch {}
+
+        // Executing valid non-zero proposal post-commissioning after timelock succeeds
+        vm.warp(block.timestamp + locker.GOVERNANCE_TIMELOCK_DELAY() + 1);
+        locker.executeLargeWithdrawalThresholdERC20(address(token));
+        assertEq(locker.largeWithdrawalThresholdERC20(address(token)), 5_000 * 10**18, "threshold must match proposed value");
     }
 
     function test_queued_withdrawal_payload_binding_prevents_swap() public {

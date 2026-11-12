@@ -22,6 +22,8 @@ pragma solidity ^0.8.20;
  * 6. Reentrancy Protection: Custom non-reentrant mutex guarding all state-mutating deposit and unlock paths.
  * 7. Two-Step Ownership: Enforces `transferOwnership` + `acceptOwnership` preventing accidental contract loss.
  */
+import {IMosooZkBurnVerifier} from "./MosooZkBurnVerifier.sol";
+
 contract MosooLocker {
     // --- State Variables ---
 
@@ -139,6 +141,11 @@ contract MosooLocker {
 
     /// @notice Permanently cancelled burns (cannot be re-queued or unlocked by anyone)
     mapping(bytes32 => bool) public cancelledBurns;
+
+    /// @notice Optional RISC Zero proof-based outbound burn verifier (RFP-022 trustless unlock path)
+    address public zkBurnVerifier;
+    address private pendingZkBurnVerifier;
+    uint256 public zkBurnVerifierTimelockUnlock;
 
     // --- EIP-712 Domain Separation ---
     bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
@@ -288,6 +295,9 @@ contract MosooLocker {
     event PendingGovernanceCancelled(string action, address indexed cancelledBy);
     event LegacyRoutesToggled(bool enabled);
     event LegacyRoutesPermanentlyRetired();
+    event ZkBurnVerifierUpdated(address indexed oldVerifier, address indexed newVerifier);
+    event ZkBurnVerifierChangeProposed(address indexed currentVerifier, address indexed proposedVerifier, uint256 unlockTimestamp);
+    event ShieldedZkProofUnlocked(bytes32 indexed burnNullifier, address indexed assetToken, address indexed recipient, uint256 amount);
 
     // --- Errors ---
 
@@ -333,6 +343,7 @@ contract MosooLocker {
     error DailyLimitNotConfigured();
     error WithdrawalPayloadMismatch();
     error PrivacySettingLocked();
+    error ZkBurnVerifierNotConfigured();
 
     // --- Modifiers ---
 
@@ -690,22 +701,10 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        bytes[] memory empty;
-        _unlockETHCommon(burnId, bytes32(0), false, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
+        _requireBurnSig(_prepareETHUnlock(burnId, bytes32(0), false, amount, recipient, lezOwner, burnNonce, lezSlot, false), attestationSignature);
+        _settleETHUnlock(burnId, bytes32(0), recipient, amount, lezSlot, false);
     }
 
-    /**
-     * @notice Release locked ERC-20 tokens back to an Ethereum address upon verifiable burn on LEZ.
-     * @dev Outbound settlement verifies EIP-712 signature from authorized attesterAuthority with daily volume limits.
-     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
-     * @param token The ERC-20 token contract address.
-     * @param amount The token amount to unlock.
-     * @param recipient The Ethereum recipient address.
-     * @param lezOwner The LEZ account that performed the burn.
-     * @param burnNonce The sequential burn counter from the LEZ bridge.
-     * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param attestationSignature Cryptographic signature from the attester authority.
-     */
     function unlockERC20(
         bytes32 burnId,
         address token,
@@ -716,22 +715,10 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        bytes[] memory empty;
-        _unlockERC20Common(burnId, bytes32(0), false, token, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
+        _requireBurnSig(_prepareERC20Unlock(burnId, bytes32(0), false, token, amount, recipient, lezOwner, burnNonce, lezSlot, false), attestationSignature);
+        _settleERC20Unlock(burnId, bytes32(0), token, recipient, amount, lezSlot, false);
     }
 
-    /**
-     * @notice Release locked native ETH back to an Ethereum recipient with cross-instance domain separation.
-     * @dev Strictly binds sourceInstance (LEZ light-client instance PDA) into canonical burnId and EIP-712 structured data.
-     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
-     * @param sourceInstance The 32-byte PDA/identifier of the source light-client instance on LEZ.
-     * @param amount The ETH amount to unlock in wei.
-     * @param recipient The Ethereum recipient address.
-     * @param lezOwner The LEZ account that performed the burn.
-     * @param burnNonce The sequential burn counter from the LEZ bridge.
-     * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param attestationSignature Cryptographic signature from the attester authority.
-     */
     function unlockETHWithInstance(
         bytes32 burnId,
         bytes32 sourceInstance,
@@ -742,14 +729,10 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        bytes[] memory empty;
-        _unlockETHCommon(burnId, sourceInstance, true, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
+        _requireBurnSig(_prepareETHUnlock(burnId, sourceInstance, true, amount, recipient, lezOwner, burnNonce, lezSlot, false), attestationSignature);
+        _settleETHUnlock(burnId, sourceInstance, recipient, amount, lezSlot, false);
     }
 
-    /**
-     * @notice Release locked ERC-20 tokens back to an Ethereum address with cross-instance domain separation.
-     * @dev Strictly binds sourceInstance into canonical burnId and EIP-712 structured data.
-     */
     function unlockERC20WithInstance(
         bytes32 burnId,
         bytes32 sourceInstance,
@@ -761,33 +744,10 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes calldata attestationSignature
     ) external whenNotPaused nonReentrant {
-        bytes[] memory empty;
-        _unlockERC20Common(burnId, sourceInstance, true, token, amount, recipient, lezOwner, burnNonce, lezSlot, false, attestationSignature, empty);
+        _requireBurnSig(_prepareERC20Unlock(burnId, sourceInstance, true, token, amount, recipient, lezOwner, burnNonce, lezSlot, false), attestationSignature);
+        _settleERC20Unlock(burnId, sourceInstance, token, recipient, amount, lezSlot, false);
     }
 
-    /**
-     * @notice Release locked native ETH back to an Ethereum recipient with M-of-N multi-signer committee attestation.
-     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
-     * @param recipient The Ethereum recipient address.
-     * @param amount The ETH amount to unlock in wei.
-     * @param lezOwner The LEZ account that performed the burn.
-     * @param burnNonce The sequential burn counter from the LEZ bridge.
-     * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
-     */
-    
-    /**
-     * @notice Release locked native ETH back to an Ethereum address with multi-signer threshold quorum AND cross-instance domain separation.
-     * @dev Strictly binds sourceInstance into canonical V2 burnId and EIP-712 structured data with M-of-N threshold quorum.
-     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
-     * @param sourceInstance The unique 32-byte instance ID of the LEZ light-client instance.
-     * @param amount The ETH amount to unlock in wei.
-     * @param recipient The Ethereum recipient address.
-     * @param lezOwner The LEZ account that performed the burn.
-     * @param burnNonce The sequential burn counter from the LEZ bridge.
-     * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
-     */
     function unlockETHWithInstanceAndQuorum(
         bytes32 burnId,
         bytes32 sourceInstance,
@@ -798,22 +758,10 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        _unlockETHCommon(burnId, sourceInstance, true, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
+        _requireQuorumSig(_prepareETHUnlock(burnId, sourceInstance, true, amount, recipient, lezOwner, burnNonce, lezSlot, true), signatures);
+        _settleETHUnlock(burnId, sourceInstance, recipient, amount, lezSlot, false);
     }
 
-    /**
-     * @notice Release locked ERC-20 tokens back to an Ethereum address with multi-signer threshold quorum AND cross-instance domain separation.
-     * @dev Strictly binds sourceInstance into canonical V2 ERC-20 burnId and EIP-712 structured data with M-of-N threshold quorum.
-     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
-     * @param sourceInstance The unique 32-byte instance ID of the LEZ light-client instance.
-     * @param token The ERC-20 token contract address.
-     * @param amount The token amount to unlock.
-     * @param recipient The Ethereum recipient address.
-     * @param lezOwner The LEZ account that performed the burn.
-     * @param burnNonce The sequential burn counter from the LEZ bridge.
-     * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
-     */
     function unlockERC20WithInstanceAndQuorum(
         bytes32 burnId,
         bytes32 sourceInstance,
@@ -825,7 +773,8 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        _unlockERC20Common(burnId, sourceInstance, true, token, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
+        _requireQuorumSig(_prepareERC20Unlock(burnId, sourceInstance, true, token, amount, recipient, lezOwner, burnNonce, lezSlot, true), signatures);
+        _settleERC20Unlock(burnId, sourceInstance, token, recipient, amount, lezSlot, false);
     }
 
     /**
@@ -891,6 +840,44 @@ contract MosooLocker {
         _settleERC20Unlock(burnNullifier, sourceInstance, token, recipient, amount, 0, true);
     }
 
+    /**
+     * @notice Release locked native ETH or ERC-20 tokens using a verified RISC Zero outbound burn proof (RFP-022).
+     * @dev Delegates proof and journal verification to the configured `zkBurnVerifier`, then enforces all
+     *      MosooLocker custody invariants (replay nullifiers, guardian vetoes, 24h large-withdrawal queue, rolling caps).
+     */
+    function unlockShieldedWithZkProof(
+        bytes calldata seal,
+        bytes calldata journal
+    ) external whenNotPaused nonReentrant {
+        address verifier = zkBurnVerifier;
+        if (verifier == address(0)) revert ZkBurnVerifierNotConfigured();
+        (
+            bytes32 burnNullifier,
+            bytes32 sourceInstance,
+            address assetToken,
+            address recipient,
+            uint256 amount
+        ) = IMosooZkBurnVerifier(verifier).verifyOutboundBurn(seal, journal);
+        if (assetToken == address(0)) {
+            _validateETHUnlock(burnNullifier, amount, recipient);
+            _settleETHUnlock(burnNullifier, sourceInstance, payable(recipient), amount, 0, true);
+        } else {
+            _validateERC20Unlock(burnNullifier, assetToken, amount, recipient);
+            _settleERC20Unlock(burnNullifier, sourceInstance, assetToken, recipient, amount, 0, true);
+        }
+        if (executedBurns[burnNullifier]) {
+            emit ShieldedZkProofUnlocked(burnNullifier, assetToken, recipient, amount);
+        }
+    }
+
+    function _requireBurnSig(bytes32 structHash, bytes calldata sig) internal view {
+        if (!_verifyBurnSignature(structHash, sig)) revert InvalidBurnProof();
+    }
+
+    function _requireQuorumSig(bytes32 structHash, bytes[] calldata sigs) internal view {
+        if (!_verifyQuorumSignatures(structHash, sigs)) revert InvalidBurnProof();
+    }
+
     function _verifyFlexibleSignatures(
         bytes32 structHash,
         bytes[] calldata signatures
@@ -910,19 +897,12 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        _unlockETHCommon(burnId, bytes32(0), false, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
+        _requireQuorumSig(_prepareETHUnlock(burnId, bytes32(0), false, amount, recipient, lezOwner, burnNonce, lezSlot, true), signatures);
+        _settleETHUnlock(burnId, bytes32(0), recipient, amount, lezSlot, false);
     }
 
     /**
      * @notice Release locked ERC-20 tokens back to an Ethereum recipient with M-of-N multi-signer committee attestation.
-     * @param burnId The cryptographic identifier of the burn receipt on LEZ.
-     * @param token The ERC-20 token contract address.
-     * @param amount The token amount to unlock.
-     * @param recipient The Ethereum recipient address.
-     * @param lezOwner The LEZ account that performed the burn.
-     * @param burnNonce The sequential burn counter from the LEZ bridge.
-     * @param lezSlot The LEZ block/slot height at which the burn occurred.
-     * @param signatures Strictly ascending array of distinct attester EIP-712 signatures.
      */
     function unlockERC20WithQuorum(
         bytes32 burnId,
@@ -934,7 +914,8 @@ contract MosooLocker {
         uint64 lezSlot,
         bytes[] calldata signatures
     ) external whenNotPaused nonReentrant {
-        _unlockERC20Common(burnId, bytes32(0), false, token, amount, recipient, lezOwner, burnNonce, lezSlot, true, "", signatures);
+        _requireQuorumSig(_prepareERC20Unlock(burnId, bytes32(0), false, token, amount, recipient, lezOwner, burnNonce, lezSlot, true), signatures);
+        _settleERC20Unlock(burnId, bytes32(0), token, recipient, amount, lezSlot, false);
     }
 
     function _validateETHUnlock(bytes32 burnId, uint256 amount, address recipient) internal view {
@@ -947,25 +928,21 @@ contract MosooLocker {
 
     function _validateERC20Unlock(bytes32 burnId, address token, uint256 amount, address recipient) internal view {
         if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || recipient == address(0)) revert ZeroAddress();
-        if (token.code.length == 0) revert ZeroAddress();
+        if (token == address(0) || recipient == address(0) || token.code.length == 0) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
         if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
     }
 
-    function _verifyModeSignature(
-        bytes32 structHash,
-        bool isQuorum,
-        bytes memory singleSig,
-        bytes[] memory quorumSigs
-    ) internal view {
-        if (!(isQuorum ? _verifyQuorumSignatures(structHash, quorumSigs) : _verifyBurnSignature(structHash, singleSig))) {
-            revert InvalidBurnProof();
+    function _requireV2OrLegacy(bool isV2, bytes32 sourceInstance, bool isQuorum) internal view {
+        if (isV2) {
+            if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
+        } else if (!legacyRoutesEnabled || (!isQuorum && isCommissioned())) {
+            revert LegacyRoutesDisabled();
         }
     }
 
-    function _unlockETHCommon(
+    function _prepareETHUnlock(
         bytes32 burnId,
         bytes32 sourceInstance,
         bool isV2,
@@ -974,15 +951,9 @@ contract MosooLocker {
         bytes32 lezOwner,
         uint64 burnNonce,
         uint64 lezSlot,
-        bool isQuorum,
-        bytes memory singleSig,
-        bytes[] memory quorumSigs
-    ) internal {
-        if (isV2) {
-            if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        } else if (!legacyRoutesEnabled || (!isQuorum && isCommissioned())) {
-            revert LegacyRoutesDisabled();
-        }
+        bool isQuorum
+    ) internal view returns (bytes32 structHash) {
+        _requireV2OrLegacy(isV2, sourceInstance, isQuorum);
         _validateETHUnlock(burnId, amount, recipient);
 
         bytes32 expectedBurnId = isV2
@@ -990,14 +961,12 @@ contract MosooLocker {
             : keccak256(abi.encodePacked("mosoo_burn_v1", block.chainid, lezOwner, recipient, amount, burnNonce, lezSlot));
         if (burnId != expectedBurnId) revert InvalidBurnProof();
 
-        bytes32 structHash = isV2
+        structHash = isV2
             ? keccak256(abi.encode(BURN_ETH_V2_TYPEHASH, burnId, sourceInstance, recipient, amount, lezOwner, burnNonce, lezSlot))
             : keccak256(abi.encode(BURN_ETH_TYPEHASH, burnId, recipient, amount, lezOwner, burnNonce, lezSlot));
-        _verifyModeSignature(structHash, isQuorum, singleSig, quorumSigs);
-        _settleETHUnlock(burnId, sourceInstance, recipient, amount, lezSlot, false);
     }
 
-    function _unlockERC20Common(
+    function _prepareERC20Unlock(
         bytes32 burnId,
         bytes32 sourceInstance,
         bool isV2,
@@ -1007,15 +976,9 @@ contract MosooLocker {
         bytes32 lezOwner,
         uint64 burnNonce,
         uint64 lezSlot,
-        bool isQuorum,
-        bytes memory singleSig,
-        bytes[] memory quorumSigs
-    ) internal {
-        if (isV2) {
-            if (sourceInstance == bytes32(0)) revert InvalidSourceInstance();
-        } else if (!legacyRoutesEnabled || (!isQuorum && isCommissioned())) {
-            revert LegacyRoutesDisabled();
-        }
+        bool isQuorum
+    ) internal view returns (bytes32 structHash) {
+        _requireV2OrLegacy(isV2, sourceInstance, isQuorum);
         _validateERC20Unlock(burnId, token, amount, recipient);
 
         bytes32 expectedBurnId = isV2
@@ -1023,11 +986,9 @@ contract MosooLocker {
             : keccak256(abi.encodePacked("mosoo_burn_erc20_v1", block.chainid, token, lezOwner, recipient, amount, burnNonce, lezSlot));
         if (burnId != expectedBurnId) revert InvalidBurnProof();
 
-        bytes32 structHash = isV2
+        structHash = isV2
             ? keccak256(abi.encode(BURN_ERC20_V2_TYPEHASH, burnId, sourceInstance, token, recipient, amount, lezOwner, burnNonce, lezSlot))
             : keccak256(abi.encode(BURN_ERC20_TYPEHASH, burnId, token, recipient, amount, lezOwner, burnNonce, lezSlot));
-        _verifyModeSignature(structHash, isQuorum, singleSig, quorumSigs);
-        _settleERC20Unlock(burnId, sourceInstance, token, recipient, amount, lezSlot, false);
     }
 
     function _settleETHUnlock(
@@ -1147,6 +1108,7 @@ contract MosooLocker {
     /// @notice Propose an ERC-20 large-withdrawal 24h queue threshold change subject to 2-day timelock.
     function proposeLargeWithdrawalThresholdERC20(address token, uint256 newThreshold) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
+        if (productionCommissioned && newThreshold == 0) revert ZeroAmount();
         pendingLargeThresholdERC20[token] = newThreshold;
         hasPendingLargeThresholdERC20[token] = true;
         largeThresholdERC20TimelockUnlock[token] = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
@@ -1162,6 +1124,7 @@ contract MosooLocker {
     function executeLargeWithdrawalThresholdERC20(address token) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
         _requireFlaggedTimelock(hasPendingLargeThresholdERC20[token], largeThresholdERC20TimelockUnlock[token]);
+        if (productionCommissioned && pendingLargeThresholdERC20[token] == 0) revert ZeroAmount();
         uint256 oldThreshold = largeWithdrawalThresholdERC20[token];
         largeWithdrawalThresholdERC20[token] = pendingLargeThresholdERC20[token];
         hasPendingLargeThresholdERC20[token] = false;
@@ -1180,23 +1143,25 @@ contract MosooLocker {
         emit PendingGovernanceCancelled("largeThresholdERC20", msg.sender);
     }
 
+    function _vetoBurn(bytes32 burnId) internal {
+        queuedWithdrawalUnlockTime[burnId] = 0;
+        delete queuedWithdrawalPayloadHash[burnId];
+        cancelledBurns[burnId] = true;
+    }
+
     /// @notice Cancel a queued large withdrawal in an emergency (guardian or owner)
     /// @dev Permanently vetoes the burnId, preventing any re-queue or future withdrawal.
     function cancelQueuedWithdrawal(bytes32 burnId) external {
         _checkOwnerOrGuardian();
         if (queuedWithdrawalUnlockTime[burnId] == 0) revert NoQueuedWithdrawal();
-        queuedWithdrawalUnlockTime[burnId] = 0;
-        delete queuedWithdrawalPayloadHash[burnId];
-        cancelledBurns[burnId] = true;
+        _vetoBurn(burnId);
         emit QueuedWithdrawalCancelled(burnId, msg.sender);
     }
 
     /// @notice Permanently veto and invalidate any burn authorization (guardian or owner)
     function cancelBurn(bytes32 burnId) external {
         _checkOwnerOrGuardian();
-        queuedWithdrawalUnlockTime[burnId] = 0;
-        delete queuedWithdrawalPayloadHash[burnId];
-        cancelledBurns[burnId] = true;
+        _vetoBurn(burnId);
         emit BurnPermanentlyCancelled(burnId, msg.sender);
     }
 
@@ -1353,7 +1318,7 @@ contract MosooLocker {
 
     function _verifyBurnSignature(
         bytes32 structHash,
-        bytes memory signature
+        bytes calldata signature
     ) internal view returns (bool) {
         if (requiredQuorum > 1) {
             return false;
@@ -1370,7 +1335,7 @@ contract MosooLocker {
 
     function _verifyQuorumSignatures(
         bytes32 structHash,
-        bytes[] memory signatures
+        bytes[] calldata signatures
     ) internal view returns (bool) {
         if (signatures.length < requiredQuorum) {
             return false;
@@ -1399,7 +1364,7 @@ contract MosooLocker {
 
     function _recoverSigner(
         bytes32 hash,
-        bytes memory signature
+        bytes calldata signature
     ) internal pure returns (address) {
         if (signature.length != 65) return address(0);
 
@@ -1408,9 +1373,9 @@ contract MosooLocker {
         uint8 v;
 
         assembly {
-            r := mload(add(signature, 32))
-            s := mload(add(signature, 64))
-            v := byte(0, mload(add(signature, 96)))
+            r := calldataload(signature.offset)
+            s := calldataload(add(signature.offset, 32))
+            v := byte(0, calldataload(add(signature.offset, 64)))
         }
 
         // Strict EIP-2 check to prevent signature malleability
@@ -1441,8 +1406,7 @@ contract MosooLocker {
     }
 
     function _requireTimelock(uint256 unlockTime) internal view {
-        if (unlockTime == 0) revert NoPendingGovernanceAction();
-        if (block.timestamp < unlockTime) revert GovernanceTimelockActive(block.timestamp, unlockTime);
+        _requireFlaggedTimelock(unlockTime != 0, unlockTime);
     }
 
     function _requireFlaggedTimelock(bool hasPending, uint256 unlockTime) internal view {
@@ -1626,10 +1590,56 @@ contract MosooLocker {
             pendingDenomAllowed = false;
             denomTimelockUnlock = 0;
             action = "standardDenom";
+        } else if (actionType == 12) {
+            pendingZkBurnVerifier = address(0);
+            zkBurnVerifierTimelockUnlock = 0;
+            action = "zkBurnVerifier";
         } else {
             revert NoPendingGovernanceAction();
         }
         emit PendingGovernanceCancelled(action, msg.sender);
+    }
+
+    function _requireNonZero(address addr) internal pure {
+        if (addr == address(0)) revert ZeroAddress();
+    }
+
+    function _requirePreCommissioned() internal view {
+        if (productionCommissioned) revert DirectGovernanceDeprecated();
+    }
+
+    function _govUnlock() internal view returns (uint256) {
+        return block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+    }
+
+    function _setZkBurnVerifier(address nextVerifier) internal {
+        if (nextVerifier == address(0) || nextVerifier.code.length == 0) revert ZeroAddress();
+        address oldVerifier = zkBurnVerifier;
+        zkBurnVerifier = nextVerifier;
+        emit ZkBurnVerifierUpdated(oldVerifier, nextVerifier);
+    }
+
+    /// @notice Pre-commissioning configuration of the RISC Zero outbound burn verifier contract.
+    function setZkBurnVerifier(address _verifier) external onlyOwner {
+        _requirePreCommissioned();
+        _setZkBurnVerifier(_verifier);
+    }
+
+    /// @notice Propose upgrading/setting the RISC Zero outbound burn verifier subject to 2-day governance timelock.
+    function proposeZkBurnVerifier(address _newVerifier) external onlyOwner {
+        if (_newVerifier == address(0) || _newVerifier.code.length == 0) revert ZeroAddress();
+        pendingZkBurnVerifier = _newVerifier;
+        zkBurnVerifierTimelockUnlock = _govUnlock();
+        emit ZkBurnVerifierChangeProposed(zkBurnVerifier, _newVerifier, zkBurnVerifierTimelockUnlock);
+    }
+
+    /// @notice Execute a timelocked RISC Zero outbound burn verifier update.
+    function executeZkBurnVerifier() external onlyOwner {
+        _requireFlaggedTimelock(pendingZkBurnVerifier != address(0), zkBurnVerifierTimelockUnlock);
+        address nextVerifier = pendingZkBurnVerifier;
+        pendingZkBurnVerifier = address(0);
+        zkBurnVerifierTimelockUnlock = 0;
+        _setZkBurnVerifier(nextVerifier);
     }
 
     function cancelPendingGovernanceERC20(address token) external {
@@ -1657,17 +1667,17 @@ contract MosooLocker {
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
-        if (productionCommissioned) revert DirectGovernanceDeprecated();
-        if (token == address(0)) revert ZeroAddress();
+        _requirePreCommissioned();
+        _requireNonZero(token);
         isTokenAllowed[token] = allowed;
         emit TokenAllowedStatusUpdated(token, allowed);
     }
 
     function proposeTokenAllowed(address token, bool allowed) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         pendingTokenAllowedAddr = token;
         pendingTokenAllowedFlag = allowed;
-        tokenAllowedTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        tokenAllowedTimelockUnlock = _govUnlock();
     }
 
     function executeTokenAllowed() external onlyOwner {
@@ -1697,7 +1707,6 @@ contract MosooLocker {
     }
 
     /// @notice Irreversible killswitch permanently retiring legacy V1 withdrawal routes.
-    /// Once invoked, legacy routes are permanently disabled and can never be re-enabled under any circumstances.
     function permanentlyRetireLegacyRoutes() external onlyOwner {
         legacyRoutesPermanentlyDisabled = true;
         legacyRoutesEnabled = false;
@@ -1712,10 +1721,12 @@ contract MosooLocker {
     }
 
     function proposeDisableTokenAllowlist() external onlyOwner {
-        disableAllowlistTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        _requirePrivacyMutable(tokenAllowlistEnabled);
+        disableAllowlistTimelockUnlock = _govUnlock();
     }
 
     function executeDisableTokenAllowlist() external onlyOwner {
+        _requirePrivacyMutable(tokenAllowlistEnabled);
         _requireTimelock(disableAllowlistTimelockUnlock);
         disableAllowlistTimelockUnlock = 0;
         tokenAllowlistEnabled = false;
@@ -1728,20 +1739,24 @@ contract MosooLocker {
         }
     }
 
-    function setShieldedDepositsOnly(bool enabled) external onlyOwner {
+    function _validateSetPrivacyFlag(bool current, bool enabled) internal view returns (bool) {
         if (!enabled) {
-            _requirePrivacyMutable(shieldedDepositsOnly);
-            if (shieldedDepositsOnly || productionCommissioned) {
+            _requirePrivacyMutable(current);
+            if (current || productionCommissioned) {
                 revert DirectGovernanceDeprecated();
             }
         }
-        shieldedDepositsOnly = enabled;
+        return enabled;
+    }
+
+    function setShieldedDepositsOnly(bool enabled) external onlyOwner {
+        shieldedDepositsOnly = _validateSetPrivacyFlag(shieldedDepositsOnly, enabled);
         emit ShieldedDepositsOnlyToggled(enabled);
     }
 
     function proposeDisableShieldedDepositsOnly() external onlyOwner {
         _requirePrivacyMutable(shieldedDepositsOnly);
-        disableShieldedOnlyTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        disableShieldedOnlyTimelockUnlock = _govUnlock();
     }
 
     function executeDisableShieldedDepositsOnly() external onlyOwner {
@@ -1753,19 +1768,13 @@ contract MosooLocker {
     }
 
     function setStrictFixedDenominationMode(bool enabled) external onlyOwner {
-        if (!enabled) {
-            _requirePrivacyMutable(strictFixedDenominationMode);
-            if (strictFixedDenominationMode || productionCommissioned) {
-                revert DirectGovernanceDeprecated();
-            }
-        }
-        strictFixedDenominationMode = enabled;
+        strictFixedDenominationMode = _validateSetPrivacyFlag(strictFixedDenominationMode, enabled);
         emit StrictDenominationModeToggled(enabled);
     }
 
     function proposeDisableStrictDenominationMode() external onlyOwner {
         _requirePrivacyMutable(strictFixedDenominationMode);
-        disableStrictDenomTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        disableStrictDenomTimelockUnlock = _govUnlock();
     }
 
     function executeDisableStrictDenominationMode() external onlyOwner {
@@ -1777,7 +1786,7 @@ contract MosooLocker {
     }
 
     function setStandardDenomination(uint256 denomination, bool allowed) external onlyOwner {
-        if (productionCommissioned) revert DirectGovernanceDeprecated();
+        _requirePreCommissioned();
         if (denomination == 0) revert ZeroAmount();
         isStandardDenomination[denomination] = allowed;
         emit StandardDenominationUpdated(denomination, allowed);
@@ -1787,7 +1796,7 @@ contract MosooLocker {
         if (denomination == 0) revert ZeroAmount();
         pendingDenomAmount = denomination;
         pendingDenomAllowed = allowed;
-        denomTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        denomTimelockUnlock = _govUnlock();
     }
 
     function executeStandardDenomination() external onlyOwner {
@@ -1802,10 +1811,10 @@ contract MosooLocker {
     }
 
     function proposeGuardian(address _newGuardian) external onlyOwner {
-        if (_newGuardian == address(0)) revert ZeroAddress();
+        _requireNonZero(_newGuardian);
         if (_newGuardian == owner || _newGuardian == pendingOwner) revert GuardianMustNotBeOwner();
         pendingGuardian = _newGuardian;
-        guardianTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+        guardianTimelockUnlock = _govUnlock();
         emit GuardianChangeProposed(guardian, _newGuardian, guardianTimelockUnlock);
     }
 

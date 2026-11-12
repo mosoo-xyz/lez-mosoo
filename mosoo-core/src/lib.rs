@@ -7,11 +7,13 @@
 pub mod crypto;
 pub mod error;
 pub mod inclusion;
+pub mod outbound_zk;
 pub mod predicate;
 pub mod spel;
 pub mod types;
 pub mod verifier;
 
 pub use error::MosooError;
+pub use outbound_zk::*;
 pub use types::*;
 pub use verifier::*;

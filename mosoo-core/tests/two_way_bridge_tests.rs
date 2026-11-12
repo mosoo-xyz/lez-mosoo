@@ -2619,3 +2619,129 @@ fn test_two_way_bridge_rfp022_shielded_outbound_burn_nullifier() {
         })
     );
 }
+
+#[test]
+fn test_rfp022_outbound_zk_burn_witness_and_journal_roundtrip() {
+    use mosoo_core::{
+        derive_outbound_burn_leaf_commitment, verify_outbound_burn_witness, OutboundBurnJournal,
+        OutboundBurnWitness, CANONICAL_SEPOLIA_INSTANCE_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        ETH_SEPOLIA_CHAIN_ID, OUTBOUND_BURN_JOURNAL_LEN, OUTBOUND_MERKLE_DEPTH,
+    };
+
+    let locker_addr = [0x11u8; 20];
+    let lez_user = [0xAAu8; 32];
+    let eth_recipient = [0x33u8; 20];
+    let burn_secret = [0x77u8; 32];
+    let amount: u128 = 10_000_000_000_000_000; // 0.01 ETH
+
+    let mut eth_locker = MockEthereumLocker::new(locker_addr);
+    let _ = eth_locker.deposit_eth(amount);
+
+    let mut lez_ledger = MethLedger::new();
+    lez_ledger.register_trusted_locker(ETH_SEPOLIA_CHAIN_ID, locker_addr);
+    lez_ledger
+        .config
+        .register_trusted_instance(ETH_SEPOLIA_CHAIN_ID, CANONICAL_SEPOLIA_MOSOO_INSTANCE);
+
+    // Seed LEZ balance via direct burnable balance setup through mint helper
+    let mut nullifiers = EtherNullifierSet::new();
+    let block_hash = [0x44u8; 32];
+    let deposit_slot = 12_119_396u64;
+    let mut val_bytes = [0u8; 32];
+    val_bytes[16..32].copy_from_slice(&amount.to_be_bytes());
+    let mut statement = VerifiedStatement {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        genesis_validators_root: [0u8; 32],
+        source_instance_id: CANONICAL_SEPOLIA_INSTANCE_ID,
+        source_instance_pda: CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        attester_program_id: MOSOO_PROGRAM_ID,
+        statement_id: [0u8; 32],
+        predicate_holds: true,
+        verified_value: val_bytes,
+        subject_key: derive_eth_deposit_subject_key(
+            &block_hash,
+            deposit_slot,
+            0,
+            0,
+            &locker_addr,
+            &[0x22; 20],
+            &lez_user,
+        ),
+        proof_type_tag: PROOF_TYPE_ETH_DEPOSIT,
+        binding: StatementBinding::NativeEthDeposit {
+            execution_block_hash: block_hash,
+            slot: deposit_slot,
+            tx_index: 0,
+            log_index: 0,
+            deposit_contract: locker_addr,
+            sender: [0x22; 20],
+            recipient: lez_user,
+        },
+    };
+    statement.statement_id = statement.derive_canonical_id();
+    let stmt_acct = StatementAccount::new_authentic(statement);
+    lez_ledger
+        .mint_deposit_authenticated_pda_u256(&stmt_acct, locker_addr, &mut nullifiers)
+        .expect("initial mint must succeed");
+
+    // Burn shielded mETH -> emits opaque burn_nullifier without leaking lez_user
+    let burn_nullifier = lez_ledger
+        .burn_shielded_meth(
+            ETH_SEPOLIA_CHAIN_ID,
+            &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+            &lez_user,
+            amount,
+            &burn_secret,
+        )
+        .expect("shielded burn must succeed");
+
+    // Compute Merkle inclusion root for this burn leaf
+    let burn_slot = 81_648u64;
+    let burn_nonce = 1u64;
+    let leaf = derive_outbound_burn_leaf_commitment(
+        ETH_SEPOLIA_CHAIN_ID,
+        &locker_addr,
+        &CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        &lez_user,
+        &[0u8; 20],
+        &eth_recipient,
+        amount,
+        burn_nonce,
+        burn_slot,
+        &burn_secret,
+    );
+    let siblings = [[0u8; 32]; OUTBOUND_MERKLE_DEPTH];
+    let mut cur = leaf;
+    for sib in siblings.iter() {
+        let mut packed = [0u8; 15 + 32 + 32];
+        packed[..15].copy_from_slice(b"mosoo_merkle_v1");
+        packed[15..47].copy_from_slice(&cur);
+        packed[47..79].copy_from_slice(sib);
+        cur = alloy_primitives::keccak256(packed).0;
+    }
+
+    let witness = OutboundBurnWitness {
+        chain_id: ETH_SEPOLIA_CHAIN_ID,
+        locker: locker_addr,
+        source_instance: CANONICAL_SEPOLIA_MOSOO_INSTANCE,
+        lez_state_root: cur,
+        lez_owner: lez_user,
+        asset_token: [0u8; 20],
+        recipient: eth_recipient,
+        amount,
+        burn_nonce,
+        lez_slot: burn_slot,
+        burn_secret,
+        leaf_index: 0,
+        siblings,
+    };
+
+    let journal = verify_outbound_burn_witness(&witness).expect("witness verification must pass");
+    assert_eq!(journal.burn_nullifier, burn_nullifier);
+    let encoded = journal.abi_encode();
+    assert_eq!(encoded.len(), OUTBOUND_BURN_JOURNAL_LEN);
+    assert_eq!(OutboundBurnJournal::abi_decode(&encoded).unwrap(), journal);
+    assert!(!encoded
+        .windows(32)
+        .any(|w| w == lez_user || w == burn_secret));
+}

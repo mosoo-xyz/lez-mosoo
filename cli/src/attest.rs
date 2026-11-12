@@ -174,7 +174,7 @@ pub(crate) fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         };
 
         // Strict fail-closed on "finalized" block: fallback to "latest" only if --allow-unfinalized is explicitly passed
-        if json_block.get("result").is_none() || json_block.get("result").unwrap().is_null() {
+        if json_block.get("result").is_none_or(|r| r.is_null()) {
             if args.allow_unfinalized {
                 println!(
                     "    \x1b[1;33m[WARN] 'finalized' block not available; using unfinalized 'latest' (--allow-unfinalized enabled)\x1b[0m"
@@ -1216,13 +1216,13 @@ pub(crate) fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);
         Some(arr)
-    } else if matches!(
-        p_mode,
-        Some(
+    } else if let Some(mode) = p_mode.filter(|m| {
+        matches!(
+            m,
             mosoo_core::types::PrivacyMode::AddressPrivate
                 | mosoo_core::types::PrivacyMode::Confidential
         )
-    ) {
+    }) {
         if args.demo {
             // In demo simulation mode, derive deterministic salt for reproducible test runs
             let mut hasher = sha2::Sha256::new();
@@ -1233,7 +1233,7 @@ pub(crate) fn run_attest(args: AttestArgs) -> anyhow::Result<()> {
             // In production mode, require explicit secret salt to prevent unblinding
             anyhow::bail!(
                 "Zero-knowledge privacy mode '{:?}' requires an explicit secret 32-byte salt via --privacy-salt <64_HEX_CHARS>. Deterministic slot-derived fallback is disallowed in production to guarantee non-correlation.",
-                p_mode.unwrap()
+                mode
             );
         }
     } else {

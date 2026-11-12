@@ -3,7 +3,7 @@
 `mosoo-daemon` is a permissionless, headless consensus update service. It continuously monitors an Ethereum beacon node for new finalized headers and submits the corresponding 3-transaction BLS verification pipeline to the Logos Execution Zone (LEZ) Mosoo instance.
 
 > [!NOTE]
-> **Permissionless Design:** Anyone may run this daemon simultaneously. Multiple operators running in parallel is safe and encouraged — the LEZ attester program is fully idempotent, and the daemon's randomized jitter delay (1× to 2.5× the configured poll interval) dramatically reduces the probability of duplicate submission gas waste.
+> **Permissionless Design & v0.4 Target Boundary:** Anyone may run this daemon simultaneously. Multiple operators running in parallel is safe and encouraged — the LEZ attester program is fully idempotent, and the daemon's randomized jitter delay (1× to 2.5× the configured poll interval) dramatically reduces the probability of duplicate submission gas waste. Note that `mosoo-daemon` targets the unreleased LEZ `v0.4` JSON-RPC wire path (`lez_sendTransaction` against `MOSOO_PROGRAM_ID 0x01ab...`); for live public LEZ `v0.3.1` (`https://testnet.lez.logos.co`) Borsh transactions, use [`programs/mosoo-lez-v03-cli`](../programs/mosoo-lez-v03-cli/src/main.rs).
 
 ---
 

@@ -49,7 +49,7 @@ jobs:
       - name: Run Adversarial & Mutation Tests (50 tests, 42 attack vectors)
         run: cargo test --test adversarial_mutation_tests --verbose
 
-      - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (23/23 tests)
+      - name: Run Two-Way Native ETH & ERC-20 Bridge Lifecycle Suite (24/24 tests)
         run: cargo test --test two_way_bridge_tests --verbose
 
       - name: Run Standalone LEZ Sequencer E2E Suite (4/4 tests)
@@ -61,7 +61,7 @@ jobs:
       - name: Run 6/6 Privacy & Zero-Correlation Tests
         run: cargo test --test privacy_and_correlation_tests --verbose
 
-      - name: Run 17 Daemon Operational Tests (Beacon Parsing, Jitter, Competing-Update Recovery)
+      - name: Run 18 Daemon Operational Tests (Beacon Parsing, Jitter, Competing-Update Recovery)
         run: cargo test -p mosoo-daemon --verbose
 
       - name: Execute Live Empirical Benchmark Suite & Emit JSON Artifact

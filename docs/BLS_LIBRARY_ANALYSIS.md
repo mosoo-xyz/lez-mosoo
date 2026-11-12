@@ -44,7 +44,7 @@ To maintain audit transparency, Mosoo strictly distinguishes:
 | **Implementation Language** | C + Host Assembly | 100% Pure Rust (`no_std`) | 100% Pure Rust (`no_std`) |
 | **RISC Zero Build Footprint** | Requires RISC-V C cross-compiler (`rzup install cpp` / `gcc`) | Pure Cargo (`rustc` only, zero C toolchain risk) | Pure Cargo + algebra traits |
 | **Exposed Split-Pairing Primitives** | Direct `blst_miller_loop`, `blst_fp12_mul`, `blst_final_exp` (`blst::blst_fp12`) | Requires internal / `pairing` crate extension for arbitrary intermediate $\mathbb{F}_{p^{12}}$ checkpointing | Exposes `Bls12_381::multi_miller_loop` & `final_exponentiation` cleanly |
-| **Ecosystem Alignment** | Matches `a16z/helios` and production CL nodes | Used cleanly in constrained `no_std` WASM / RISC-V guests (e.g., `sextant_lc` dual backend option) | Common inside Circom/Halo2/Arkworks SNARK verifiers |
+| **Ecosystem Alignment** | Matches `a16z/helios` and production CL nodes | Used cleanly in constrained `no_std` WASM / RISC-V guests (e.g., pure-Rust dual backend option) | Common inside Circom/Halo2/Arkworks SNARK verifiers |
 
 ### Key Takeaway & Future Hardening Option
 Using `blst` gives Mosoo identical pairing & subgroup-check behavior to `helios` and native performance in `mosoo-daemon`, at the cost of requiring the C RISC-V toolchain (`rzup install cpp` in `docker/Dockerfile.guest`). Adding a Cargo feature flag for a pure-Rust `bls12_381` fallback remains a clean post-v0.4 hardening option if zero-C-dependency guest builds are desired.

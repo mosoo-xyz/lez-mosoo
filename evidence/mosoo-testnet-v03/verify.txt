@@ -8,7 +8,7 @@ Target RPC : https://testnet.lez.logos.co (TLS Strict)
 --- [1/5] Sequencer Health & Distinct Program Identity ---
   [PASS] Sequencer live height = 81412
   [PASS] Gas caps match LEZ spec (exec=10,000,000, stor=1,000,000)
-  [PASS] Distinct from external reference sextant_lc (DQprfeSk1wPC...)
+  [PASS] Distinct from unassociated testnet program (DQprfeSk1wPC...)
 
 --- [2/5] Local Artifact & Binary Determinism ---
   [PASS] mosoo_lc.bin verified (601,892 bytes, sha256=0fc6ce723be2c507...)

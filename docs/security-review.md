@@ -39,9 +39,9 @@ This document describes the core security invariants enforced by Mosoo (`mosoo-c
 | :--- | :--- | :--- |
 | Security Hardening (`58`) | `mosoo-core/tests/security_hardening_tests/` | Account ownership checks, pinned instances/check-points, deposit separation, fork adapters, freshness bounds (`guest_and_store`, `privacy_and_instance`, `deposit_and_forks`, `freshness_and_adapter`) |
 | Adversarial Mutation (`50`) | `mosoo-core/tests/adversarial_mutation_tests/` | Forged signatures, quorum deficits, period skips, Gloas RLP tampering, replay attacks, cross-stage job tampering, storage poisoning (`consensus_and_branches`, `state_and_replay`, `pipeline_and_storage`, `instance_and_config`) |
-| Two-Way Bridge (`23`) | `mosoo-core/tests/two_way_bridge_tests.rs` | Burn ID integrity, EIP-712 cross-contract replay rejection, rate limits, guardian veto paths |
+| Two-Way Bridge (`24`) | `mosoo-core/tests/two_way_bridge_tests.rs` | Burn ID integrity, EIP-712 cross-contract replay rejection, rate limits, guardian veto paths, and RISC Zero outbound burn journal encoding |
 | Privacy & Correlation (`6`) | `mosoo-core/tests/privacy_and_correlation_tests.rs` | Confidential commitment blinding and `DepositCommitted` unlinkability guarantees |
-| Solidity Escrow (`20`) | `contracts/test/MosooLocker.t.sol` | Foundry unit & fuzz tests against live EVM semantics |
+| Solidity Escrow & ZK Verifier (`31`) | `contracts/test/` | Foundry unit & fuzz tests against live EVM semantics (`MosooLocker.t.sol` 27 + `MosooZkBurnVerifier.t.sol` 4) |
 | Evidence Mutation (`7`) | `scripts/test-evidence-mutation.py` | Tampered hashes, cycle caps, and missing artifacts rejected by `verify-evidence.py` |
 
 For exact suite counts and execution commands, see [`docs/TESTING.md`](TESTING.md).
