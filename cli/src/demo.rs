@@ -526,8 +526,8 @@ pub(crate) fn run_info() -> anyhow::Result<()> {
     println!("- Supported Chains:  Ethereum Mainnet (1), Sepolia (11155111), Hoodi (560048), Holesky (17000)");
     println!("- Fork Schedules:    Altair, Bellatrix, Capella, Deneb, Electra, Fulu, Gloas");
     println!("- Licensing:         MIT / Apache-2.0 dual license");
-    println!("- Test Evidence:     Verified locally via `cargo test --workspace` (see docs/TESTING.md for per-crate breakdown + 20 Foundry Solidity tests in contracts/test/MosooLocker.t.sol)");
-    println!("- Current Status:    Working Offline Prototype (LEZ v0.4 public testnet unreleased; Sepolia v2 MosooLocker live & 2-of-2 commissioned)\n");
+    println!("- Test Evidence:     Verified locally via `cargo test --workspace` (see docs/TESTING.md for per-crate breakdown + 24 Foundry Solidity tests in contracts/test/MosooLocker.t.sol)");
+    println!("- Current Status:    Working Offline Prototype (LEZ v0.4 public testnet unreleased; Sepolia v3 MosooLocker live, hardened & 2-of-2 commissioned)\n");
     Ok(())
 }
 

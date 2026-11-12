@@ -96,6 +96,7 @@ fn test_logos_ethereum_core_proxy_url_derivation() {
         poll_interval_secs: 60,
         log_level: "info".to_string(),
         log_format: "pretty".to_string(),
+        health_port: None,
     };
 
     // Without Logos Core proxy: falls back to direct beacon node
@@ -211,6 +212,7 @@ fn test_daemon_url_construction_trailing_slash_normalization() {
         poll_interval_secs: 60,
         log_level: "info".to_string(),
         log_format: "json".to_string(),
+        health_port: None,
     };
     let cli_no_trailing = Cli {
         eth_consensus_rpc: "https://beacon.example.com".to_string(),
@@ -245,6 +247,7 @@ async fn test_daemon_submit_begin_requires_private_key() {
         poll_interval_secs: 60,
         log_level: "info".to_string(),
         log_format: "json".to_string(),
+        health_port: None,
     };
     let client = reqwest::Client::new();
     let update = synthesize_canonical_update();
@@ -526,6 +529,7 @@ async fn test_daemon_raw_private_key_never_sent_in_rpc_payload() {
         poll_interval_secs: 60,
         log_format: "json".to_string(),
         log_level: "info".to_string(),
+        health_port: None,
     };
 
     let signer: alloy::signers::local::PrivateKeySigner = dummy_privkey.parse().unwrap();
@@ -718,4 +722,42 @@ fn test_daemon_parses_real_sepolia_gloas_and_hoodi_vectors() {
     assert_eq!(hoodi_upd.finalized_header.slot, 4_349_184);
     assert!(hoodi_upd.next_sync_committee.is_some());
     assert!(mosoo_core::crypto::is_supported_chain(560_048));
+}
+
+#[test]
+fn test_daemon_health_and_metrics_endpoints() {
+    use std::sync::atomic::Ordering;
+
+    let parsed = Cli::try_parse_from(["mosoo-daemon", "--health-port", "9102"])
+        .expect("--health-port flag must parse cleanly");
+    assert_eq!(parsed.health_port, Some(9102));
+
+    let state = DaemonHealthState::default();
+    let (status_not_ready, _) = state.render_http_response("/readyz");
+    assert_eq!(status_not_ready, "503 Service Unavailable");
+
+    state.ready.store(true, Ordering::Relaxed);
+    state.polls_total.store(5, Ordering::Relaxed);
+    state.submissions_total.store(2, Ordering::Relaxed);
+    state.errors_total.store(1, Ordering::Relaxed);
+    state.last_slot.store(15_632_352, Ordering::Relaxed);
+
+    let (status_ok, body_health) = state.render_http_response("/healthz");
+    assert_eq!(status_ok, "200 OK");
+    assert!(body_health.contains("\"ok\""));
+
+    let (status_ready, body_ready) = state.render_http_response("/readyz");
+    assert_eq!(status_ready, "200 OK");
+    assert!(body_ready.contains("\"ready\""));
+
+    let (status_metrics, body_metrics) = state.render_http_response("/metrics");
+    assert_eq!(status_metrics, "200 OK");
+    assert!(body_metrics.contains("mosoo_daemon_ready 1"));
+    assert!(body_metrics.contains("mosoo_daemon_polls_total 5"));
+    assert!(body_metrics.contains("mosoo_daemon_submissions_total 2"));
+    assert!(body_metrics.contains("mosoo_daemon_errors_total 1"));
+    assert!(body_metrics.contains("mosoo_daemon_last_slot 15632352"));
+
+    let (status_404, _) = state.render_http_response("/other");
+    assert_eq!(status_404, "404 Not Found");
 }

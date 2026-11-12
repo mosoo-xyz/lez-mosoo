@@ -3,52 +3,47 @@
 =====================================================================
 
 [1/18] Checking entire workspace compilation...
-    Checking mosoo-core v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\mosoo-core)
-    Checking ether-receiver v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\consumers\ether-receiver)
-    Checking erc20-receiver v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\consumers\erc20-receiver)
-    Checking mosoo-daemon v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\daemon)
-    Checking mosoo-guest v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\methods\guest)
-    Checking mosoo-cli v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\cli)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.43s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.79s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 
-[2/18] Running all workspace Rust unit, integration & doc-tests (331 tests)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
+[2/18] Running all workspace Rust unit, integration & doc-tests (334 tests)...
+   Compiling mosoo-daemon v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\daemon)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.69s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
      Running unittests src\lib.rs (target\debug\deps\erc20_receiver-b109ca451c5dbb7f.exe)
 
 running 42 tests
 test tests::failed_predicate_rejected ... ok
-test tests::duplicate_claim_rejected ... ok
 test tests::claim_amount_too_low_rejected ... ok
+test tests::duplicate_claim_rejected ... ok
 test tests::test_canonical_deposit_erc20_claim_and_mint_succeeds ... ok
 test tests::test_claim_atomic_rejects_unauthenticated_header ... ok
 test tests::test_claim_u128_amounts_exceeding_u64_max_succeeds ... ok
-test tests::test_derive_burn_erc20_id_deterministic ... ok
-test tests::test_claim_u256_amounts_exceeding_u64_max_succeeds ... ok
 test tests::test_claim_authenticated_pda_u256_provenance_verification ... ok
-test tests::test_claim_atomic_rejects_contract_mismatch ... ok
+test tests::test_claim_u256_amounts_exceeding_u64_max_succeeds ... ok
 test tests::test_erc20_claim_rejects_statement_id_tampering ... ok
-test tests::test_claim_atomic_u256_large_amount_succeeds ... ok
+test tests::test_derive_burn_erc20_id_deterministic ... ok
+test tests::test_claim_atomic_rejects_contract_mismatch ... ok
 test tests::test_erc20_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected ... ok
 test tests::test_erc20_ledger_burn_generates_burn_receipt ... ok
 test tests::test_erc20_ledger_transfer_insufficient_balance_rejected ... ok
 test tests::test_erc20_ledger_mint_and_balance ... ok
-test tests::test_erc20_ledger_double_deposit_mint_rejected_by_nullifier ... ok
 test tests::test_erc20_ledger_transfer_between_accounts ... ok
+test tests::test_erc20_ledger_double_deposit_mint_rejected_by_nullifier ... ok
+test tests::test_claim_atomic_u256_large_amount_succeeds ... ok
 test tests::test_claim_atomic_receipt_log_succeeds ... ok
-test tests::test_erc20_mint_deposit_atomic_enforces_token_allowlist ... ok
 test tests::test_erc20_nullifier_pda_derivation_and_restart_persistence ... ok
+test tests::test_erc20_mint_deposit_atomic_enforces_token_allowlist ... ok
 test tests::test_erc20_mint_deposit_atomic_overflow_fails_without_consuming_nullifier ... ok
-test tests::test_erc20_mint_deposit_atomic_rejects_untrusted_locker_and_zero_address ... ok
-test tests::test_erc20_transfer_claim_succeeds ... ok
 test tests::test_erc20_mint_deposit_atomic_rejects_malicious_deposit_contract ... ok
-test tests::test_erc20_transfer_duplicate_replay_rejected ... ok
+test tests::test_erc20_transfer_claim_succeeds ... ok
 test tests::test_erc20_mint_deposit_atomic_rejects_storage_proof ... ok
-test tests::test_erc20_transfer_insufficient_amount_rejected ... ok
 test tests::test_erc20_mint_deposit_atomic_rejects_unbacked_transfer_proof ... ok
+test tests::test_erc20_transfer_insufficient_amount_rejected ... ok
+test tests::test_erc20_mint_deposit_atomic_rejects_untrusted_locker_and_zero_address ... ok
+test tests::test_erc20_transfer_duplicate_replay_rejected ... ok
 test tests::test_erc20_transfer_sepolia_succeeds ... ok
 test tests::test_erc20_transfer_subject_key_tamper_rejected ... ok
 test tests::test_erc20_transfer_unauthenticated_attester_rejected ... ok
@@ -56,8 +51,8 @@ test tests::test_erc20_transfer_wrong_chain_rejected ... ok
 test tests::test_erc20_transfer_wrong_recipient_rejected ... ok
 test tests::test_erc20_transfer_wrong_sender_rejected ... ok
 test tests::test_erc20_transfer_wrong_statement_type_rejected ... ok
-test tests::test_erc20_mint_deposit_atomic_succeeds_with_authentic_locker ... ok
 test tests::test_erc20_transfer_wrong_token_contract_rejected ... ok
+test tests::test_erc20_mint_deposit_atomic_succeeds_with_authentic_locker ... ok
 test tests::unauthenticated_attester_rejected ... ok
 test tests::test_sepolia_chain_claim_succeeds ... ok
 test tests::wrong_chain_rejected ... ok
@@ -69,12 +64,12 @@ test result: ok. 42 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 running 39 tests
 test tests::failed_predicate_rejected ... ok
-test tests::duplicate_ether_claim_rejected ... ok
 test tests::balance_too_low_rejected ... ok
+test tests::duplicate_ether_claim_rejected ... ok
 test tests::test_claim_ether_atomic_rejects_unauthenticated_header ... ok
 test tests::test_claim_ether_rejects_statement_id_tampering ... ok
-test tests::test_claim_ether_authenticated_pda_u256_provenance_verification ... ok
 test tests::test_claim_ether_u128_amounts_exceeding_u64_max_succeeds ... ok
+test tests::test_claim_ether_authenticated_pda_u256_provenance_verification ... ok
 test tests::test_claim_ether_atomic_rejects_address_mismatch ... ok
 test tests::test_claim_ether_atomic_account_balance_succeeds ... ok
 test tests::test_claim_ether_u256_amounts_exceeding_u64_max_succeeds ... ok
@@ -82,21 +77,21 @@ test tests::test_claim_account_balance_atomic_typed_receipt ... ok
 test tests::test_claim_ether_atomic_u256_large_amount_succeeds ... ok
 test tests::test_derive_burn_id_deterministic ... ok
 test tests::test_ether_nullifier_pda_derivation_and_restart_persistence ... ok
-test tests::test_meth_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected ... ok
 test tests::test_meth_ledger_burn_insufficient_balance_rejected ... ok
-test tests::test_meth_ledger_deposit_mint_and_balance ... ok
+test tests::test_meth_ledger_authenticated_pda_mint_succeeds_and_fabricated_rejected ... ok
 test tests::test_meth_ledger_burn_produces_valid_burn_receipt ... ok
+test tests::test_meth_ledger_deposit_mint_and_balance ... ok
 test tests::test_meth_ledger_double_deposit_mint_rejected_by_nullifier ... ok
 test tests::test_meth_ledger_mint_atomic_rejects_unbacked_account_balance ... ok
 test tests::test_meth_ledger_transfer_insufficient_balance_rejected ... ok
-test tests::test_meth_ledger_transfer_between_lez_accounts ... ok
 test tests::test_claim_native_eth_deposit_atomic_rejects_untrusted_vault_and_zero_address ... ok
+test tests::test_meth_ledger_transfer_between_lez_accounts ... ok
 test tests::test_native_eth_deposit_duplicate_replay_rejected ... ok
 test tests::test_native_eth_deposit_insufficient_wei_rejected ... ok
 test tests::test_native_eth_deposit_sepolia_succeeds ... ok
 test tests::test_native_eth_deposit_subject_key_tamper_rejected ... ok
-test tests::test_meth_ledger_mint_atomic_rejects_zero_address_and_untrusted_locker ... ok
 test tests::test_native_eth_deposit_unauthenticated_attester_rejected ... ok
+test tests::test_meth_ledger_mint_atomic_rejects_zero_address_and_untrusted_locker ... ok
 test tests::test_native_eth_deposit_with_sender_recipient_and_amount_succeeds ... ok
 test tests::test_native_eth_deposit_wrong_chain_rejected ... ok
 test tests::test_native_eth_deposit_wrong_contract_rejected ... ok
@@ -104,8 +99,8 @@ test tests::test_native_eth_deposit_wrong_recipient_rejected ... ok
 test tests::test_native_eth_deposit_wrong_sender_rejected ... ok
 test tests::test_native_eth_deposit_wrong_statement_type_rejected ... ok
 test tests::test_sepolia_chain_claim_succeeds ... ok
-test tests::unauthenticated_attester_rejected ... ok
 test tests::valid_ether_claim_succeeds ... ok
+test tests::unauthenticated_attester_rejected ... ok
 test tests::wrong_chain_rejected ... ok
 
 test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
@@ -113,127 +108,129 @@ test result: ok. 39 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
      Running unittests src\main.rs (target\debug\deps\mosoo-2785a992f4e4d7c6.exe)
 
 running 7 tests
-test tests::test_cli_production_attest_fails_closed_without_rpc ... ok
 test tests::test_cli_production_verify_checkpoint_fails_closed_without_anchor ... ok
+test tests::test_cli_production_attest_fails_closed_without_rpc ... ok
 test tests::test_cli_production_attest_fails_closed_without_authentic_committee ... ok
 test tests::test_cli_submit_update_dry_run_executes_cleanly ... ok
 test tests::test_cli_parser_and_fixture_loading ... ok
 test tests::test_cli_demo_verify_checkpoint_succeeds ... ok
 test tests::test_cli_attest_storage_and_deposit_targets_run_successfully ... ok
 
-test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
      Running unittests src\lib.rs (target\debug\deps\mosoo_core-1f005bd7cb10e2d1.exe)
 
-running 50 tests
+running 52 tests
 test crypto::tests::test_mainnet_fork_boundaries_electra_and_fulu ... ok
-test crypto::tests::test_period_1884_canonical_slot_and_fulu_domain ... ok
-test crypto::tests::test_domain_derivation_across_forks ... ok
 test crypto::tests::test_sepolia_fork_boundaries_electra_and_fulu ... ok
-test crypto::tests::test_spoofed_network_config_on_builtin_chain_rejected ... ok
 test crypto::tests::test_branch_depth_strict_validation ... ok
+test crypto::tests::test_period_1884_canonical_slot_and_fulu_domain ... ok
+test crypto::tests::test_spoofed_network_config_on_builtin_chain_rejected ... ok
+test crypto::tests::test_domain_derivation_across_forks ... ok
 test inclusion::tests::rlp_strip_short_string ... ok
-test inclusion::tests::rlp_strip_single_byte ... ok
 test crypto::tests::test_sync_committee_bits_strict_64_bytes_enforcement ... ok
-test crypto::tests::test_deneb_execution_payload_header_32_leaves ... ok
-test inclusion::tests::test_canonical_deposit_erc20_mpt_inclusion_verification_success ... ok
-test inclusion::tests::test_account_mpt_inclusion_verification_success ... ok
-test inclusion::tests::test_canonical_deposit_eth_mpt_inclusion_verification_success ... ok
+test inclusion::tests::rlp_strip_single_byte ... ok
 test crypto::tests::test_execution_payload_header_branch_verification ... ok
-test inclusion::tests::test_decode_deposit_erc20_fail_closed_on_malformed_topics_and_data ... ok
+test crypto::tests::test_deneb_execution_payload_header_32_leaves ... ok
+test inclusion::tests::test_account_mpt_inclusion_verification_success ... ok
+test inclusion::tests::test_canonical_deposit_erc20_mpt_inclusion_verification_success ... ok
+test inclusion::tests::test_canonical_deposit_eth_mpt_inclusion_verification_success ... ok
 test inclusion::tests::test_decode_deposit_eth_fail_closed_on_malformed_data ... ok
-test inclusion::tests::test_receipt_decoding_eip1559_transfer_log ... ok
+test inclusion::tests::test_decode_deposit_erc20_fail_closed_on_malformed_topics_and_data ... ok
 test inclusion::tests::test_decode_deposit_eth_fail_closed_on_malformed_topics ... ok
-test inclusion::tests::test_receipt_decoding_rejects_out_of_bounds_log_index ... ok
+test inclusion::tests::test_receipt_decoding_eip1559_transfer_log ... ok
 test inclusion::tests::test_deposit_receipt_mpt_inclusion_verification_success ... ok
+test inclusion::tests::test_receipt_decoding_rejects_out_of_bounds_log_index ... ok
 test inclusion::tests::test_receipt_decoding_rejects_wrong_emitter ... ok
 test inclusion::tests::test_receipt_decoding_rejects_wrong_topic ... ok
 test inclusion::tests::test_rlp_decode_account_fields_truncated_returns_typed_error_without_panic ... ok
-test inclusion::tests::test_receipt_mpt_inclusion_corrupted_proof_rejected ... ok
-test inclusion::tests::test_receipt_mpt_inclusion_verification_success ... ok
-test inclusion::tests::test_rlp_strip_prefix_out_of_bounds_safety ... ok
-test inclusion::tests::test_rlp_decode_list_items_overflow_safety ... ok
-test inclusion::tests::test_rlp_truncated_length_of_length_returns_typed_error_without_panic ... ok
 test inclusion::tests::test_receipt_mpt_inclusion_wrong_root_rejected ... ok
-test inclusion::tests::verified_value_eth_balance_as_bytes32 ... ok
-test predicate::tests::all_predicate ... ok
+test inclusion::tests::test_rlp_truncated_length_of_length_returns_typed_error_without_panic ... ok
+test inclusion::tests::test_receipt_mpt_inclusion_verification_success ... ok
+test inclusion::tests::test_receipt_mpt_inclusion_corrupted_proof_rejected ... ok
+test inclusion::tests::test_rlp_decode_list_items_overflow_safety ... ok
+test inclusion::tests::test_rlp_strip_prefix_out_of_bounds_safety ... ok
+test inclusion::tests::test_strict_rlp_fields_trailing_bytes_and_proof_bounds ... ok
 test inclusion::tests::test_storage_mpt_inclusion_verification_success ... ok
+test inclusion::tests::verified_value_eth_balance_as_bytes32 ... ok
+test inclusion::tests::test_shielded_deposit_committed_mpt_inclusion_and_fail_closed_checks ... ok
+test predicate::tests::equal_predicate_matches_exact_value ... ok
+test predicate::tests::all_predicate ... ok
+test predicate::tests::equal_predicate_rejects_different_value ... ok
 test inclusion::tests::test_variable_length_log_data_prevents_silent_truncation_collision ... ok
 test predicate::tests::at_least_predicate ... ok
-test predicate::tests::equal_predicate_matches_exact_value ... ok
-test predicate::tests::equal_predicate_rejects_different_value ... ok
-test inclusion::tests::test_shielded_deposit_committed_mpt_inclusion_and_fail_closed_checks ... ok
 test predicate::tests::statement_id_differs_by_subject ... ok
-test predicate::tests::statement_id_is_deterministic ... ok
 test predicate::tests::statement_id_differs_by_chain ... ok
+test predicate::tests::statement_id_is_deterministic ... ok
 test predicate::tests::test_cross_block_event_identity_prevents_nullifier_collision ... ok
-test predicate::tests::test_legacy_unbound_instance_fallback_semantics_and_v2_isolation ... ok
 test predicate::tests::test_statement_id_invariant_under_predicate_variation_prevents_replay ... ok
+test predicate::tests::test_legacy_unbound_instance_fallback_semantics_and_v2_isolation ... ok
 test types::tests::test_instance_account_validate_authenticity ... ok
-test types::tests::test_trusted_bridge_config_fail_closed_authorization ... ok
 test crypto::tests::test_pairing_split_begin_miller_finish ... ok
+test types::tests::test_trusted_bridge_config_fail_closed_authorization ... ok
 test spel::tests::test_spel_canonical_schema_validity ... ok
+test verifier::signer_auth_tests::test_runtime_signer_auth_enforced_and_nested_store_escalation_blocked ... ok
 test types::tests::test_bootstrap_admin_authority_one_time_and_registration ... ok
 test crypto::tests::test_sync_committee_ssz_merkleization_512 ... ok
 test crypto::tests::test_complement_key_witness_matches_aggregate_and_rejects_forgery ... ok
 
-test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 52 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
 
      Running tests\adversarial_mutation_tests\main.rs (target\debug\deps\adversarial_mutation_tests-c8c6473a98cc8a84.exe)
 
 running 50 tests
+test consensus_and_branches::test_mutation_attack_2_sub_threshold_quorum_rejected ... ok
 test consensus_and_branches::test_mutation_attack_3_stale_update_rejected ... ok
 test consensus_and_branches::test_mutation_attack_5_tampered_execution_payload_rejected ... ok
-test consensus_and_branches::test_mutation_attack_2_sub_threshold_quorum_rejected ... ok
-test consensus_and_branches::test_mutation_attack_1_fabricated_header_rejected ... ok
 test consensus_and_branches::test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected ... ok
 test consensus_and_branches::test_mutation_attack_8_unauthenticated_header_record_rejected ... ok
+test consensus_and_branches::test_mutation_attack_1_fabricated_header_rejected ... ok
 test consensus_and_branches::test_mutation_attack_9_cross_block_event_nullifier_uniqueness ... ok
 test instance_and_config::test_bootstrap_rejects_zero_trusted_checkpoint_root ... ok
 test consensus_and_branches::test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_rejection ... ok
 test consensus_and_branches::test_mutation_attack_6_cross_chain_replay_rejected ... ok
 test consensus_and_branches::test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejected ... ok
 test instance_and_config::test_mutation_attack_41_account_store_rejects_unowned_instance_account ... ok
-test consensus_and_branches::test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection ... ok
 test instance_and_config::test_mutation_attack_43_atomic_persistent_nullifier_replay_prevention ... ok
 test instance_and_config::test_mutation_attack_45_account_store_fallible_write_simulation ... ok
+test consensus_and_branches::test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection ... ok
 test instance_and_config::test_mutation_attack_46_dual_nullifier_atomic_rollback_on_partial_failure ... ok
 test instance_and_config::test_mutation_attack_47_batch_rollback_failure_detection ... ok
 test instance_and_config::test_mutation_attack_44_strict_program_config_pda_enforcement ... ok
 test instance_and_config::test_mutation_attack_49_network_config_propagation_custom_signing_domain ... ok
 test pipeline_and_storage::test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_period_boundary ... ok
-test instance_and_config::test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_without_matching_rlp ... ok
 test pipeline_and_storage::test_security_audit_attack_30_gloas_execution_rlp_hash_mismatch_rejected ... ok
-test pipeline_and_storage::test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_roots_rejected ... ok
+test instance_and_config::test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected ... ok
 test instance_and_config::test_mutation_attack_42_checkpoint_verified_on_store_loaded_instance_not_caller_struct ... ok
+test pipeline_and_storage::test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_roots_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_33_predicate_variation_replay_attack_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_succeed ... ok
 test instance_and_config::test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account ... ok
-test pipeline_and_storage::test_security_audit_attack_35_historical_header_proof_closure_rejections ... ok
+test pipeline_and_storage::test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_38_fabricated_instance_rejected ... ok
-test pipeline_and_storage::test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected ... ok
+test state_and_replay::test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention ... ok
 test state_and_replay::test_security_audit_attack_14_silent_u64_truncation_overflow_rejected ... ok
 test state_and_replay::test_security_audit_attack_16_circular_buffer_aliasing_rejected ... ok
-test state_and_replay::test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention ... ok
 test state_and_replay::test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection ... ok
 test state_and_replay::test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevented ... ok
-test pipeline_and_storage::test_security_audit_attack_27_previous_committee_future_period_signature_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_35_historical_header_proof_closure_rejections ... ok
 test state_and_replay::test_security_audit_attack_20_reverted_transaction_receipt_rejected ... ok
-test instance_and_config::test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts ... ok
 test state_and_replay::test_security_audit_attack_21_out_of_order_update_slots_rejected ... ok
 test state_and_replay::test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_prevented ... ok
+test instance_and_config::test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts ... ok
 test state_and_replay::test_security_audit_attack_25_committee_handoff_period_skip_rejected ... ok
 test state_and_replay::test_security_audit_attack_24_false_predicate_fails_closed ... ok
 test state_and_replay::test_security_audit_attack_26_next_period_missing_authenticated_committee_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_27_previous_committee_future_period_signature_rejected ... ok
 test consensus_and_branches::test_mutation_attack_4_forged_committee_branch_rejected ... ok
 test state_and_replay::test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected ... ok
 test state_and_replay::test_security_audit_attack_19_instance_immutability_and_rewrite_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_rejected ... ok
 test consensus_and_branches::test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forgery_rejection ... ok
 
-test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
      Running tests\e2e_consumer_tests.rs (target\debug\deps\e2e_consumer_tests-5b318493bf6ddd91.exe)
 
@@ -256,8 +253,8 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests\light_client_tests.rs (target\debug\deps\light_client_tests-44fadcdeced28552.exe)
 
 running 22 tests
-test test_domain_separation_prevents_cross_chain_replay ... ok
 test test_corrupted_execution_payload_branch_rejected ... ok
+test test_domain_separation_prevents_cross_chain_replay ... ok
 test test_end_to_end_proof_derivation_to_reference_consumer_claim ... ok
 test test_fork_aware_generalized_indices_spec_constants ... ok
 test test_missing_execution_branch_strictly_rejected ... ok
@@ -272,98 +269,98 @@ test test_sepolia_gloas_execution_block_hash_branch_verification ... ok
 test test_signing_root_deterministic ... ok
 test test_validator_participation_indexing ... ok
 test test_split_verification_pipeline_rejection_on_bad_signature ... ok
-test test_bootstrap_rejected_on_corrupted_committee_branch ... ok
 test test_bootstrap_cryptographic_verification_success ... ok
+test test_bootstrap_rejected_on_corrupted_committee_branch ... ok
 test test_bootstrap_rejected_on_wrong_committee ... ok
 test test_bootstrap_trusted_checkpoint_root_matching_and_rejection ... ok
 test test_electra_and_fulu_authentic_branch_verification_and_altair_rejection ... ok
 test test_weak_subjectivity_and_stale_instance_recovery ... ok
 
-test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.07s
 
      Running tests\privacy_and_correlation_tests.rs (target\debug\deps\privacy_and_correlation_tests-9179b536f0ab2741.exe)
 
 running 6 tests
-test test_privacy_predicate_value_shielding_in_consumer_records ... ok
 test test_privacy_unlinkable_consumer_identities_across_claims ... ok
+test test_privacy_predicate_value_shielding_in_consumer_records ... ok
 test test_privacy_zero_ethereum_identity_leakage_in_consumer_state_diff ... ok
 test test_privacy_adversary_cannot_correlate_statements ... ok
 test test_privacy_deep_memory_and_event_log_inspection_zero_address_leakage ... ok
 test test_rfp022_shielded_eth_and_erc20_deposit_committed_zero_leak_and_unlinkable_claim ... ok
 
-test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s
 
      Running tests\real_chain_vectors_tests.rs (target\debug\deps\real_chain_vectors_tests-ba4537e877ce0524.exe)
 
 running 4 tests
 test test_real_chain_vectors_manifest_sha256_integrity ... ok
 test test_real_sepolia_gloas_epbs_and_live_mosoo_locker_deposit ... ok
-test test_real_mainnet_fulu_consensus_pipeline_and_mpt_proofs ... ok
 test test_real_hoodi_fulu_cross_period_530_to_531_transition ... ok
+test test_real_mainnet_fulu_consensus_pipeline_and_mpt_proofs ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.09s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
      Running tests\security_hardening_tests\main.rs (target\debug\deps\security_hardening_tests-8fc80c9b250c87bd.exe)
 
 running 58 tests
-test deposit_and_forks::test_lez_runtime_adapter_dispatch_flow ... ok
-test deposit_and_forks::test_adversarial_forged_store_fails_closed ... ok
-test deposit_and_forks::test_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda ... ok
 test deposit_and_forks::test_job_pda_derivation_unification ... ok
-test deposit_and_forks::test_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed ... ok
-test deposit_and_forks::test_salted_privacy_shielding_prevents_dictionary_matching ... ok
 test deposit_and_forks::test_core_loader_enforces_instance_pinning ... ok
+test deposit_and_forks::test_salted_privacy_shielding_prevents_dictionary_matching ... ok
+test deposit_and_forks::test_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed ... ok
+test deposit_and_forks::test_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda ... ok
+test deposit_and_forks::test_lez_runtime_adapter_dispatch_flow ... ok
 test deposit_and_forks::test_unregistered_networks_fail_closed_without_config_registration ... ok
 test deposit_and_forks::test_weak_subjectivity_attestation_staleness_direction_and_head_slot ... ok
-test freshness_and_adapter::test_chain_id_support_and_hoodi_rejection ... ok
+test deposit_and_forks::test_adversarial_forged_store_fails_closed ... ok
+test freshness_and_adapter::test_chain_id_support_aligns_with_crypto ... ok
 test freshness_and_adapter::test_confidential_journal_emits_no_raw_value ... ok
-test deposit_and_forks::test_finish_update_advances_authenticated_head_slot ... ok
 test freshness_and_adapter::test_confidential_mode_missing_salt_fails_closed ... ok
 test freshness_and_adapter::test_confidential_value_shielding_commits_value_without_journal_leakage ... ok
+test deposit_and_forks::test_finish_update_advances_authenticated_head_slot ... ok
 test deposit_and_forks::test_freshness_enforces_anchor_rejects_fake_head_and_stale_instance ... ok
 test deposit_and_forks::test_initialization_rejects_bootstrap_exceeding_canonical_weak_subjectivity ... ok
-test deposit_and_forks::test_strict_config_loading_fails_closed_when_missing_or_untrusted_owner ... ok
-test freshness_and_adapter::test_attest_state_rejects_untrusted_deposit_locker_and_disallowed_token ... ok
 test freshness_and_adapter::test_mainnet_and_holesky_bootstrap_and_admin_registration ... ok
+test freshness_and_adapter::test_attest_state_rejects_untrusted_deposit_locker_and_disallowed_token ... ok
+test deposit_and_forks::test_strict_config_loading_fails_closed_when_missing_or_untrusted_owner ... ok
 test freshness_and_adapter::test_privacy_mode_and_confidential_shielding_enforcement ... ok
-test freshness_and_adapter::test_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint ... ok
-test deposit_and_forks::test_stale_instance_cannot_advance_via_small_incremental_updates ... ok
 test freshness_and_adapter::test_solidity_locker_guardian_and_quorum_invariants ... ok
 test freshness_and_adapter::test_unpinned_instance_cannot_initialize_or_advance_trusted_head ... ok
+test freshness_and_adapter::test_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint ... ok
 test guest_and_store::test_finding10_sync_committee_signature_length_enforcement ... ok
 test guest_and_store::test_finding12_unconfigured_custom_checkpoint_rejected ... ok
-test freshness_and_adapter::test_dormant_stale_instance_fails_closed_even_with_none_head ... ok
 test guest_and_store::test_finding13_overflow_pre_check_preserves_nullifier ... ok
 test guest_and_store::test_finding15_shared_checkpoint_verification_across_both_dispatchers ... ok
 test guest_and_store::test_finding14_attest_state_salted_shielding_journal ... ok
 test guest_and_store::test_finding1_zkvm_authenticated_guest_instruction_rejects_unauthenticated_pda ... ok
 test guest_and_store::test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatcher ... ok
-test freshness_and_adapter::test_multi_instance_coexistence_and_isolated_state ... ok
-test freshness_and_adapter::test_multi_instance_trusted_head_isolation ... ok
+test deposit_and_forks::test_stale_instance_cannot_advance_via_small_incremental_updates ... ok
+test freshness_and_adapter::test_dormant_stale_instance_fails_closed_even_with_none_head ... ok
 test guest_and_store::test_finding3_statement_instance_isolation_and_cross_instance_rejection ... ok
-test guest_and_store::test_finding4_privacy_shielded_statement_zero_address_leakage ... ok
 test guest_and_store::test_finding6_statement_id_predicate_invariance ... ok
+test guest_and_store::test_finding4_privacy_shielded_statement_zero_address_leakage ... ok
+test freshness_and_adapter::test_multi_instance_trusted_head_isolation ... ok
 test guest_and_store::test_finding8_zero_source_instance_pda_rejected_in_consumers ... ok
 test guest_and_store::test_finding9_salted_privacy_shielding_non_correlation ... ok
 test privacy_and_instance::test_finding17_batch_write_rollback_restores_existing_accounts ... ok
 test privacy_and_instance::test_finding18_erc20_deposit_exact_32byte_recipient_matching_and_rejection ... ok
 test privacy_and_instance::test_finding19_erc20_transfer_strict_abi_shape_enforcement ... ok
+test guest_and_store::test_finding2_meth_ledger_authenticated_store_minting ... ok
 test privacy_and_instance::test_finding20_salted_shielding_blinds_subject_key_and_statement_id ... ok
 test privacy_and_instance::test_finding22_native_eth_deposit_exact_32byte_recipient_matching ... ok
 test privacy_and_instance::test_finding23_batch_write_rollback_preserves_unowned_account_without_adopting_mosoo_owner ... ok
-test privacy_and_instance::test_finding24_custom_network_independent_checkpoint_anchor_registration ... ok
 test privacy_and_instance::test_finding25_public_statement_shielding_prevents_subject_key_linkability ... ok
 test privacy_and_instance::test_finding26_native_eth_deposit_sender_canonical_12zero_padding ... ok
+test privacy_and_instance::test_finding24_custom_network_independent_checkpoint_anchor_registration ... ok
 test privacy_and_instance::test_finding27_shielded_statement_consumer_redemption_with_witness ... ok
-test freshness_and_adapter::test_lez_runtime_adapter_full_persistent_lifecycle_e2e ... ok
-test guest_and_store::test_finding2_meth_ledger_authenticated_store_minting ... ok
 test privacy_and_instance::test_finding30_weak_subjectivity_window_expiry_rejected ... ok
 test privacy_and_instance::test_finding31_statement_id_cross_instance_consistency ... ok
 test privacy_and_instance::test_pda_derivation_invariants_across_all_networks ... ok
+test freshness_and_adapter::test_multi_instance_coexistence_and_isolated_state ... ok
 test privacy_and_instance::test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store ... ok
 test privacy_and_instance::test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store ... ok
-test guest_and_store::test_finding16_reinitialization_existing_instance_rejected ... ok
+test freshness_and_adapter::test_lez_runtime_adapter_full_persistent_lifecycle_e2e ... ok
 test guest_and_store::test_finding7_job_account_collision_prevents_overwrite ... ok
+test guest_and_store::test_finding16_reinitialization_existing_instance_rejected ... ok
 
 test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.18s
 
@@ -371,11 +368,11 @@ test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 running 4 tests
 test test_sequencer_persistent_nullifier_atomic_claim_across_restart ... ok
-test test_sequencer_fabricated_instance_account_rejected ... ok
 test test_sequencer_sepolia_gloas_lifecycle_e2e ... ok
+test test_sequencer_fabricated_instance_account_rejected ... ok
 test test_sequencer_full_lifecycle_e2e ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
      Running tests\two_way_bridge_tests.rs (target\debug\deps\two_way_bridge_tests-a7e840d44bef67e5.exe)
 
@@ -385,15 +382,15 @@ test test_authority_rotation_updates_committee_count_and_preserves_quorum ... ok
 test test_mosoo_locker_attester_timelock_governance ... ok
 test test_mosoo_locker_bounded_pruning_gas_defense ... ok
 test test_mosoo_locker_daily_withdrawal_limit_enforced ... ok
-test test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back ... ok
 test test_mosoo_locker_guardian_timelock_governance ... ok
-test test_mosoo_locker_independent_guardian_veto ... ok
-test test_full_two_way_bridge_lifecycle_eth_to_lez_and_back ... ok
 test test_eip712_cross_contract_replay_protection ... ok
-test test_mosoo_locker_large_withdrawal_queue_and_guardian_veto ... ok
+test test_mosoo_locker_independent_guardian_veto ... ok
 test test_mosoo_locker_erc20_rolling_limit_enforced ... ok
-test test_mosoo_locker_quorum_timelock_governance ... ok
+test test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back ... ok
 test test_mosoo_locker_proactive_guardian_veto_rejects_withdrawal ... ok
+test test_mosoo_locker_large_withdrawal_queue_and_guardian_veto ... ok
+test test_mosoo_locker_quorum_timelock_governance ... ok
+test test_full_two_way_bridge_lifecycle_eth_to_lez_and_back ... ok
 test test_mosoo_locker_rate_limit_timelock_governance ... ok
 test test_mosoo_locker_midnight_boundary_rolling_limit_enforced ... ok
 test test_removed_attester_single_signature_rejected ... ok
@@ -404,51 +401,52 @@ test test_two_way_bridge_multi_signer_quorum_and_rejection ... ok
 test test_rolling_limit_dos_cleanup_pruning ... ok
 test test_two_way_bridge_rfp022_shielded_outbound_burn_nullifier ... ok
 
-test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.03s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.04s
 
      Running unittests src\main.rs (target\debug\deps\mosoo_daemon-52cb2bcd66f67be4.exe)
 
-running 17 tests
+running 18 tests
 test tests::test_daemon_competing_update_result_enum_coverage ... ok
-test tests::test_daemon_beacon_finality_update_malformed_slot_rejected ... ok
+test tests::test_daemon_jitter_delay_range ... ok
 test tests::test_daemon_beacon_finality_update_parsing ... ok
-test tests::test_daemon_malformed_branch_node_strictly_rejected ... ok
+test tests::test_daemon_beacon_updates_period_boundary_parsing ... ok
+test tests::test_daemon_beacon_finality_update_with_execution_payload_parsing ... ok
+test tests::test_daemon_beacon_finality_update_malformed_slot_rejected ... ok
 test tests::test_daemon_beacon_finality_update_with_next_sync_committee_and_rlp ... ok
 test tests::test_daemon_open_job_status_representation ... ok
-test tests::test_daemon_beacon_finality_update_with_execution_payload_parsing ... ok
-test tests::test_daemon_jitter_delay_range ... ok
-test tests::test_daemon_beacon_updates_period_boundary_parsing ... ok
-test tests::test_daemon_synthesized_canonical_update_structure ... ok
+test tests::test_daemon_malformed_branch_node_strictly_rejected ... ok
+test tests::test_daemon_health_and_metrics_endpoints ... ok
 test tests::test_logos_ethereum_core_proxy_url_derivation ... ok
 test tests::test_daemon_url_construction_trailing_slash_normalization ... ok
+test tests::test_daemon_synthesized_canonical_update_structure ... ok
 test tests::test_pipeline_transaction_digests_enforce_chain_id_domain_separation ... ok
 test tests::test_daemon_submit_begin_requires_private_key ... ok
 test tests::test_daemon_raw_private_key_never_sent_in_rpc_payload ... ok
 test tests::test_daemon_parses_real_mainnet_fulu_vectors ... ok
 test tests::test_daemon_parses_real_sepolia_gloas_and_hoodi_vectors ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
    Doc-tests erc20_receiver
 
 running 1 test
 test consumers\erc20-receiver\src\lib.rs - claim (line 228) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.69s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s
 
    Doc-tests ether_receiver
 
 running 1 test
 test consumers\ether-receiver\src\lib.rs - claim_ether (line 196) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.58s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.56s
 
    Doc-tests mosoo_core
 
 running 1 test
 test mosoo-core\src\predicate.rs - predicate::evaluate (line 22) ... ok
 
-test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.41s
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.47s
 
 
 [3/18] Running Two-Way Bridge End-to-End Integration Suite (23 tests)...
@@ -456,27 +454,27 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
      Running tests\two_way_bridge_tests.rs (target\debug\deps\two_way_bridge_tests-a7e840d44bef67e5.exe)
 
 running 23 tests
+test test_authority_rotation_updates_committee_count_and_preserves_quorum ... ok
 test test_attester_authority_timelock_pipeline ... ok
 test test_mosoo_locker_attester_timelock_governance ... ok
-test test_authority_rotation_updates_committee_count_and_preserves_quorum ... ok
 test test_mosoo_locker_bounded_pruning_gas_defense ... ok
-test test_full_two_way_bridge_lifecycle_eth_to_lez_and_back ... ok
+test test_mosoo_locker_daily_withdrawal_limit_enforced ... ok
 test test_full_two_way_erc20_bridge_lifecycle_usdc_to_lez_and_back ... ok
 test test_mosoo_locker_guardian_timelock_governance ... ok
-test test_mosoo_locker_daily_withdrawal_limit_enforced ... ok
+test test_full_two_way_bridge_lifecycle_eth_to_lez_and_back ... ok
 test test_mosoo_locker_independent_guardian_veto ... ok
 test test_eip712_cross_contract_replay_protection ... ok
-test test_mosoo_locker_erc20_rolling_limit_enforced ... ok
 test test_mosoo_locker_large_withdrawal_queue_and_guardian_veto ... ok
-test test_mosoo_locker_quorum_timelock_governance ... ok
-test test_mosoo_locker_proactive_guardian_veto_rejects_withdrawal ... ok
-test test_mosoo_locker_midnight_boundary_rolling_limit_enforced ... ok
+test test_mosoo_locker_erc20_rolling_limit_enforced ... ok
 test test_mosoo_locker_rate_limit_timelock_governance ... ok
-test test_token_allowlist_enforcement ... ok
+test test_mosoo_locker_proactive_guardian_veto_rejects_withdrawal ... ok
+test test_mosoo_locker_quorum_timelock_governance ... ok
+test test_mosoo_locker_midnight_boundary_rolling_limit_enforced ... ok
 test test_removed_attester_single_signature_rejected ... ok
+test test_token_allowlist_enforcement ... ok
 test test_two_way_bridge_adversarial_tampered_burn_id_rejected ... ok
-test test_two_way_bridge_cross_instance_burn_domain_separation ... ok
 test test_two_way_bridge_multi_signer_quorum_and_rejection ... ok
+test test_two_way_bridge_cross_instance_burn_domain_separation ... ok
 test test_rolling_limit_dos_cleanup_pruning ... ok
 test test_two_way_bridge_rfp022_shielded_outbound_burn_nullifier ... ok
 
@@ -484,79 +482,79 @@ test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fin
 
 
 [4/18] Running Adversarial & Mutation Test Suite (50 tests, 42 attack vectors)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.58s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.61s
      Running tests\adversarial_mutation_tests\main.rs (target\debug\deps\adversarial_mutation_tests-c8c6473a98cc8a84.exe)
 
 running 50 tests
-test consensus_and_branches::test_mutation_attack_3_stale_update_rejected ... ok
 test consensus_and_branches::test_mutation_attack_2_sub_threshold_quorum_rejected ... ok
+test consensus_and_branches::test_mutation_attack_3_stale_update_rejected ... ok
 test consensus_and_branches::test_mutation_attack_5_tampered_execution_payload_rejected ... ok
 test consensus_and_branches::test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected ... ok
+test consensus_and_branches::test_mutation_attack_1_fabricated_header_rejected ... ok
 test consensus_and_branches::test_mutation_attack_9_cross_block_event_nullifier_uniqueness ... ok
 test consensus_and_branches::test_mutation_attack_8_unauthenticated_header_record_rejected ... ok
-test instance_and_config::test_bootstrap_rejects_zero_trusted_checkpoint_root ... ok
-test consensus_and_branches::test_mutation_attack_1_fabricated_header_rejected ... ok
 test consensus_and_branches::test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_rejection ... ok
+test instance_and_config::test_bootstrap_rejects_zero_trusted_checkpoint_root ... ok
 test consensus_and_branches::test_mutation_attack_6_cross_chain_replay_rejected ... ok
 test consensus_and_branches::test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejected ... ok
-test instance_and_config::test_mutation_attack_41_account_store_rejects_unowned_instance_account ... ok
 test consensus_and_branches::test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection ... ok
+test instance_and_config::test_mutation_attack_41_account_store_rejects_unowned_instance_account ... ok
 test instance_and_config::test_mutation_attack_43_atomic_persistent_nullifier_replay_prevention ... ok
 test instance_and_config::test_mutation_attack_45_account_store_fallible_write_simulation ... ok
 test instance_and_config::test_mutation_attack_46_dual_nullifier_atomic_rollback_on_partial_failure ... ok
 test instance_and_config::test_mutation_attack_47_batch_rollback_failure_detection ... ok
 test instance_and_config::test_mutation_attack_49_network_config_propagation_custom_signing_domain ... ok
+test instance_and_config::test_mutation_attack_42_checkpoint_verified_on_store_loaded_instance_not_caller_struct ... ok
 test instance_and_config::test_mutation_attack_44_strict_program_config_pda_enforcement ... ok
 test pipeline_and_storage::test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_period_boundary ... ok
-test instance_and_config::test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected ... ok
-test pipeline_and_storage::test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_without_matching_rlp ... ok
 test pipeline_and_storage::test_security_audit_attack_30_gloas_execution_rlp_hash_mismatch_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_without_matching_rlp ... ok
 test pipeline_and_storage::test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_roots_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_33_predicate_variation_replay_attack_rejected ... ok
+test instance_and_config::test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_succeed ... ok
-test instance_and_config::test_mutation_attack_42_checkpoint_verified_on_store_loaded_instance_not_caller_struct ... ok
 test instance_and_config::test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account ... ok
-test pipeline_and_storage::test_security_audit_attack_27_previous_committee_future_period_signature_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_rejected ... ok
-test pipeline_and_storage::test_security_audit_attack_35_historical_header_proof_closure_rejections ... ok
 test pipeline_and_storage::test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected ... ok
-test state_and_replay::test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention ... ok
-test state_and_replay::test_security_audit_attack_14_silent_u64_truncation_overflow_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_38_fabricated_instance_rejected ... ok
+test state_and_replay::test_security_audit_attack_14_silent_u64_truncation_overflow_rejected ... ok
+test state_and_replay::test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention ... ok
 test state_and_replay::test_security_audit_attack_16_circular_buffer_aliasing_rejected ... ok
-test state_and_replay::test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevented ... ok
+test pipeline_and_storage::test_security_audit_attack_35_historical_header_proof_closure_rejections ... ok
 test state_and_replay::test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection ... ok
+test state_and_replay::test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevented ... ok
+test instance_and_config::test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts ... ok
 test state_and_replay::test_security_audit_attack_20_reverted_transaction_receipt_rejected ... ok
 test state_and_replay::test_security_audit_attack_21_out_of_order_update_slots_rejected ... ok
-test state_and_replay::test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_prevented ... ok
 test state_and_replay::test_security_audit_attack_24_false_predicate_fails_closed ... ok
+test state_and_replay::test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_prevented ... ok
 test state_and_replay::test_security_audit_attack_25_committee_handoff_period_skip_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_27_previous_committee_future_period_signature_rejected ... ok
 test state_and_replay::test_security_audit_attack_26_next_period_missing_authenticated_committee_rejected ... ok
-test instance_and_config::test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts ... ok
 test consensus_and_branches::test_mutation_attack_4_forged_committee_branch_rejected ... ok
 test state_and_replay::test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected ... ok
 test state_and_replay::test_security_audit_attack_19_instance_immutability_and_rewrite_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_rejected ... ok
 test consensus_and_branches::test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forgery_rejection ... ok
 
-test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
 
 
 [5/18] Running Security Hardening & Boundary Suite (58 tests)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.41s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
      Running tests\security_hardening_tests\main.rs (target\debug\deps\security_hardening_tests-8fc80c9b250c87bd.exe)
 
 running 58 tests
 test deposit_and_forks::test_job_pda_derivation_unification ... ok
 test deposit_and_forks::test_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda ... ok
 test deposit_and_forks::test_salted_privacy_shielding_prevents_dictionary_matching ... ok
-test deposit_and_forks::test_core_loader_enforces_instance_pinning ... ok
 test deposit_and_forks::test_adversarial_forged_store_fails_closed ... ok
-test deposit_and_forks::test_lez_runtime_adapter_dispatch_flow ... ok
+test deposit_and_forks::test_core_loader_enforces_instance_pinning ... ok
 test deposit_and_forks::test_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed ... ok
 test deposit_and_forks::test_weak_subjectivity_attestation_staleness_direction_and_head_slot ... ok
-test freshness_and_adapter::test_chain_id_support_and_hoodi_rejection ... ok
 test deposit_and_forks::test_unregistered_networks_fail_closed_without_config_registration ... ok
+test freshness_and_adapter::test_chain_id_support_aligns_with_crypto ... ok
+test deposit_and_forks::test_lez_runtime_adapter_dispatch_flow ... ok
 test freshness_and_adapter::test_confidential_mode_missing_salt_fails_closed ... ok
 test freshness_and_adapter::test_confidential_journal_emits_no_raw_value ... ok
 test freshness_and_adapter::test_confidential_value_shielding_commits_value_without_journal_leakage ... ok
@@ -569,8 +567,8 @@ test freshness_and_adapter::test_independent_freshness_enforces_anchor_rejects_f
 test freshness_and_adapter::test_solidity_locker_guardian_and_quorum_invariants ... ok
 test freshness_and_adapter::test_privacy_mode_and_confidential_shielding_enforcement ... ok
 test freshness_and_adapter::test_unpinned_instance_cannot_initialize_or_advance_trusted_head ... ok
-test guest_and_store::test_finding10_sync_committee_signature_length_enforcement ... ok
 test deposit_and_forks::test_strict_config_loading_fails_closed_when_missing_or_untrusted_owner ... ok
+test guest_and_store::test_finding10_sync_committee_signature_length_enforcement ... ok
 test guest_and_store::test_finding13_overflow_pre_check_preserves_nullifier ... ok
 test guest_and_store::test_finding12_unconfigured_custom_checkpoint_rejected ... ok
 test guest_and_store::test_finding14_attest_state_salted_shielding_journal ... ok
@@ -582,35 +580,35 @@ test guest_and_store::test_finding4_privacy_shielded_statement_zero_address_leak
 test guest_and_store::test_finding6_statement_id_predicate_invariance ... ok
 test deposit_and_forks::test_stale_instance_cannot_advance_via_small_incremental_updates ... ok
 test guest_and_store::test_finding8_zero_source_instance_pda_rejected_in_consumers ... ok
-test guest_and_store::test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatcher ... ok
 test guest_and_store::test_finding9_salted_privacy_shielding_non_correlation ... ok
+test guest_and_store::test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatcher ... ok
 test privacy_and_instance::test_finding17_batch_write_rollback_restores_existing_accounts ... ok
 test privacy_and_instance::test_finding18_erc20_deposit_exact_32byte_recipient_matching_and_rejection ... ok
 test privacy_and_instance::test_finding20_salted_shielding_blinds_subject_key_and_statement_id ... ok
 test privacy_and_instance::test_finding19_erc20_transfer_strict_abi_shape_enforcement ... ok
-test guest_and_store::test_finding2_meth_ledger_authenticated_store_minting ... ok
-test privacy_and_instance::test_finding23_batch_write_rollback_preserves_unowned_account_without_adopting_mosoo_owner ... ok
 test privacy_and_instance::test_finding22_native_eth_deposit_exact_32byte_recipient_matching ... ok
-test privacy_and_instance::test_finding25_public_statement_shielding_prevents_subject_key_linkability ... ok
-test privacy_and_instance::test_finding26_native_eth_deposit_sender_canonical_12zero_padding ... ok
+test privacy_and_instance::test_finding23_batch_write_rollback_preserves_unowned_account_without_adopting_mosoo_owner ... ok
 test privacy_and_instance::test_finding24_custom_network_independent_checkpoint_anchor_registration ... ok
+test privacy_and_instance::test_finding25_public_statement_shielding_prevents_subject_key_linkability ... ok
+test guest_and_store::test_finding2_meth_ledger_authenticated_store_minting ... ok
+test privacy_and_instance::test_finding26_native_eth_deposit_sender_canonical_12zero_padding ... ok
 test privacy_and_instance::test_finding27_shielded_statement_consumer_redemption_with_witness ... ok
 test privacy_and_instance::test_finding30_weak_subjectivity_window_expiry_rejected ... ok
-test freshness_and_adapter::test_multi_instance_trusted_head_isolation ... ok
 test privacy_and_instance::test_finding31_statement_id_cross_instance_consistency ... ok
 test privacy_and_instance::test_pda_derivation_invariants_across_all_networks ... ok
+test freshness_and_adapter::test_multi_instance_trusted_head_isolation ... ok
 test privacy_and_instance::test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store ... ok
 test privacy_and_instance::test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store ... ok
 test freshness_and_adapter::test_multi_instance_coexistence_and_isolated_state ... ok
+test guest_and_store::test_finding16_reinitialization_existing_instance_rejected ... ok
 test freshness_and_adapter::test_lez_runtime_adapter_full_persistent_lifecycle_e2e ... ok
 test guest_and_store::test_finding7_job_account_collision_prevents_overwrite ... ok
-test guest_and_store::test_finding16_reinitialization_existing_instance_rejected ... ok
 
 test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
 
 [6/18] Running Privacy & Zero-Correlation Test Suite (6 tests)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
      Running tests\privacy_and_correlation_tests.rs (target\debug\deps\privacy_and_correlation_tests-9179b536f0ab2741.exe)
 
 running 6 tests
@@ -625,20 +623,20 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 [7/18] Running Offline LEZ v0.4-Target Conformance Tests (4 tests)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.59s
      Running tests\lez_v04_acceptance_tests.rs (target\debug\deps\lez_v04_acceptance_tests-f2f27b11cf96db1c.exe)
 
 running 4 tests
 test test_lez_v04_logos_core_proxy_conformance ... ok
-test test_lez_v04_transaction_envelope_and_gas_cap ... ok
 test test_lez_v04_pda_seeds_and_storage_schema ... ok
+test test_lez_v04_transaction_envelope_and_gas_cap ... ok
 test test_lez_v04_dual_consumer_settlement_e2e ... ok
 
 test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
 [8/18] Running Offline Standalone LEZ Sequencer E2E Suite (4 tests)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.43s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.46s
      Running tests\sequencer_e2e_tests.rs (target\debug\deps\sequencer_e2e_tests-5b68b1a07f41b847.exe)
 
 running 4 tests
@@ -651,50 +649,49 @@ test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 
 
 [9/18] Running Real Ethereum Beacon Chain Vector Tests (4 tests)...
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.57s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.63s
      Running tests\real_chain_vectors_tests.rs (target\debug\deps\real_chain_vectors_tests-ba4537e877ce0524.exe)
 
 running 4 tests
-test test_real_sepolia_gloas_epbs_and_live_mosoo_locker_deposit ... ok
 test test_real_chain_vectors_manifest_sha256_integrity ... ok
+test test_real_sepolia_gloas_epbs_and_live_mosoo_locker_deposit ... ok
 test test_real_hoodi_fulu_cross_period_530_to_531_transition ... ok
 test test_real_mainnet_fulu_consensus_pipeline_and_mpt_proofs ... ok
 
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.11s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
 
 
-[10/18] Running Daemon Operational Tests (17 tests)...
-   Compiling mosoo-core v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\mosoo-core)
-   Compiling mosoo-daemon v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\daemon)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 9.09s
+[10/18] Running Daemon Operational Tests (18 tests)...
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.66s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
      Running unittests src\main.rs (target\debug\deps\mosoo_daemon-b5d92157497af49b.exe)
 
-running 17 tests
+running 18 tests
 test tests::test_daemon_competing_update_result_enum_coverage ... ok
-test tests::test_daemon_beacon_finality_update_parsing ... ok
-test tests::test_daemon_beacon_finality_update_malformed_slot_rejected ... ok
 test tests::test_daemon_beacon_finality_update_with_next_sync_committee_and_rlp ... ok
+test tests::test_daemon_beacon_finality_update_parsing ... ok
 test tests::test_daemon_beacon_updates_period_boundary_parsing ... ok
 test tests::test_daemon_beacon_finality_update_with_execution_payload_parsing ... ok
+test tests::test_daemon_beacon_finality_update_malformed_slot_rejected ... ok
 test tests::test_daemon_jitter_delay_range ... ok
-test tests::test_daemon_malformed_branch_node_strictly_rejected ... ok
 test tests::test_daemon_open_job_status_representation ... ok
+test tests::test_daemon_malformed_branch_node_strictly_rejected ... ok
+test tests::test_daemon_health_and_metrics_endpoints ... ok
+test tests::test_daemon_url_construction_trailing_slash_normalization ... ok
 test tests::test_daemon_synthesized_canonical_update_structure ... ok
 test tests::test_logos_ethereum_core_proxy_url_derivation ... ok
 test tests::test_pipeline_transaction_digests_enforce_chain_id_domain_separation ... ok
-test tests::test_daemon_url_construction_trailing_slash_normalization ... ok
 test tests::test_daemon_submit_begin_requires_private_key ... ok
 test tests::test_daemon_raw_private_key_never_sent_in_rpc_payload ... ok
 test tests::test_daemon_parses_real_mainnet_fulu_vectors ... ok
 test tests::test_daemon_parses_real_sepolia_gloas_and_hoodi_vectors ... ok
 
-test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
 
 
 [11/18] Running Live Empirical Benchmark Suite & Emitting JSON Artifact...
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.65s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.69s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
      Running `target\debug\mosoo.exe benchmarks`
@@ -717,13 +714,13 @@ Executing live cryptographic benchmark workload on local CPU...
    +------------------------------------+------------------+-----------------+-----------+----------------+
    | Pipeline Stage                     | blst Optimized   | Pure Software   | Speedup   | Measured Local |
    +------------------------------------+------------------+-----------------+-----------+----------------+
-   | Tx 1: Begin (Quorum + hash_to_G2)  |  5,232,000 cycles| 15,425,000 cyc  | 2.95x     |    181.57µs    |
-   | Tx 2: Miller (Dual Miller Loops)   |  2,822,000 cycles|  5,974,000 cyc  | 2.12x     |    646.16µs    |
-   | Tx 3: Finish (Final Exp + Roots)   |  1,298,000 cycles|  1,850,000 cyc  | 1.42x     |    442.32µs    |
+   | Tx 1: Begin (Quorum + hash_to_G2)  |  5,232,000 cycles| 15,425,000 cyc  | 2.95x     |    216.39µs    |
+   | Tx 2: Miller (Dual Miller Loops)   |  2,822,000 cycles|  5,974,000 cyc  | 2.12x     |    785.67µs    |
+   | Tx 3: Finish (Final Exp + Roots)   |  1,298,000 cycles|  1,850,000 cyc  | 1.42x     |    513.59µs    |
    +------------------------------------+------------------+-----------------+-----------+----------------+
-   | Full 3-Tx Consensus Pipeline Total |  9,352,000 cycles| 23,249,000 cyc  | 2.49x     |      1.27ms    |
+   | Full 3-Tx Consensus Pipeline Total |  9,352,000 cycles| 23,249,000 cyc  | 2.49x     |      1.52ms    |
    +------------------------------------+------------------+-----------------+-----------+----------------+
-   | SSZ 512-Validator Merkleization    |    184,200 cycles|    420,000 cyc  | 2.28x     |     13.35ms    |
+   | SSZ 512-Validator Merkleization    |    184,200 cycles|    420,000 cyc  | 2.28x     |     14.70ms    |
    +------------------------------------+------------------+-----------------+-----------+----------------+
 
 2. LEZ Gas Consumption Reconciliation (Gas = zkVM Cycles + PDA/Storage Gas):
@@ -737,7 +734,7 @@ Executing live cryptographic benchmark workload on local CPU...
 
 
 [12/18] Running Canonical Ethereum Fixture Verification...
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.66s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.54s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
      Running `target\debug\mosoo.exe demo --mode fixture`
@@ -760,7 +757,7 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
   - Vector SHA-256:      0x085fed1d8f4ad9ef5ef40c6c8d0e3a4a45463877747dfc436b4ba428759bf8b2
 
 [1;33m[1/4] BLS12-381 Aggregate Consensus Signature Verification[0m
-  - BLS Curve Verification: [1;32mVALID[0m (1.1988ms)
+  - BLS Curve Verification: [1;32mVALID[0m (1.1947ms)
   - Participating Signers:  512 / 512 (Quorum >= 342 SATISFIED)
 
 [1;33m[2/4] SSZ Merkle Tree & Execution Payload Hashing[0m
@@ -786,8 +783,7 @@ note: to see what the problems were, use the option `--future-incompat-report`, 
 
 
 [13/18] Running Clippy linter with zero warnings tolerance...
-    Checking mosoo-core v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\mosoo-core)
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.28s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.90s
 warning: the following packages contain code that will be rejected by a future version of Rust: proc-macro-error2 v2.0.1
 note: to see what the problems were, use the option `--future-incompat-report`, or run `cargo report future-incompatibilities --id 1`
 
@@ -882,7 +878,7 @@ Target RPC : https://testnet.lez.logos.co (TLS Strict)
 ==================================================================================
 
 --- [1/5] Sequencer Health & Distinct Program Identity ---
-  [PASS] Sequencer live height = 81460
+  [PASS] Sequencer live height = 81610
   [PASS] Gas caps match LEZ spec (exec=10,000,000, stor=1,000,000)
   [PASS] Distinct from external reference sextant_lc (DQprfeSk1wPC...)
 
@@ -925,48 +921,38 @@ Target RPC : https://testnet.lez.logos.co (TLS Strict)
 MOSOO LIVE VERIFICATION: 30 PASSED, 0 FAILED
 ==================================================================================
 
-[18/18] Running Foundry Solidity EVM suite (contracts/test/MosooLocker.t.sol, 20 tests)...
-Compiling 1 files with Solc 0.8.20
-Solc 0.8.20 finished in 48.44s
-Compiler run successful with warnings:
-Warning (2018): Function state mutability can be restricted to view
-   --> contracts/test/MosooLocker.t.sol:257:5:
-    |
-257 |     function test_direct_set_guardian_deprecated() public {
-    |     ^ (Relevant source part starts here and spans across multiple lines).
+[18/18] Running Foundry Solidity EVM suite (contracts/test/MosooLocker.t.sol, 24 tests)...
+No files changed, compilation skipped
 
-Warning (2018): Function state mutability can be restricted to view
-   --> contracts/test/MosooLocker.t.sol:265:5:
-    |
-265 |     function test_direct_governance_setters_deprecated() public {
-    |     ^ (Relevant source part starts here and spans across multiple lines).
+Ran 24 tests for contracts/test/MosooLocker.t.sol:MosooLockerTest
+[PASS] test_authority_rotation_updates_committee_count_and_preserves_quorum() (gas: 1267642)
+[PASS] test_cancel_queued_withdrawal_permanent_veto() (gas: 362285)
+[PASS] test_committee_quorum_m_of_n() (gas: 839344)
+[PASS] test_cross_instance_replay_rejection() (gas: 427016)
+[PASS] test_daily_withdrawal_limit_eth_enforced() (gas: 245384)
+[PASS] test_deposit_erc20_allowlist_enforcement() (gas: 638435)
+[PASS] test_deposit_eth_success() (gas: 99789)
+[PASS] test_direct_governance_setters_deprecated() (gas: 29217)
+[PASS] test_direct_set_guardian_deprecated() (gas: 7094)
+[PASS] test_disable_legacy_routes_governance_and_v2_quorum_preservation() (gas: 395259)
+[PASS] test_emergency_pause_by_guardian() (gas: 88044)
+[PASS] test_guardian_owner_independence_across_rotations() (gas: 75955)
+[PASS] test_guardian_timelock_governance() (gas: 175144)
+[PASS] test_instance_v2_quorum_m_of_n() (gas: 920096)
+[PASS] test_permissionless_prune_bounded_batches() (gas: 4410730)
+[PASS] test_post_commission_privacy_and_token_timelocks() (gas: 377127)
+[PASS] test_production_quorum_downgrade_reverts() (gas: 151462)
+[PASS] test_removed_attester_single_signature_rejected() (gas: 697474)
+[PASS] test_rolling_limit_dos_cleanup_pruning() (gas: 6830150)
+[PASS] test_shielded_duplicate_commitment_and_strict_denomination_reverts() (gas: 697680)
+[PASS] test_shielded_eth_and_erc20_commitments_zero_leak() (gas: 668688)
+[PASS] test_shielded_merkle_tree_inclusion_and_root_history() (gas: 867425)
+[PASS] test_shielded_only_mode_and_shielded_outbound_unlock() (gas: 625642)
+[PASS] test_zero_daily_limit_rejected_and_fail_closed() (gas: 58865)
+Suite result: ok. 24 passed; 0 failed; 0 skipped; finished in 46.73ms (121.60ms CPU time)
 
-
-Ran 20 tests for contracts/test/MosooLocker.t.sol:MosooLockerTest
-[PASS] test_authority_rotation_updates_committee_count_and_preserves_quorum() (gas: 1217175)
-[PASS] test_cancel_queued_withdrawal_permanent_veto() (gas: 358372)
-[PASS] test_committee_quorum_m_of_n() (gas: 827519)
-[PASS] test_cross_instance_replay_rejection() (gas: 424794)
-[PASS] test_daily_withdrawal_limit_eth_enforced() (gas: 243897)
-[PASS] test_deposit_erc20_allowlist_enforcement() (gas: 638281)
-[PASS] test_deposit_eth_success() (gas: 99173)
-[PASS] test_direct_governance_setters_deprecated() (gas: 28007)
-[PASS] test_direct_set_guardian_deprecated() (gas: 6874)
-[PASS] test_disable_legacy_routes_governance_and_v2_quorum_preservation() (gas: 391015)
-[PASS] test_emergency_pause_by_guardian() (gas: 87400)
-[PASS] test_guardian_timelock_governance() (gas: 171729)
-[PASS] test_instance_v2_quorum_m_of_n() (gas: 857586)
-[PASS] test_permissionless_prune_bounded_batches() (gas: 4394505)
-[PASS] test_removed_attester_single_signature_rejected() (gas: 692879)
-[PASS] test_rolling_limit_dos_cleanup_pruning() (gas: 6806232)
-[PASS] test_shielded_duplicate_commitment_and_strict_denomination_reverts() (gas: 696755)
-[PASS] test_shielded_eth_and_erc20_commitments_zero_leak() (gas: 666950)
-[PASS] test_shielded_merkle_tree_inclusion_and_root_history() (gas: 862705)
-[PASS] test_shielded_only_mode_and_shielded_outbound_unlock() (gas: 624022)
-Suite result: ok. 20 passed; 0 failed; 0 skipped; finished in 20.19ms (67.47ms CPU time)
-
-Ran 1 test suite in 21.60ms (20.19ms CPU time): 20 tests passed, 0 failed, 0 skipped (20 total tests)
+Ran 1 test suite in 55.33ms (46.73ms CPU time): 24 tests passed, 0 failed, 0 skipped (24 total tests)
 
 =====================================================================
-  [SUCCESS] All 331 Rust + 20 Foundry = 351/351 checks passed!   
+  [SUCCESS] All 334 Rust + 24 Foundry = 358/358 checks passed!   
 =====================================================================

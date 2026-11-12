@@ -78,6 +78,50 @@ pub struct Cli {
     /// Log level.
     #[arg(long, env = "RUST_LOG", default_value = "mosoo_daemon=info,warn")]
     pub log_level: String,
+
+    /// Optional HTTP port exposing /healthz, /readyz, and /metrics (disabled when unset).
+    #[arg(long, env = "MOSOO_HEALTH_PORT")]
+    pub health_port: Option<u16>,
+}
+
+#[derive(Debug, Default)]
+pub struct DaemonHealthState {
+    pub ready: std::sync::atomic::AtomicBool,
+    pub polls_total: std::sync::atomic::AtomicU64,
+    pub submissions_total: std::sync::atomic::AtomicU64,
+    pub errors_total: std::sync::atomic::AtomicU64,
+    pub last_slot: std::sync::atomic::AtomicU64,
+}
+
+impl DaemonHealthState {
+    pub fn render_http_response(&self, path: &str) -> (&'static str, String) {
+        use std::sync::atomic::Ordering;
+        match path {
+            "/healthz" => ("200 OK", "{\"status\":\"ok\"}\n".to_string()),
+            "/readyz" => {
+                if self.ready.load(Ordering::Relaxed) {
+                    ("200 OK", "{\"status\":\"ready\"}\n".to_string())
+                } else {
+                    (
+                        "503 Service Unavailable",
+                        "{\"status\":\"starting\"}\n".to_string(),
+                    )
+                }
+            }
+            "/metrics" => {
+                let body = format!(
+                    "mosoo_daemon_ready {}\nmosoo_daemon_polls_total {}\nmosoo_daemon_submissions_total {}\nmosoo_daemon_errors_total {}\nmosoo_daemon_last_slot {}\n",
+                    u8::from(self.ready.load(Ordering::Relaxed)),
+                    self.polls_total.load(Ordering::Relaxed),
+                    self.submissions_total.load(Ordering::Relaxed),
+                    self.errors_total.load(Ordering::Relaxed),
+                    self.last_slot.load(Ordering::Relaxed),
+                );
+                ("200 OK", body)
+            }
+            _ => ("404 Not Found", "not found\n".to_string()),
+        }
+    }
 }
 
 #[tokio::main]
@@ -125,10 +169,20 @@ pub async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
         warn!("LEZ_PRIVATE_KEY is not specified; daemon will run in dry-run/read-only mode");
     }
 
+    let health = std::sync::Arc::new(DaemonHealthState::default());
+    if let Some(port) = cli.health_port {
+        let health_clone = std::sync::Arc::clone(&health);
+        tokio::spawn(async move {
+            if let Err(e) = serve_health_endpoint(port, health_clone).await {
+                warn!(port = port, error = %e, "Health endpoint listener stopped");
+            }
+        });
+    }
+
     info!("Consensus updater event loop running; listening for shutdown signals (SIGINT / Ctrl+C)");
 
     tokio::select! {
-        res = daemon_loop(cli, &client) => res,
+        res = daemon_loop(cli, &client, health) => res,
         _ = tokio::signal::ctrl_c() => {
             info!("Shutdown signal received (SIGINT / Ctrl+C); terminating updater daemon gracefully");
             Ok(())
@@ -136,16 +190,62 @@ pub async fn run_daemon(cli: &Cli) -> anyhow::Result<()> {
     }
 }
 
-async fn daemon_loop(cli: &Cli, client: &reqwest::Client) -> anyhow::Result<()> {
+async fn serve_health_endpoint(
+    port: u16,
+    state: std::sync::Arc<DaemonHealthState>,
+) -> std::io::Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", port)).await?;
+    info!(port = port, "Daemon health/metrics HTTP endpoint listening");
     loop {
+        let (mut socket, _) = listener.accept().await?;
+        let state = std::sync::Arc::clone(&state);
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
+            let n = socket.read(&mut buf).await.unwrap_or(0);
+            let req = std::str::from_utf8(&buf[..n]).unwrap_or("");
+            let path = req
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let (status, body) = state.render_http_response(path);
+            let ctype = if path == "/metrics" {
+                "text/plain; version=0.0.4"
+            } else {
+                "application/json"
+            };
+            let resp = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+        });
+    }
+}
+
+async fn daemon_loop(
+    cli: &Cli,
+    client: &reqwest::Client,
+    health: std::sync::Arc<DaemonHealthState>,
+) -> anyhow::Result<()> {
+    use std::sync::atomic::Ordering;
+    health.ready.store(true, Ordering::Relaxed);
+    loop {
+        health.polls_total.fetch_add(1, Ordering::Relaxed);
         match try_submit_update(cli, client).await {
             Ok(SubmitResult::Submitted { slot }) => {
+                health.submissions_total.fetch_add(1, Ordering::Relaxed);
+                health.last_slot.store(slot, Ordering::Relaxed);
                 info!(
                     slot = slot,
                     "Successfully finalized consensus update on LEZ"
                 );
             }
             Ok(SubmitResult::AlreadyUpToDate { lez_slot, eth_slot }) => {
+                health
+                    .last_slot
+                    .store(lez_slot.max(eth_slot), Ordering::Relaxed);
                 info!(
                     lez_slot = lez_slot,
                     eth_slot = eth_slot,
@@ -163,6 +263,7 @@ async fn daemon_loop(cli: &Cli, client: &reqwest::Client) -> anyhow::Result<()> 
                 if err_msg.contains("JobAlreadyOpen") {
                     info!("Verification job already open on LEZ by peer operator; skipping");
                 } else {
+                    health.errors_total.fetch_add(1, Ordering::Relaxed);
                     error!(error = %e, "Transient failure in update loop; applying retry backoff");
                 }
             }

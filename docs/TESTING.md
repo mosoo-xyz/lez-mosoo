@@ -7,7 +7,7 @@ Automated verification spans Rust workspace unit and integration tests, Solidity
 ## Quick Verification Commands
 
 ```powershell
-# Windows (runs cargo fmt, clippy -D warnings, all 331 Rust tests, and 20 Foundry tests)
+# Windows (runs cargo fmt, clippy -D warnings, all 334 Rust tests, and 24 Foundry tests)
 .\scripts\verify_all.ps1
 ```
 
@@ -35,16 +35,16 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 
 ---
 
-## Rust Workspace Test Inventory (331 Total)
+## Rust Workspace Test Inventory (334 Total)
 
-### Unit & Doc Tests (`155` unit + `3` doc = `158`)
+### Unit & Doc Tests (`158` unit + `3` doc = `161`)
 
 | Crate | Source Location | Unit | Doc | Primary Scope |
 | :--- | :--- | :---: | :---: | :--- |
-| `mosoo-core` | `mosoo-core/src/*.rs` | 50 | 1 | BLS12-381 split math, SSZ gindices, MPT proofs, predicate engine, V2 statement IDs, error handling |
+| `mosoo-core` | `mosoo-core/src/*.rs` | 52 | 1 | BLS12-381 split math, SSZ gindices, MPT proofs, bounds & RLP checks, runtime signer auth, predicate engine, V2 IDs |
 | `erc20-receiver` | `consumers/erc20-receiver/src/{lib,tests}.rs` | 42 | 1 | `claim_atomic`, ERC-20 deposit/transfer proofs, token allowlists, shielded claims, nullifier PDAs |
 | `ether-receiver` | `consumers/ether-receiver/src/{lib,tests}.rs` | 39 | 1 | `claim_ether_atomic`, `MethLedger`, shielded ETH claims, burn receipts, custody checks |
-| `mosoo-daemon` | `daemon/src/{main,tests}.rs` | 17 | 0 | Beacon API parsing, period-boundary sync fail-closed guards, jittered submission, private key isolation |
+| `mosoo-daemon` | `daemon/src/{main,tests}.rs` | 18 | 0 | Beacon API parsing, period-boundary sync fail-closed guards, jittered submission, private key isolation, health endpoints |
 | `mosoo-cli` | `cli/src/{main,tests}.rs` | 7 | 0 | CLI subcommands (`demo`, `attest`, `dry-run`, `submit-update`, `config`, `verify-checkpoint`, `benchmarks`) |
 
 ### Integration & Adversarial Suites (`mosoo-core/tests/`, `173` total)
@@ -65,7 +65,7 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 
 ## Solidity, Live LEZ & Python Verifiers
 
-- **Foundry (`contracts/test/MosooLocker.t.sol`):** `20` unit and fuzz tests covering EIP-712 cross-contract replay protection, EIP-2 low-`s` checks, `DepositCommitted` commitment tree insertion, strict fixed denominations, rolling 24h withdrawal caps, 24h large-withdrawal queue (`>= 10 ETH`) + Guardian veto, 24h authority delay, and 48h multisig governance timelocks.
+- **Foundry (`contracts/test/MosooLocker.t.sol`):** `24` unit and fuzz tests covering EIP-712 cross-contract replay protection, EIP-2 low-`s` checks, `DepositCommitted` commitment tree insertion, strict fixed denominations, irreversible `productionCommissioned >= 2` quorum latch, `owner != guardian` invariants, non-zero rolling 24h withdrawal caps, 24h large-withdrawal queue (`>= 10 ETH`) + Guardian veto, 24h authority delay, and 48h multisig/config timelocks.
 - **Evidence Integrity (`scripts/verify-evidence.py`):** Verifies SHA-256 hashes, deterministic `r0vm` / host witness artifacts, and sequencer run logs (`evidence/sequencer-harness-v04/run.tsv`).
 - **Evidence Mutation (`scripts/test-evidence-mutation.py`):** Runs `7` negative mutation cases against temporary manifest copies and confirms `verify-evidence.py` fails with the expected diagnostic error on every tampered input.
 - **Live LEZ v0.3.1 Verifier (`scripts/verify-mosoo-lez.py`):** Independently validates the live immutable `mosoo_lc` deployment (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) across `30/30` RPC state and transaction checks (logged in `evidence/mosoo-testnet-v03/`).
@@ -79,6 +79,6 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 
 ## Scope & Honest Test Boundaries
 
-- **Verified locally & in CI (`351/351` automated tests):** `331` Rust workspace tests + `20` Foundry tests execute deterministically without external network dependencies, mocks masquerading as chain proofs, or relaxed assertions.
-- **Verified live on public testnets (`v0.3.1` + Sepolia `v2`):** Immutable `mosoo_lc` on LEZ v0.3.1 (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) and commissioned `2-of-2` `MosooLocker` v2 on Sepolia (`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`). See [`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md).
+- **Verified locally & in CI (`358/358` automated tests):** `334` Rust workspace tests + `24` Foundry tests execute deterministically without external network dependencies, mocks masquerading as chain proofs, or relaxed assertions.
+- **Verified live on public testnets (`v0.3.1` + Sepolia `v3`):** Immutable `mosoo_lc` on LEZ v0.3.1 (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) and hardened commissioned `2-of-2` `MosooLocker` v3 on Sepolia (`0x374B9F073A6aC1aF2c147392319499e35E8C7e82`). See [`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md).
 - **Not yet run against public network:** Live public LEZ `v0.4` deployment awaits upstream LEZ `v0.4` testnet availability; the `v0.4` target guest is verified today against offline sequencer harnesses and local unit/integration suites.

@@ -73,8 +73,8 @@ lez-mosoo/
 │   ├── erc20-receiver/src/    # lib.rs + tests.rs (event-log proof consumer, shielded claims, nullifiers)
 │   └── ether-receiver/src/    # lib.rs + tests.rs (account balance / ETH deposit consumer, mETH ledger)
 ├── contracts/                 # Ethereum escrow & settlement contracts
-│   ├── MosooLocker.sol        # v2 commissioned live on Sepolia (0xEFEf6dA5...); v1 historical
-│   └── test/MosooLocker.t.sol # 20/20 Foundry unit and fuzz tests (verified locally & in CI)
+│   ├── MosooLocker.sol        # Hardened v3 live on Sepolia (0x374B9F07...); v1/v2 historical
+│   └── test/MosooLocker.t.sol # 24/24 Foundry unit and fuzz tests (verified locally & in CI)
 ├── vectors/                   # Live Ethereum Beacon Chain JSON fixtures (Sepolia Gloas, Hoodi Fulu)
 └── docs/                      # Architectural, deployment, migration, and security documentation
 ```

@@ -525,7 +525,8 @@ pub(crate) fn run_config(chain_id: u64, instance_query: Option<&str>) -> anyhow:
     println!("  Weak Subjectivity Anchor:   Strictly Enforced (Fail-Closed)");
     println!();
     println!("Smart Contract & Program Identifiers:");
-    println!("  MosooLocker v2 (Sepolia):   0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b (Live Commissioned 2-of-2)");
+    println!("  MosooLocker v3 (Sepolia):   0x374B9F073A6aC1aF2c147392319499e35E8C7e82 (Live Hardened 2-of-2, Shielded-Only)");
+    println!("  MosooLocker v2 (Historical):0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b (Previous Commissioned v2)");
     println!("  MosooLocker v1 (Legacy):    0x74625D146B8d9413F3c3976B323d94A739be7856 (On-Chain Historical v1)");
     println!("  mosoo_lc (LEZ v0.3.1):      Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg (Live Immutable)");
     println!("  ether-receiver (Local/Dev): 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c (Not yet deployed on public LEZ)");

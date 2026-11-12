@@ -10,7 +10,7 @@ echo "[1/18] Checking entire workspace compilation..."
 cargo check --workspace
 
 echo ""
-echo "[2/18] Running all workspace Rust unit, integration & doc-tests (331 tests)..."
+echo "[2/18] Running all workspace Rust unit, integration & doc-tests (334 tests)..."
 cargo test --workspace
 
 echo ""
@@ -42,7 +42,7 @@ echo "[9/18] Running Real Ethereum Beacon Chain Vector Tests (4 tests)..."
 cargo test --test real_chain_vectors_tests
 
 echo ""
-echo "[10/18] Running Daemon Operational Tests (17 tests)..."
+echo "[10/18] Running Daemon Operational Tests (18 tests)..."
 cargo test -p mosoo-daemon
 
 echo ""
@@ -82,7 +82,7 @@ echo "[17/18] Verifying Mosoo's own live LEZ v0.3.1 deployment & PDAs (Co5EYuBR.
 "${PY}" scripts/verify-mosoo-lez.py --allow-offline
 
 echo ""
-echo "[18/18] Running Foundry Solidity EVM suite (contracts/test/MosooLocker.t.sol, 20 tests)..."
+echo "[18/18] Running Foundry Solidity EVM suite (contracts/test/MosooLocker.t.sol, 24 tests)..."
 FORGE_BIN=""
 if command -v forge &>/dev/null; then
     FORGE_BIN="$(command -v forge)"
@@ -91,10 +91,10 @@ elif [[ -x "${HOME}/.foundry/bin/forge" ]]; then
 fi
 if [[ -n "${FORGE_BIN}" ]]; then
     "${FORGE_BIN}" test -vvv
-    SUMMARY="  [SUCCESS] All 331 Rust + 20 Foundry = 351/351 checks passed!   "
+    SUMMARY="  [SUCCESS] All 334 Rust + 24 Foundry = 358/358 checks passed!   "
 else
-    echo "[!] Warning: Foundry (forge) not found; skipping 20 Solidity tests (run in CI)." >&2
-    SUMMARY="  [SUCCESS] All 331 Rust + Python checks passed (Foundry skipped)!  "
+    echo "[!] Warning: Foundry (forge) not found; skipping 24 Solidity tests (run in CI)." >&2
+    SUMMARY="  [SUCCESS] All 334 Rust + Python checks passed (Foundry skipped)!  "
 fi
 
 echo ""

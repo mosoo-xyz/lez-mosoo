@@ -37,8 +37,11 @@ contract MosooLocker {
     uint256 public attesterCount;
     uint256 public requiredQuorum;
 
-    /// @notice Strict multi-attester threshold requirement for fully commissioned production release (Finding 11)
+    /// @notice Strict multi-attester threshold requirement for fully commissioned production release
     uint256 public constant MIN_PRODUCTION_QUORUM = 2;
+
+    /// @notice Irreversible latch set once locker reaches production multi-attester commissioning
+    bool public productionCommissioned;
 
     address public guardian;
     bool public paused;
@@ -109,6 +112,17 @@ contract MosooLocker {
     mapping(address => uint256) public pendingDailyLimitERC20;
     mapping(address => uint256) public dailyLimitERC20TimelockUnlock;
     mapping(address => bool) public hasPendingDailyLimitERC20;
+
+    /// @notice Timelocked security & privacy relaxation governance (2-day timelock + guardian cancellable)
+    uint256 public disableAllowlistTimelockUnlock;
+    uint256 public disableShieldedOnlyTimelockUnlock;
+    uint256 public disableStrictDenomTimelockUnlock;
+    address public pendingTokenAllowedAddr;
+    bool public pendingTokenAllowedFlag;
+    uint256 public tokenAllowedTimelockUnlock;
+    uint256 public pendingDenomAmount;
+    bool public pendingDenomAllowed;
+    uint256 public denomTimelockUnlock;
 
     /// @notice Large withdrawal threshold requiring mandatory timelock delay
     uint256 public constant LARGE_WITHDRAWAL_THRESHOLD_ETH = 10 ether;
@@ -307,6 +321,8 @@ contract MosooLocker {
     error MerkleTreeFull();
     error ShieldedDepositsOnlyActive();
     error InvalidDenomination(uint256 amount);
+    error InvalidDailyLimit();
+    error DailyLimitNotConfigured();
 
     // --- Modifiers ---
 
@@ -329,13 +345,15 @@ contract MosooLocker {
 
     /// @notice Returns true if the locker has graduated from initial commissioning (attesterCount >= 2 and requiredQuorum >= 2).
     function isCommissioned() public view returns (bool) {
-        return attesterCount >= MIN_PRODUCTION_QUORUM && requiredQuorum >= MIN_PRODUCTION_QUORUM;
+        return productionCommissioned
+            || (attesterCount >= MIN_PRODUCTION_QUORUM && requiredQuorum >= MIN_PRODUCTION_QUORUM);
     }
 
     /**
      * @notice Commission locker to production multi-attester threshold (>= 2 attesters, quorum >= 2).
      * @dev Allows initial bootstrap from 1-of-1 commissioning mode without 2-day timelock delay.
-     *      Once commissioned, all subsequent attester additions/removals and quorum changes require full timelock governance.
+     *      Once commissioned, requiredQuorum can never be lowered below MIN_PRODUCTION_QUORUM and
+     *      all subsequent attester additions/removals and quorum changes require full timelock governance.
      * @param additionalAttesters Array of new authorized attester addresses.
      * @param initialQuorum New threshold quorum (must be >= 2 and <= attesterCount).
      */
@@ -353,6 +371,7 @@ contract MosooLocker {
         if (initialQuorum < MIN_PRODUCTION_QUORUM || initialQuorum > attesterCount) revert InvalidQuorum();
         uint256 oldQuorum = requiredQuorum;
         requiredQuorum = initialQuorum;
+        productionCommissioned = true;
         emit QuorumUpdated(oldQuorum, requiredQuorum);
     }
 
@@ -1367,6 +1386,7 @@ contract MosooLocker {
 
     /// @notice Propose rolling daily withdrawal volume cap for native ETH subject to 2-day timelock
     function proposeDailyWithdrawalLimitETH(uint256 newLimit) external onlyOwner {
+        if (newLimit == 0) revert InvalidDailyLimit();
         pendingDailyLimitETH = newLimit;
         hasPendingDailyLimitETH = true;
         dailyLimitETHTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
@@ -1379,6 +1399,7 @@ contract MosooLocker {
         if (block.timestamp < dailyLimitETHTimelockUnlock) {
             revert GovernanceTimelockActive(block.timestamp, dailyLimitETHTimelockUnlock);
         }
+        if (pendingDailyLimitETH == 0) revert InvalidDailyLimit();
         uint256 oldLimit = dailyWithdrawalLimitETH;
         dailyWithdrawalLimitETH = pendingDailyLimitETH;
         hasPendingDailyLimitETH = false;
@@ -1390,6 +1411,7 @@ contract MosooLocker {
     /// @notice Propose rolling daily withdrawal volume cap for an ERC-20 token subject to 2-day timelock
     function proposeDailyWithdrawalLimitERC20(address token, uint256 newLimit) external onlyOwner {
         if (token == address(0)) revert ZeroAddress();
+        if (newLimit == 0) revert InvalidDailyLimit();
         pendingDailyLimitERC20[token] = newLimit;
         hasPendingDailyLimitERC20[token] = true;
         dailyLimitERC20TimelockUnlock[token] = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
@@ -1403,6 +1425,7 @@ contract MosooLocker {
         if (block.timestamp < dailyLimitERC20TimelockUnlock[token]) {
             revert GovernanceTimelockActive(block.timestamp, dailyLimitERC20TimelockUnlock[token]);
         }
+        if (pendingDailyLimitERC20[token] == 0) revert InvalidDailyLimit();
         uint256 oldLimit = dailyWithdrawalLimitERC20[token];
         dailyWithdrawalLimitERC20[token] = pendingDailyLimitERC20[token];
         hasPendingDailyLimitERC20[token] = false;
@@ -1444,7 +1467,7 @@ contract MosooLocker {
     // --- Continuous Rolling 24-Hour Helpers ---
 
     function _checkAndRecordRollingWithdrawalETH(uint256 amount) internal {
-        if (dailyWithdrawalLimitETH == 0) return;
+        if (dailyWithdrawalLimitETH == 0) revert InvalidDailyLimit();
 
         uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
         uint256 head = _ethWithdrawalHead;
@@ -1496,7 +1519,7 @@ contract MosooLocker {
 
     function _checkAndRecordRollingWithdrawalERC20(address token, uint256 amount) internal {
         uint256 limit = dailyWithdrawalLimitERC20[token];
-        if (limit == 0) return;
+        if (limit == 0) revert DailyLimitNotConfigured();
 
         uint256 cutoff = block.timestamp > ROLLING_WINDOW ? block.timestamp - ROLLING_WINDOW : 0;
         uint256 head = _erc20WithdrawalHead[token];
@@ -1800,6 +1823,7 @@ contract MosooLocker {
 
     function proposeQuorum(uint256 _newQuorum) external onlyOwner {
         if (_newQuorum == 0 || _newQuorum > attesterCount) revert InvalidQuorum();
+        if (productionCommissioned && _newQuorum < MIN_PRODUCTION_QUORUM) revert InvalidQuorum();
         pendingQuorum = _newQuorum;
         quorumTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
         emit QuorumChangeProposed(requiredQuorum, _newQuorum, quorumTimelockUnlock);
@@ -1811,8 +1835,12 @@ contract MosooLocker {
             revert GovernanceTimelockActive(block.timestamp, quorumTimelockUnlock);
         }
         if (pendingQuorum > attesterCount) revert InvalidQuorum();
+        if (productionCommissioned && pendingQuorum < MIN_PRODUCTION_QUORUM) revert InvalidQuorum();
         uint256 oldQuorum = requiredQuorum;
         requiredQuorum = pendingQuorum;
+        if (requiredQuorum >= MIN_PRODUCTION_QUORUM && attesterCount >= MIN_PRODUCTION_QUORUM) {
+            productionCommissioned = true;
+        }
         pendingQuorum = 0;
         quorumTimelockUnlock = 0;
         emit QuorumUpdated(oldQuorum, requiredQuorum);
@@ -1895,6 +1923,25 @@ contract MosooLocker {
             pendingAttesterAuthority = address(0);
             authorityTimelockUnlock = 0;
             emit PendingGovernanceCancelled("attesterAuthority", msg.sender);
+        } else if (actionType == 7) {
+            disableAllowlistTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("disableAllowlist", msg.sender);
+        } else if (actionType == 8) {
+            disableShieldedOnlyTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("disableShieldedOnly", msg.sender);
+        } else if (actionType == 9) {
+            disableStrictDenomTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("disableStrictDenom", msg.sender);
+        } else if (actionType == 10) {
+            pendingTokenAllowedAddr = address(0);
+            pendingTokenAllowedFlag = false;
+            tokenAllowedTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("tokenAllowed", msg.sender);
+        } else if (actionType == 11) {
+            pendingDenomAmount = 0;
+            pendingDenomAllowed = false;
+            denomTimelockUnlock = 0;
+            emit PendingGovernanceCancelled("standardDenom", msg.sender);
         } else {
             revert NoPendingGovernanceAction();
         }
@@ -1925,25 +1972,49 @@ contract MosooLocker {
     }
 
     function setTokenAllowed(address token, bool allowed) external onlyOwner {
+        if (productionCommissioned) revert DirectGovernanceDeprecated();
         if (token == address(0)) revert ZeroAddress();
         isTokenAllowed[token] = allowed;
         emit TokenAllowedStatusUpdated(token, allowed);
     }
 
-    /// @notice Governance control to enable or disable legacy V1 withdrawal routes (Finding 5)
+    function proposeTokenAllowed(address token, bool allowed) external onlyOwner {
+        if (token == address(0)) revert ZeroAddress();
+        pendingTokenAllowedAddr = token;
+        pendingTokenAllowedFlag = allowed;
+        tokenAllowedTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+    }
+
+    function executeTokenAllowed() external onlyOwner {
+        if (tokenAllowedTimelockUnlock == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < tokenAllowedTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, tokenAllowedTimelockUnlock);
+        }
+        address token = pendingTokenAllowedAddr;
+        bool allowed = pendingTokenAllowedFlag;
+        pendingTokenAllowedAddr = address(0);
+        pendingTokenAllowedFlag = false;
+        tokenAllowedTimelockUnlock = 0;
+        isTokenAllowed[token] = allowed;
+        emit TokenAllowedStatusUpdated(token, allowed);
+    }
+
+    /// @notice Governance control to enable or disable legacy V1 withdrawal routes (blocked once commissioned)
     function setLegacyRoutesEnabled(bool enabled) external onlyOwner {
-        if (enabled && legacyRoutesPermanentlyDisabled) revert LegacyRoutesArePermanentlyRetired();
+        if (enabled && (legacyRoutesPermanentlyDisabled || productionCommissioned)) {
+            revert LegacyRoutesArePermanentlyRetired();
+        }
         legacyRoutesEnabled = enabled;
         emit LegacyRoutesToggled(enabled);
     }
 
-    /// @notice Emergency/migration shutdown to permanently cut off legacy V1 routes lacking source-instance binding (Finding 5)
+    /// @notice Emergency/migration shutdown to permanently cut off legacy V1 routes lacking source-instance binding
     function disableLegacyRoutes() external onlyOwner {
         legacyRoutesEnabled = false;
         emit LegacyRoutesToggled(false);
     }
 
-    /// @notice Irreversible killswitch permanently retiring legacy V1 withdrawal routes (Finding 4 / P2).
+    /// @notice Irreversible killswitch permanently retiring legacy V1 withdrawal routes.
     /// Once invoked, legacy routes are permanently disabled and can never be re-enabled under any circumstances.
     function permanentlyRetireLegacyRoutes() external onlyOwner {
         legacyRoutesPermanentlyDisabled = true;
@@ -1953,28 +2024,100 @@ contract MosooLocker {
     }
 
     function setTokenAllowlistEnabled(bool enabled) external onlyOwner {
-        tokenAllowlistEnabled = enabled;
-        emit TokenAllowlistToggled(enabled);
+        if (!enabled) revert DirectGovernanceDeprecated();
+        tokenAllowlistEnabled = true;
+        emit TokenAllowlistToggled(true);
+    }
+
+    function proposeDisableTokenAllowlist() external onlyOwner {
+        disableAllowlistTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+    }
+
+    function executeDisableTokenAllowlist() external onlyOwner {
+        if (disableAllowlistTimelockUnlock == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < disableAllowlistTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, disableAllowlistTimelockUnlock);
+        }
+        disableAllowlistTimelockUnlock = 0;
+        tokenAllowlistEnabled = false;
+        emit TokenAllowlistToggled(false);
     }
 
     function setShieldedDepositsOnly(bool enabled) external onlyOwner {
+        if (!enabled && (shieldedDepositsOnly || productionCommissioned)) {
+            revert DirectGovernanceDeprecated();
+        }
         shieldedDepositsOnly = enabled;
         emit ShieldedDepositsOnlyToggled(enabled);
     }
 
+    function proposeDisableShieldedDepositsOnly() external onlyOwner {
+        disableShieldedOnlyTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+    }
+
+    function executeDisableShieldedDepositsOnly() external onlyOwner {
+        if (disableShieldedOnlyTimelockUnlock == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < disableShieldedOnlyTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, disableShieldedOnlyTimelockUnlock);
+        }
+        disableShieldedOnlyTimelockUnlock = 0;
+        shieldedDepositsOnly = false;
+        emit ShieldedDepositsOnlyToggled(false);
+    }
+
     function setStrictFixedDenominationMode(bool enabled) external onlyOwner {
+        if (!enabled && (strictFixedDenominationMode || productionCommissioned)) {
+            revert DirectGovernanceDeprecated();
+        }
         strictFixedDenominationMode = enabled;
         emit StrictDenominationModeToggled(enabled);
     }
 
+    function proposeDisableStrictDenominationMode() external onlyOwner {
+        disableStrictDenomTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+    }
+
+    function executeDisableStrictDenominationMode() external onlyOwner {
+        if (disableStrictDenomTimelockUnlock == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < disableStrictDenomTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, disableStrictDenomTimelockUnlock);
+        }
+        disableStrictDenomTimelockUnlock = 0;
+        strictFixedDenominationMode = false;
+        emit StrictDenominationModeToggled(false);
+    }
+
     function setStandardDenomination(uint256 denomination, bool allowed) external onlyOwner {
+        if (productionCommissioned) revert DirectGovernanceDeprecated();
         if (denomination == 0) revert ZeroAmount();
+        isStandardDenomination[denomination] = allowed;
+        emit StandardDenominationUpdated(denomination, allowed);
+    }
+
+    function proposeStandardDenomination(uint256 denomination, bool allowed) external onlyOwner {
+        if (denomination == 0) revert ZeroAmount();
+        pendingDenomAmount = denomination;
+        pendingDenomAllowed = allowed;
+        denomTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
+    }
+
+    function executeStandardDenomination() external onlyOwner {
+        if (denomTimelockUnlock == 0) revert NoPendingGovernanceAction();
+        if (block.timestamp < denomTimelockUnlock) {
+            revert GovernanceTimelockActive(block.timestamp, denomTimelockUnlock);
+        }
+        uint256 denomination = pendingDenomAmount;
+        bool allowed = pendingDenomAllowed;
+        pendingDenomAmount = 0;
+        pendingDenomAllowed = false;
+        denomTimelockUnlock = 0;
         isStandardDenomination[denomination] = allowed;
         emit StandardDenominationUpdated(denomination, allowed);
     }
 
     function proposeGuardian(address _newGuardian) external onlyOwner {
         if (_newGuardian == address(0)) revert ZeroAddress();
+        if (_newGuardian == owner || _newGuardian == pendingOwner) revert GuardianMustNotBeOwner();
         pendingGuardian = _newGuardian;
         guardianTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
         emit GuardianChangeProposed(guardian, _newGuardian, guardianTimelockUnlock);
@@ -1985,6 +2128,7 @@ contract MosooLocker {
         if (block.timestamp < guardianTimelockUnlock) {
             revert GovernanceTimelockActive(block.timestamp, guardianTimelockUnlock);
         }
+        if (pendingGuardian == owner) revert GuardianMustNotBeOwner();
         address oldGuardian = guardian;
         guardian = pendingGuardian;
         pendingGuardian = address(0);
@@ -2011,12 +2155,14 @@ contract MosooLocker {
     // Two-step ownership transfer preventing accidental ownership loss
     function transferOwnership(address _newOwner) external onlyOwner {
         if (_newOwner == address(0)) revert ZeroAddress();
+        if (_newOwner == guardian || _newOwner == pendingGuardian) revert GuardianMustNotBeOwner();
         pendingOwner = _newOwner;
         emit OwnershipTransferStarted(owner, _newOwner);
     }
 
     function acceptOwnership() external {
         if (msg.sender != pendingOwner) revert Unauthorized();
+        if (pendingOwner == guardian || pendingOwner == pendingGuardian) revert GuardianMustNotBeOwner();
         emit OwnershipTransferred(owner, pendingOwner);
         owner = pendingOwner;
         pendingOwner = address(0);

@@ -7,6 +7,7 @@ use std::collections::{HashMap, HashSet};
 pub const ETH_MAINNET_CHAIN_ID: u64 = 1;
 pub const ETH_SEPOLIA_CHAIN_ID: u64 = 11_155_111;
 pub const ETH_HOLESKY_CHAIN_ID: u64 = 17_000;
+pub const ETH_HOODI_CHAIN_ID: u64 = 560_048;
 
 /// Canonical Sepolia MosooLocker v1 contract address (deployed at block 11989329, tx 0x1b49...b28b)
 pub const CANONICAL_SEPOLIA_MOSOO_LOCKER: [u8; 20] = [
@@ -20,18 +21,25 @@ pub const CANONICAL_SEPOLIA_MOSOO_LOCKER_V2: [u8; 20] = [
     0xde, 0x62, 0x1b, 0x1b,
 ];
 
-/// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky).
-/// Light-client consensus tracking and inclusion proof verification are fully supported across all 3 chains.
+/// Canonical Sepolia MosooLocker v3 hardened shielded-pool contract address (deployed at block 12118809, tx 0x2fd1...02a7)
+pub const CANONICAL_SEPOLIA_MOSOO_LOCKER_V3: [u8; 20] = [
+    0x37, 0x4b, 0x9f, 0x07, 0x3a, 0x6a, 0xc1, 0xaf, 0x2c, 0x14, 0x73, 0x92, 0x31, 0x94, 0x99, 0xe3,
+    0x5e, 0x8c, 0x7e, 0x82,
+];
+
+/// Returns true if the provided chain ID is a supported Ethereum network (Mainnet, Sepolia, Holesky, Hoodi).
+/// Light-client consensus tracking and inclusion proof verification are supported across all 4 chains.
 pub const fn is_supported_chain_id(chain_id: u64) -> bool {
     chain_id == ETH_MAINNET_CHAIN_ID
         || chain_id == ETH_SEPOLIA_CHAIN_ID
         || chain_id == ETH_HOLESKY_CHAIN_ID
+        || chain_id == ETH_HOODI_CHAIN_ID
 }
 
 /// Returns the canonical deployed bridge locker contract address for a given chain ID, if deployed.
 ///
 /// Note: Core Ethereum consensus and state proof verification (`AttestState`, `HeaderRecord`, `InstanceAccount`)
-/// support Mainnet, Sepolia, and Holesky via `is_supported_chain_id(chain_id)`.
+/// support Mainnet, Sepolia, Holesky, and Hoodi via `is_supported_chain_id(chain_id)`.
 /// For bridge escrow locking (`MosooLocker.sol`), Sepolia has an authentic deployed testnet contract
 /// ([`CANONICAL_SEPOLIA_MOSOO_LOCKER`]). Mainnet and Holesky bridge contracts are pending production
 /// deployment, returning `None` until an authenticated address is explicitly registered via [`TrustedBridgeConfig`].
@@ -359,9 +367,9 @@ impl TrustedBridgeConfig {
     }
 
     /// Returns true if candidate address is trusted for shielded `DepositCommitted` claims.
-    /// When Sepolia uses the default canonical v1 locker, the live commissioned Sepolia v2
-    /// (`CANONICAL_SEPOLIA_MOSOO_LOCKER_V2`) is also recognized alongside v1 so `DepositCommitted`
-    /// proofs pass under default `TrustedBridgeConfig::canonical()` while explicit overrides stay isolated.
+    /// When Sepolia uses the default canonical v1 locker, the commissioned Sepolia v2 and v3
+    /// hardened deployments (`CANONICAL_SEPOLIA_MOSOO_LOCKER_V2`, `CANONICAL_SEPOLIA_MOSOO_LOCKER_V3`)
+    /// are also recognized alongside v1 while explicit overrides stay isolated.
     pub fn is_trusted_shielded_locker(&self, chain_id: u64, candidate: &[u8; 20]) -> bool {
         if *candidate == [0u8; 20] {
             return false;
@@ -371,7 +379,8 @@ impl TrustedBridgeConfig {
                 *configured == *candidate
                     || (chain_id == ETH_SEPOLIA_CHAIN_ID
                         && *configured == CANONICAL_SEPOLIA_MOSOO_LOCKER
-                        && *candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V2)
+                        && (*candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V2
+                            || *candidate == CANONICAL_SEPOLIA_MOSOO_LOCKER_V3))
             }
             None => false,
         }

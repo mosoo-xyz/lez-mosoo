@@ -77,7 +77,7 @@ jobs:
             exit 1
           fi
           echo "[+] Building reproducible zkVM ELF via docker/Dockerfile.guest..."
-          docker build -t mosoo-guest-builder -f docker/Dockerfile.guest .
+          docker build --build-arg GITHUB_TOKEN="${{ secrets.GITHUB_TOKEN }}" -t mosoo-guest-builder -f docker/Dockerfile.guest .
           CONTAINER_ID=$(docker create mosoo-guest-builder)
           mkdir -p target/zkvm-elf
           docker cp "${CONTAINER_ID}:/out/mosoo-guest" target/zkvm-elf/mosoo-guest

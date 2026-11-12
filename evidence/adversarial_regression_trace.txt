@@ -1,126 +1,124 @@
-   Compiling mosoo-core v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\mosoo-core)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.57s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.49s
      Running tests\adversarial_mutation_tests\main.rs (target\debug\deps\adversarial_mutation_tests-c8c6473a98cc8a84.exe)
 
 running 50 tests
 test consensus_and_branches::test_mutation_attack_2_sub_threshold_quorum_rejected ... ok
 test consensus_and_branches::test_mutation_attack_3_stale_update_rejected ... ok
-test consensus_and_branches::test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected ... ok
 test consensus_and_branches::test_mutation_attack_5_tampered_execution_payload_rejected ... ok
-test consensus_and_branches::test_mutation_attack_9_cross_block_event_nullifier_uniqueness ... ok
+test consensus_and_branches::test_mutation_attack_7_receipt_tampering_and_duplicate_claims_rejected ... ok
 test consensus_and_branches::test_mutation_attack_1_fabricated_header_rejected ... ok
 test consensus_and_branches::test_mutation_attack_8_unauthenticated_header_record_rejected ... ok
+test consensus_and_branches::test_mutation_attack_9_cross_block_event_nullifier_uniqueness ... ok
 test consensus_and_branches::test_security_audit_attack_13_repeat_transfer_distinct_nullifiers_and_replay_rejection ... ok
-test instance_and_config::test_bootstrap_rejects_zero_trusted_checkpoint_root ... ok
 test consensus_and_branches::test_mutation_attack_6_cross_chain_replay_rejected ... ok
+test instance_and_config::test_bootstrap_rejects_zero_trusted_checkpoint_root ... ok
 test consensus_and_branches::test_mutation_attack_10_cross_stage_job_tampering_and_digest_mismatch_rejected ... ok
-test instance_and_config::test_mutation_attack_43_atomic_persistent_nullifier_replay_prevention ... ok
 test instance_and_config::test_mutation_attack_41_account_store_rejects_unowned_instance_account ... ok
-test consensus_and_branches::test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection ... ok
+test instance_and_config::test_mutation_attack_43_atomic_persistent_nullifier_replay_prevention ... ok
 test instance_and_config::test_mutation_attack_45_account_store_fallible_write_simulation ... ok
+test consensus_and_branches::test_mutation_attack_12_historical_block_roots_accumulator_proof_anchor_and_rejection ... ok
 test instance_and_config::test_mutation_attack_46_dual_nullifier_atomic_rollback_on_partial_failure ... ok
 test instance_and_config::test_mutation_attack_47_batch_rollback_failure_detection ... ok
 test instance_and_config::test_mutation_attack_49_network_config_propagation_custom_signing_domain ... ok
 test instance_and_config::test_mutation_attack_44_strict_program_config_pda_enforcement ... ok
-test pipeline_and_storage::test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_period_boundary ... ok
-test pipeline_and_storage::test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_without_matching_rlp ... ok
 test instance_and_config::test_mutation_attack_42_checkpoint_verified_on_store_loaded_instance_not_caller_struct ... ok
-test instance_and_config::test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_28_committee_handoff_rotates_active_committee_at_period_boundary ... ok
 test pipeline_and_storage::test_security_audit_attack_30_gloas_execution_rlp_hash_mismatch_rejected ... ok
-test pipeline_and_storage::test_security_audit_attack_33_predicate_variation_replay_attack_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_29_gloas_execution_roots_tampering_rejected_without_matching_rlp ... ok
 test pipeline_and_storage::test_security_audit_attack_31_authentic_beacon_root_with_tampered_execution_roots_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_32_committee_rotation_boundary_sequential_updates_succeed ... ok
+test pipeline_and_storage::test_security_audit_attack_33_predicate_variation_replay_attack_rejected ... ok
+test instance_and_config::test_fabricated_instance_with_valid_looking_mpt_proof_strictly_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_36_unbacked_ethereum_balance_bridge_minting_rejected ... ok
-test instance_and_config::test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account ... ok
 test pipeline_and_storage::test_security_audit_attack_37_tampered_statement_id_nullifier_bypass_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_38_fabricated_instance_rejected ... ok
+test pipeline_and_storage::test_security_audit_attack_35_historical_header_proof_closure_rejections ... ok
 test state_and_replay::test_security_audit_attack_14_silent_u64_truncation_overflow_rejected ... ok
 test state_and_replay::test_security_audit_attack_15_malformed_rlp_bounds_panic_prevention ... ok
-test pipeline_and_storage::test_security_audit_attack_35_historical_header_proof_closure_rejections ... ok
-test state_and_replay::test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection ... ok
 test state_and_replay::test_security_audit_attack_16_circular_buffer_aliasing_rejected ... ok
-test state_and_replay::test_security_audit_attack_20_reverted_transaction_receipt_rejected ... ok
+test state_and_replay::test_security_audit_attack_17_job_lifecycle_done_and_replay_rejection ... ok
 test state_and_replay::test_security_audit_attack_18_statement_id_tampering_nullifier_bypass_prevented ... ok
-test state_and_replay::test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_prevented ... ok
-test state_and_replay::test_security_audit_attack_21_out_of_order_update_slots_rejected ... ok
-test state_and_replay::test_security_audit_attack_24_false_predicate_fails_closed ... ok
-test state_and_replay::test_security_audit_attack_25_committee_handoff_period_skip_rejected ... ok
-test state_and_replay::test_security_audit_attack_26_next_period_missing_authenticated_committee_rejected ... ok
-test instance_and_config::test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts ... ok
+test state_and_replay::test_security_audit_attack_20_reverted_transaction_receipt_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_27_previous_committee_future_period_signature_rejected ... ok
+test state_and_replay::test_security_audit_attack_21_out_of_order_update_slots_rejected ... ok
+test state_and_replay::test_security_audit_attack_22_deeply_nested_predicate_recursion_limit_dos_prevented ... ok
+test state_and_replay::test_security_audit_attack_24_false_predicate_fails_closed ... ok
+test instance_and_config::test_mutation_attack_40_consumer_strictly_rejects_unpinned_instance_account ... ok
+test state_and_replay::test_security_audit_attack_25_committee_handoff_period_skip_rejected ... ok
+test instance_and_config::test_mutation_attack_48_authenticated_consensus_updates_reject_unowned_accounts ... ok
+test state_and_replay::test_security_audit_attack_26_next_period_missing_authenticated_committee_rejected ... ok
 test consensus_and_branches::test_mutation_attack_4_forged_committee_branch_rejected ... ok
 test state_and_replay::test_security_audit_attack_23_mandatory_weak_subjectivity_freshness_rejected ... ok
 test state_and_replay::test_security_audit_attack_19_instance_immutability_and_rewrite_rejected ... ok
 test pipeline_and_storage::test_security_audit_attack_34_multiple_instances_per_chain_and_job_injection_rejected ... ok
 test consensus_and_branches::test_mutation_attack_11_bootstrap_next_committee_branch_verification_and_forgery_rejection ... ok
 
-test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.10s
+test result: ok. 50 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
 
-   Compiling mosoo-core v0.4.0 (C:\Users\Global\.gemini\antigravity\scratch\lez-mosoo\mosoo-core)
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.42s
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
      Running tests\security_hardening_tests\main.rs (target\debug\deps\security_hardening_tests-8fc80c9b250c87bd.exe)
 
 running 58 tests
 test deposit_and_forks::test_job_pda_derivation_unification ... ok
-test deposit_and_forks::test_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda ... ok
-test deposit_and_forks::test_salted_privacy_shielding_prevents_dictionary_matching ... ok
-test deposit_and_forks::test_core_loader_enforces_instance_pinning ... ok
-test deposit_and_forks::test_lez_runtime_adapter_dispatch_flow ... ok
 test deposit_and_forks::test_fabricated_committee_and_execution_roots_under_canonical_pda_fails_closed ... ok
-test deposit_and_forks::test_weak_subjectivity_attestation_staleness_direction_and_head_slot ... ok
-test deposit_and_forks::test_unregistered_networks_fail_closed_without_config_registration ... ok
-test freshness_and_adapter::test_chain_id_support_and_hoodi_rejection ... ok
+test deposit_and_forks::test_core_loader_enforces_instance_pinning ... ok
+test deposit_and_forks::test_salted_privacy_shielding_prevents_dictionary_matching ... ok
+test deposit_and_forks::test_production_guest_dispatcher_rejects_unauthenticated_state_and_forged_pda ... ok
+test deposit_and_forks::test_lez_runtime_adapter_dispatch_flow ... ok
 test deposit_and_forks::test_adversarial_forged_store_fails_closed ... ok
+test deposit_and_forks::test_unregistered_networks_fail_closed_without_config_registration ... ok
+test deposit_and_forks::test_weak_subjectivity_attestation_staleness_direction_and_head_slot ... ok
 test freshness_and_adapter::test_confidential_journal_emits_no_raw_value ... ok
+test freshness_and_adapter::test_chain_id_support_aligns_with_crypto ... ok
+test deposit_and_forks::test_initialization_rejects_bootstrap_exceeding_canonical_weak_subjectivity ... ok
 test freshness_and_adapter::test_confidential_mode_missing_salt_fails_closed ... ok
+test deposit_and_forks::test_freshness_enforces_anchor_rejects_fake_head_and_stale_instance ... ok
 test freshness_and_adapter::test_confidential_value_shielding_commits_value_without_journal_leakage ... ok
 test deposit_and_forks::test_finish_update_advances_authenticated_head_slot ... ok
-test deposit_and_forks::test_freshness_enforces_anchor_rejects_fake_head_and_stale_instance ... ok
-test freshness_and_adapter::test_mainnet_and_holesky_bootstrap_and_admin_registration ... ok
 test freshness_and_adapter::test_attest_state_rejects_untrusted_deposit_locker_and_disallowed_token ... ok
 test deposit_and_forks::test_strict_config_loading_fails_closed_when_missing_or_untrusted_owner ... ok
-test deposit_and_forks::test_initialization_rejects_bootstrap_exceeding_canonical_weak_subjectivity ... ok
-test freshness_and_adapter::test_solidity_locker_guardian_and_quorum_invariants ... ok
-test freshness_and_adapter::test_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint ... ok
-test guest_and_store::test_finding10_sync_committee_signature_length_enforcement ... ok
-test freshness_and_adapter::test_unpinned_instance_cannot_initialize_or_advance_trusted_head ... ok
+test freshness_and_adapter::test_mainnet_and_holesky_bootstrap_and_admin_registration ... ok
 test freshness_and_adapter::test_privacy_mode_and_confidential_shielding_enforcement ... ok
-test guest_and_store::test_finding13_overflow_pre_check_preserves_nullifier ... ok
+test freshness_and_adapter::test_independent_freshness_enforces_anchor_rejects_fake_head_and_old_checkpoint ... ok
+test freshness_and_adapter::test_solidity_locker_guardian_and_quorum_invariants ... ok
+test freshness_and_adapter::test_unpinned_instance_cannot_initialize_or_advance_trusted_head ... ok
+test guest_and_store::test_finding10_sync_committee_signature_length_enforcement ... ok
 test guest_and_store::test_finding12_unconfigured_custom_checkpoint_rejected ... ok
+test guest_and_store::test_finding13_overflow_pre_check_preserves_nullifier ... ok
+test deposit_and_forks::test_stale_instance_cannot_advance_via_small_incremental_updates ... ok
 test guest_and_store::test_finding14_attest_state_salted_shielding_journal ... ok
 test guest_and_store::test_finding15_shared_checkpoint_verification_across_both_dispatchers ... ok
 test guest_and_store::test_finding1_zkvm_authenticated_guest_instruction_rejects_unauthenticated_pda ... ok
 test guest_and_store::test_finding11_fake_committee_under_canonical_pda_rejected_by_store_dispatcher ... ok
-test freshness_and_adapter::test_dormant_stale_instance_fails_closed_even_with_none_head ... ok
 test guest_and_store::test_finding3_statement_instance_isolation_and_cross_instance_rejection ... ok
 test guest_and_store::test_finding4_privacy_shielded_statement_zero_address_leakage ... ok
+test freshness_and_adapter::test_dormant_stale_instance_fails_closed_even_with_none_head ... ok
 test guest_and_store::test_finding6_statement_id_predicate_invariance ... ok
 test guest_and_store::test_finding8_zero_source_instance_pda_rejected_in_consumers ... ok
-test deposit_and_forks::test_stale_instance_cannot_advance_via_small_incremental_updates ... ok
 test guest_and_store::test_finding9_salted_privacy_shielding_non_correlation ... ok
-test guest_and_store::test_finding2_meth_ledger_authenticated_store_minting ... ok
+test freshness_and_adapter::test_multi_instance_trusted_head_isolation ... ok
 test privacy_and_instance::test_finding17_batch_write_rollback_restores_existing_accounts ... ok
 test privacy_and_instance::test_finding18_erc20_deposit_exact_32byte_recipient_matching_and_rejection ... ok
 test privacy_and_instance::test_finding20_salted_shielding_blinds_subject_key_and_statement_id ... ok
 test privacy_and_instance::test_finding19_erc20_transfer_strict_abi_shape_enforcement ... ok
 test privacy_and_instance::test_finding22_native_eth_deposit_exact_32byte_recipient_matching ... ok
 test privacy_and_instance::test_finding23_batch_write_rollback_preserves_unowned_account_without_adopting_mosoo_owner ... ok
+test privacy_and_instance::test_finding24_custom_network_independent_checkpoint_anchor_registration ... ok
 test privacy_and_instance::test_finding25_public_statement_shielding_prevents_subject_key_linkability ... ok
 test privacy_and_instance::test_finding26_native_eth_deposit_sender_canonical_12zero_padding ... ok
-test freshness_and_adapter::test_multi_instance_trusted_head_isolation ... ok
-test privacy_and_instance::test_finding24_custom_network_independent_checkpoint_anchor_registration ... ok
+test privacy_and_instance::test_finding27_shielded_statement_consumer_redemption_with_witness ... ok
 test privacy_and_instance::test_finding30_weak_subjectivity_window_expiry_rejected ... ok
 test privacy_and_instance::test_finding31_statement_id_cross_instance_consistency ... ok
-test privacy_and_instance::test_finding27_shielded_statement_consumer_redemption_with_witness ... ok
 test privacy_and_instance::test_pda_derivation_invariants_across_all_networks ... ok
 test privacy_and_instance::test_finding21_guest_entrypoint_store_backed_dispatches_with_account_store ... ok
+test guest_and_store::test_finding2_meth_ledger_authenticated_store_minting ... ok
 test freshness_and_adapter::test_multi_instance_coexistence_and_isolated_state ... ok
 test privacy_and_instance::test_finding28_zkvm_guest_rejects_untrusted_instance_and_forged_store ... ok
 test freshness_and_adapter::test_lez_runtime_adapter_full_persistent_lifecycle_e2e ... ok
 test guest_and_store::test_finding16_reinitialization_existing_instance_rejected ... ok
 test guest_and_store::test_finding7_job_account_collision_prevents_overwrite ... ok
 
-test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.13s
+test result: ok. 58 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.19s
 
 ================================================================================
 Mosoo Evidence Verifier Mutation Suite (7 Attack Scenarios)

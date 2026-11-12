@@ -604,7 +604,7 @@ pub fn historical_block_roots_gindex(chain_id: u64, state_slot: u64, target_slot
 
 /// Returns true if the chain ID is an officially supported Ethereum network.
 pub fn is_supported_chain(chain_id: u64) -> bool {
-    matches!(chain_id, 1 | 11_155_111 | 560_048 | 17_000)
+    crate::types::is_supported_chain_id(chain_id)
 }
 
 /// Returns true if the chain ID is supported or provided with a valid explicit NetworkConfig.

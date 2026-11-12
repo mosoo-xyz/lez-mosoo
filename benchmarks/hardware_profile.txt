@@ -5,7 +5,7 @@ Target Host Toolchain & Environment Notes:
 Compiled & Modeled zkVM Guest Profiles:
   Target: riscv32im-risc0-zkvm-elf
   Live LEZ v0.3.1 Binary (artifacts/programs/v0.3/mosoo_lc.bin): 569,468 bytes user ELF (601,892 bytes packaged; r0vm 3.0.5 cycles measured in evidence/mosoo-testnet-v03/local_simulation.txt)
-  Local v0.4 Target ELF (artifacts/v04-guest/mosoo-guest): 922,052 bytes (risc0-zkvm 1.2.6 / cargo-risczero 1.2.6)
+  Local v0.4 Target ELF (artifacts/v04-guest/mosoo-guest): 631,812 bytes (risc0-zkvm 1.2.6; SHA-256: b7abcec24207a2d67b049c72419296b0b7b849d5a91581ed4c82c263097df00f)
   Harness Program ID Constant: 0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c
   Segment Configuration Target: PO2 = 18 (262,144 cycles per segment)
   Full STARK Proving Notes: Prover wall-clock duration and host RSS depend directly on prover hardware; local runs verify host CPU timings and non-proving r0vm cycle counts.

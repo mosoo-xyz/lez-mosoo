@@ -14,20 +14,19 @@ It verifies 512-validator Ethereum sync-committee BLS12-381 aggregate signatures
 
 ### Deployed & Verified
 - **LEZ v0.3.1 Program (`mosoo_lc`)**: Built from [`programs/mosoo-lez-v03/`](programs/mosoo-lez-v03/src/lib.rs) + [`mosoo-core/`](mosoo-core/), deployed immutably at `Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg` (blocks `81142`–`81148`, ImageID `961a7e12973295f5d728443b4ee3aea6131c9de03111aba40e6751adae8503e0`) on `https://testnet.lez.logos.co`. Executed across 9 live transactions (`81154`–`81163`: `Init`, `Begin`, `Miller`, `Finish`, 3 `Attest` calls advancing PDA state to Mainnet slot `15,632,352` / execution block `#26,392,691`, and 2 on-chain refusals). Verified `30/30` live via [`scripts/verify-mosoo-lez.py`](scripts/verify-mosoo-lez.py) ([`evidence/mosoo-testnet-v03/`](evidence/mosoo-testnet-v03/README.md)).
-- **Sepolia `MosooLocker` v2**: Deployed and commissioned with a `2-of-2` EIP-712 attester quorum at [`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`](https://sepolia.etherscan.io/address/0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b) (`strictFixedDenominationMode = true`, live `DepositCommitted` and `UnlockedShieldedETH` roundtrip verified; earlier v1 contract at [`0x74625D146B8d9413F3c3976B323d94A739be7856`](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856)).
-- **Local Test Suite**: `331` Rust workspace tests (`cargo test --workspace`) + `20` Foundry EVM tests (`forge test -vvv`) pass cleanly with `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`. Includes real Beacon/execution JSON vectors for Mainnet Fulu, Sepolia Gloas (`DepositCommitted`), and Hoodi Fulu under [`vectors/`](vectors/).
-- **v0.4 Target Guest Binary**: Compiled `riscv32im-risc0-zkvm-elf` ELF (`922,052` bytes) archived at [`artifacts/v04-guest/mosoo-guest`](artifacts/v04-guest/mosoo-guest) (`SHA-256: 733bff2a...`).
+- **Sepolia `MosooLocker` v3**: Deployed and hardened at [`0x374B9F073A6aC1aF2c147392319499e35E8C7e82`](https://sepolia.etherscan.io/address/0x374B9F073A6aC1aF2c147392319499e35E8C7e82) (`productionCommissioned = true` `2-of-2` latch, `shieldedDepositsOnly = true`, `strictFixedDenominationMode = true`, `legacyRoutesPermanentlyDisabled = true`, `owner != guardian` & non-zero daily limit guards verified live; `DepositCommitted` and `UnlockedShieldedETH` roundtrip confirmed; earlier v2 at [`0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b`](https://sepolia.etherscan.io/address/0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b) and v1 at [`0x74625D146B8d9413F3c3976B323d94A739be7856`](https://sepolia.etherscan.io/address/0x74625D146B8d9413F3c3976B323d94A739be7856)).
+- **Local Test Suite**: `334` Rust workspace tests (`cargo test --workspace`) + `24` Foundry EVM tests (`forge test -vvv`) pass cleanly with `cargo fmt --all -- --check` and `cargo clippy --workspace --all-targets -- -D warnings`. Includes real Beacon/execution JSON vectors for Mainnet Fulu, Sepolia Gloas (`DepositCommitted`), and Hoodi Fulu under [`vectors/`](vectors/).
+- **v0.4 Target Guest Binary**: Compiled `riscv32im-risc0-zkvm-elf` ELF (`631,812` bytes) archived at [`artifacts/v04-guest/mosoo-guest`](artifacts/v04-guest/mosoo-guest) (`SHA-256: b7abcec2...`).
 
 ### Limitations & Unimplemented Pieces
 - **Public LEZ v0.4 Testnet**: Upstream public LEZ `v0.4` is not released yet (`v0.3.1` is current). All `v0.4` tests (`sequencer_e2e_tests`, `lez_v04_acceptance_tests`, [`evidence/sequencer-harness-v04/`](evidence/sequencer-harness-v04/run.tsv)) run against an offline `LezRuntimeAdapter` harness rather than a live `v0.4` RPC.
-- **Deployed `mosoo_lc` Binary Age**: Live immutable `Co5EYuBR...` (`mosoo_lc.bin`) was compiled before the final workspace hardening checks in [`mosoo-core/src/crypto.rs`](mosoo-core/src/crypto.rs) (`is_supported_chain_or_configured` strict built-in chain check) and [`mosoo-core/src/types.rs`](mosoo-core/src/types.rs) (`is_trusted_shielded_locker` default recognition of Sepolia v2 `0xEFEf...`). Redeploying to a new program ID picks up those checks.
+- **Deployed `mosoo_lc` Binary Age**: Live immutable `Co5EYuBR...` (`mosoo_lc.bin`) was compiled before the final workspace hardening checks in [`mosoo-core/src/crypto.rs`](mosoo-core/src/crypto.rs) (`is_supported_chain_or_configured` strict built-in chain check), [`mosoo-core/src/types.rs`](mosoo-core/src/types.rs) (`is_trusted_shielded_locker` default recognition of Sepolia v2/v3), and [`mosoo-core/src/inclusion.rs`](mosoo-core/src/inclusion.rs) (strict RLP field/bound caps). Redeploying to a new program ID picks up those checks.
 - **RFP-021 vs RFP-022 Scope**: Mosoo targets inbound state attestation (RFP-021). The bridge/escrow components (`contracts/MosooLocker.sol`, `consumers/*`) explore two-way bridging with `DepositCommitted` events and fixed-denomination tiers, **not** full RFP-022 privacy:
   - No on-LEZ Groth16 circuit hides `tx_index`/`log_index` or Merkle paths during LEZ claims.
   - No wrapped token/consumer program is deployed on `testnet.lez.logos.co` yet (`consumers/*` are verified via Rust workspace tests and Python simulation).
-  - Live Sepolia v2 currently has `shieldedDepositsOnly = false`, and 6-decimal ERC-20 tokens require owner `setStandardDenomination` configuration while `strictFixedDenominationMode = true`.
-  - Outbound Ethereum unlocks rely on a `2-of-2` EIP-712 attester quorum rather than an on-chain L1 validity proof of LEZ state.
+  - Outbound Ethereum unlocks rely on a `2-of-2` EIP-712 attester quorum rather than an on-chain L1 validity proof of LEZ state (and 6-decimal ERC-20 tokens need explicit pre-commission or timelocked `proposeStandardDenomination` entries while `strictFixedDenominationMode = true`).
   - No Basecamp mini-app is included.
-- **Daemon & External Audit**: `mosoo-daemon` does not yet expose HTTP `/metrics` or `/healthz` endpoints, and no third-party security audit has been conducted yet.
+- **External Audit**: No third-party external security audit has been conducted yet (see [`SECURITY.md`](SECURITY.md) and [`docs/security-review.md`](docs/security-review.md)); `mosoo-daemon` exposes optional `--health-port` `/healthz`, `/readyz`, and `/metrics` endpoints locally.
 
 ---
 
@@ -75,10 +74,10 @@ statement_id = sha256("mosoo_statement_v2" || chain_id || genesis_validators_roo
 ```bash
 git clone https://github.com/mosoo-xyz/lez-mosoo && cd lez-mosoo
 
-# Rust workspace (331 unit, integration & doc-tests)
+# Rust workspace (334 unit, integration & doc-tests)
 cargo test --workspace
 
-# Solidity vault tests (20 Foundry tests; requires foundry/solc)
+# Solidity vault tests (24 Foundry tests; requires foundry/solc)
 forge test -vvv
 
 # Verify Mosoo's live LEZ v0.3.1 deployment, 6 segments & Mainnet #26,392,691 PDAs (30 checks)

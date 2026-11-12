@@ -1,57 +1,61 @@
 {
   "contractName": "MosooLocker",
-  "version": "v2",
+  "version": "v3",
   "network": "sepolia",
   "chainId": "11155111",
-  "address": "0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b",
+  "address": "0x374B9F073A6aC1aF2c147392319499e35E8C7e82",
   "deployer": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
   "attesterAuthority": "0xb1DF758aEff9E23b8049a807B188B9B67652B212",
   "guardian": "0x528605F78c650Cf4d84705e3dB85db37b4de30a0",
   "additionalAttesters": [
-    "0x9acFB1b95E270ecb4b0E4b5C4016aA84f939a858"
+    "0xFD8a8Ba3468865AC13Df58fD83e01599a2D23c15"
   ],
   "isCommissioned": true,
+  "productionCommissioned": true,
   "requiredQuorum": 2,
   "attesterCount": 2,
+  "shieldedDepositsOnly": true,
   "strictFixedDenominationMode": true,
-  "transactionHash": "0xa13c8e1df8018335fdcb957d1ba257ccf32264c4ffe1cea32b319f2ae627a999",
-  "blockNumber": 12113191,
-  "gasUsed": "40441728",
-  "deployedAt": "2026-11-11T17:26:15.723Z",
-  "rpcUsed": "https://ethereum-sepolia-rpc.publicnode.com",
-  "commissionTransaction": {
-    "transactionHash": "0x8ceaa4ccb67047a1be022f7e46b0c2db518dc62522a84bab2d99be24c27e09f5",
-    "blockNumber": 12113196,
-    "gasUsed": "157836"
-  },
-  "strictModeTransaction": {
-    "transactionHash": "0x3cec009c3348d7d7c47094106dfeb868a8ae111db53b555f76edd5ecd5a3e1e2",
-    "blockNumber": 12113198,
-    "gasUsed": "129282"
+  "tokenAllowlistEnabled": true,
+  "legacyRoutesPermanentlyDisabled": true,
+  "transactionHash": "0x2fd1d318d43a5a82f1bed7d94e95610eee1919c5676f0490407c4af1b57102a7",
+  "blockNumber": 12118809,
+  "gasUsed": "46806487",
+  "deployedAt": "2026-11-12T12:21:52.884Z",
+  "hardeningTransactions": {
+    "shieldedDepositsOnlyTx": "0x987cf3fc9d5d35fd236ecd291b4bfec7dbe6646010fed04868448d589c040704",
+    "strictDenominationModeTx": "0x42cc6fda93bf06a43ed9978fbc59e041985017e7735a4c0b88de07cb85741f34",
+    "retireLegacyRoutesTx": "0x4fd43ec78808b784eebeeb15610f886e0183514b448a62f6609170698c56f01f",
+    "commissionLockerTx": "0x8a4f44c2a803ed264d2b24025c1f662d15e85e0e791403df0a1e6eee69fe89dc"
   },
   "canonicalDeposit": {
     "event": "DepositCommitted",
-    "transactionHash": "0xe017525b987833b91a943196fbc4d81316282f1b2710f43da348f19daaf88c19",
-    "blockNumber": 12113199,
-    "gasUsed": "652998",
-    "commitment": "0xb8a5118c210b1e9e1bd377c7d02407629aa273b3459ee459039d71e0210d78ec",
+    "transactionHash": "0xef24568c6d44d2798744dcf89566e12e216b153f188509dbe9914020d35c5773",
+    "blockNumber": 12118816,
+    "gasUsed": "651555",
+    "commitment": "0xd27e15416dad9efd3ddbb7598c8d44efc2160093fa1a3cb3c86cc7bd95ee5d53",
     "amountWei": "10000000000000000",
     "amountEth": "0.01",
-    "leafIndex": 1,
-    "newRoot": "0x8ad6258c24f7ef2a099b9163b47cef96f28375357e0aa271eb2481dd385ec1fe",
-    "nonce": 2
+    "leafIndex": 1
   },
   "liveShieldedRoundtrip": {
-    "depositTxHash": "0x7f50577dec30a32f407ac0715110b3c08a1b1fae4fcae0e58a133fe589527614",
-    "depositBlockNumber": 12113195,
-    "depositCommitment": "0x24b5b361959d8520eed92e630a0505b71737796b5191cd0cdec9e1653656c517",
+    "depositTxHash": "0x3ceb8bc3cb1e9f77d26d4304cc796e229677fb182bbd2ca902a3c017573aa233",
+    "depositBlockNumber": 12118814,
+    "depositCommitment": "0x60e38ee1eee38dffa203ace21af0931536166f76423758a09e0406298ad48ca9",
     "depositLeafIndex": 0,
-    "depositAmountEth": "0.005",
-    "unlockTxHash": "0x390fe18c1df4c29cbe7ec6779b201fe91f0ecbafbf128cb7dd51d94551511e33",
-    "unlockBlockNumber": 12113197,
-    "burnNullifier": "0xc2b225df38aba7ffcb11f3f808110e03c7847cdb6414596bba09c3f3d98411bb",
+    "depositAmountEth": "0.01",
+    "unlockTxHash": "0x3204263c6c80b0612f04c7c1e557d139fb7152c649ae9fed4fc47addaf88b56b",
+    "unlockBlockNumber": 12118815,
+    "burnNullifier": "0x9be1dcf3e31b23c98a0599b3c973b0bb40eb7bc8c02459994b2337fa80255e83",
     "sourceInstance": "0x984a6b2e81c318492c2c0abd211dfbbb641a3e71a5b27fcf806732ad55861912",
     "unlockQuorum": "2-of-2"
+  },
+  "previousV2Deployment": {
+    "address": "0xEFEf6dA5f8690D6C1cE8EA83c19DFD72DE621B1b",
+    "transactionHash": "0xa13c8e1df8018335fdcb957d1ba257ccf32264c4ffe1cea32b319f2ae627a999",
+    "blockNumber": 12113191,
+    "commissionTransactionHash": "0x8ceaa4ccb67047a1be022f7e46b0c2db518dc62522a84bab2d99be24c27e09f5",
+    "liveRoundtripUnlockTx": "0x390fe18c1df4c29cbe7ec6779b201fe91f0ecbafbf128cb7dd51d94551511e33"
   },
   "previousV1Deployment": {
     "address": "0x74625D146B8d9413F3c3976B323d94A739be7856",
@@ -60,5 +64,5 @@
     "deposit1Tx": "0x743aea2f88e9c0d7fc8e3eeb55cddb1760d34e2714cd015afed2fac437945882",
     "deposit3Tx": "0x6ecddbdd03284e4053a9fd957ebf611b188f9a67a2173a8b6b55844e0bcc8913"
   },
-  "notes": "Live commissioned MosooLocker v2 on Ethereum Sepolia with 2-of-2 EIP-712 quorum, strict fixed denomination mode, and verified DepositCommitted + UnlockedShieldedETH transactions."
+  "notes": "Hardened MosooLocker v3 on Sepolia with irreversible productionCommissioned>=2 latch, shieldedDepositsOnly=true, strictFixedDenominationMode=true, permanentlyRetireLegacyRoutes=true, owner!=guardian invariants, non-zero daily limits, and verified 2-of-2 DepositCommitted + UnlockedShieldedETH roundtrip."
 }

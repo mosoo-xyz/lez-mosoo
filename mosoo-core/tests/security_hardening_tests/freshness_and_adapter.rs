@@ -828,25 +828,22 @@ fn test_confidential_mode_missing_salt_fails_closed() {
 // Chain ID Support Alignment & Hoodi Deprecation Rejection
 // ---------------------------------------------------------------------------
 #[test]
-fn test_chain_id_support_and_hoodi_rejection() {
-    use mosoo_core::types::is_supported_chain_id;
+fn test_chain_id_support_aligns_with_crypto() {
+    use mosoo_core::{crypto::is_supported_chain, types::is_supported_chain_id};
 
-    // Supported networks
-    assert!(is_supported_chain_id(1), "Mainnet (1) must be supported");
-    assert!(
-        is_supported_chain_id(11_155_111),
-        "Sepolia (11155111) must be supported"
-    );
-    assert!(
-        is_supported_chain_id(17_000),
-        "Holesky (17000) must be supported"
-    );
+    // Supported networks must match identically between types and crypto modules
+    for chain_id in [1u64, 11_155_111, 17_000, 560_048] {
+        assert!(
+            is_supported_chain_id(chain_id),
+            "Chain {chain_id} must be supported by core types"
+        );
+        assert!(
+            is_supported_chain(chain_id),
+            "Chain {chain_id} must be supported by crypto"
+        );
+    }
 
-    // Deprecated / Unsupported networks fail closed
-    assert!(
-        !is_supported_chain_id(560_048),
-        "Hoodi (560048) must not be supported by core"
-    );
+    // Unsupported networks fail closed
     assert!(!is_supported_chain_id(0), "Chain 0 must not be supported");
     assert!(
         !is_supported_chain_id(999_999),

@@ -181,6 +181,9 @@ contract MosooLockerTest is Test {
         address attester2 = vm.addr(attester2Pk);
         address attester3 = vm.addr(attester3Pk);
 
+        // Pre-commission legacy migration route enabled prior to 2-of-3 graduation
+        locker.setLegacyRoutesEnabled(true);
+
         locker.proposeAddAttester(attester2);
         vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
@@ -221,8 +224,7 @@ contract MosooLockerTest is Test {
         );
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", locker.DOMAIN_SEPARATOR(), structHash));
 
-        // Sub-threshold quorum (only 1 signature provided) - enable legacy routes for legacy quorum test
-        locker.setLegacyRoutesEnabled(true);
+        // Sub-threshold quorum (only 1 signature provided)
         bytes[] memory subQuorumSigs = new bytes[](1);
         (uint8 v1, bytes32 r1, bytes32 s1) = vm.sign(attesterPk, digest);
         subQuorumSigs[0] = abi.encodePacked(r1, s1, v1);
@@ -375,6 +377,9 @@ contract MosooLockerTest is Test {
         uint256 attester3Pk = 0xC33CE;
         address attester2 = vm.addr(attester2Pk);
         address attester3 = vm.addr(attester3Pk);
+
+        // Pre-commission legacy migration route enabled prior to 2-of-3 graduation
+        locker.setLegacyRoutesEnabled(true);
 
         locker.proposeAddAttester(attester2);
         vm.warp(locker.addAttesterTimelockUnlock());
@@ -652,6 +657,9 @@ contract MosooLockerTest is Test {
         address attester2 = vm.addr(attester2Pk);
         address attester3 = vm.addr(attester3Pk);
 
+        // Pre-commission legacy migration route enabled prior to 2-of-3 graduation
+        locker.setLegacyRoutesEnabled(true);
+
         locker.proposeAddAttester(attester2);
         vm.warp(locker.addAttesterTimelockUnlock());
         locker.executeAddAttester();
@@ -923,5 +931,83 @@ contract MosooLockerTest is Test {
         try locker.unlockShieldedETH(burnNullifier, sourceInstance, unlockAmt, recipient, sigs) {
             revert("Shielded burn nullifier replay MUST revert");
         } catch {}
+    }
+
+    function test_production_quorum_downgrade_reverts() public {
+        address attester2 = address(0xA11CE2);
+        address[] memory extra = new address[](1);
+        extra[0] = attester2;
+        locker.commissionLocker(extra, 2);
+
+        assertTrue(locker.productionCommissioned(), "productionCommissioned latch must be set");
+        assertTrue(locker.isCommissioned(), "isCommissioned must be true");
+
+        // Downgrading quorum to 1 MUST revert post-commissioning
+        try locker.proposeQuorum(1) {
+            revert("proposeQuorum(1) MUST revert once productionCommissioned");
+        } catch {}
+
+        // Re-enabling legacy V1 routes MUST revert once productionCommissioned
+        try locker.setLegacyRoutesEnabled(true) {
+            revert("setLegacyRoutesEnabled(true) MUST revert once productionCommissioned");
+        } catch {}
+    }
+
+    function test_guardian_owner_independence_across_rotations() public {
+        address currentOwner = locker.owner();
+        address currentGuardian = locker.guardian();
+
+        // Owner cannot propose themselves as guardian
+        try locker.proposeGuardian(currentOwner) {
+            revert("proposeGuardian(owner) MUST revert");
+        } catch {}
+
+        // Owner cannot transfer ownership to current guardian
+        try locker.transferOwnership(currentGuardian) {
+            revert("transferOwnership(guardian) MUST revert");
+        } catch {}
+    }
+
+    function test_zero_daily_limit_rejected_and_fail_closed() public {
+        try locker.proposeDailyWithdrawalLimitETH(0) {
+            revert("proposeDailyWithdrawalLimitETH(0) MUST revert");
+        } catch {}
+
+        try locker.proposeDailyWithdrawalLimitERC20(address(token), 0) {
+            revert("proposeDailyWithdrawalLimitERC20(0) MUST revert");
+        } catch {}
+    }
+
+    function test_post_commission_privacy_and_token_timelocks() public {
+        locker.setShieldedDepositsOnly(true);
+        locker.setStrictFixedDenominationMode(true);
+
+        address attester2 = address(0xA11CE3);
+        address[] memory extra = new address[](1);
+        extra[0] = attester2;
+        locker.commissionLocker(extra, 2);
+
+        // Direct disabling or un-timelocked token changes MUST revert once enabled/commissioned
+        try locker.setShieldedDepositsOnly(false) {
+            revert("direct setShieldedDepositsOnly(false) MUST revert");
+        } catch {}
+        try locker.setTokenAllowlistEnabled(false) {
+            revert("direct setTokenAllowlistEnabled(false) MUST revert");
+        } catch {}
+        try locker.setStrictFixedDenominationMode(false) {
+            revert("direct setStrictFixedDenominationMode(false) MUST revert");
+        } catch {}
+        try locker.setTokenAllowed(address(0xBEEF), true) {
+            revert("direct setTokenAllowed post-commissioning MUST revert");
+        } catch {}
+        try locker.setStandardDenomination(2 ether, true) {
+            revert("direct setStandardDenomination post-commissioning MUST revert");
+        } catch {}
+
+        // Timelocked relaxation works only after 48h and can be cancelled by guardian
+        locker.proposeDisableShieldedDepositsOnly();
+        vm.prank(guardian);
+        locker.cancelPendingGovernance(8);
+        assertEq(locker.disableShieldedOnlyTimelockUnlock(), 0, "guardian cancel must clear unlock");
     }
 }

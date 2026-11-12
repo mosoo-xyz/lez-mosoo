@@ -337,10 +337,13 @@ pub fn dispatch_guest_instruction(
             }
             handle_miller_update(args)
         }
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::StoreBacked {
             mut store,
             instruction,
-        } => dispatch_store_instruction(&mut store, *instruction),
+        } => dispatch_store_instruction_with_signer(&mut store, None, *instruction),
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
 
         GuestInstruction::RegisterNetworkCheckpoint { .. }
         | GuestInstruction::RegisterTrustedInstance { .. }
@@ -2056,9 +2059,20 @@ pub fn handle_initialize_store<S: AccountStore>(
 
 /// Dispatches an instruction inside the LEZ transaction runtime using persistent AccountStore.
 /// Strictly loads and authenticates accounts from store, guaranteeing that no caller can fabricate
-/// committee, headers, or state roots.
+/// committee, headers, or state roots. Privileged admin/bootstrap instructions require an explicit
+/// `authenticated_signer` verified by the host runtime.
 pub fn dispatch_store_instruction<S: AccountStore>(
     store: &mut S,
+    instruction: GuestInstruction,
+) -> Result<InstructionOutput, MosooError> {
+    dispatch_store_instruction_with_signer(store, None, instruction)
+}
+
+/// Runtime-authenticated variant of [`dispatch_store_instruction`] enforcing caller identity binding
+/// on privileged bootstrap and registry instructions.
+pub fn dispatch_store_instruction_with_signer<S: AccountStore>(
+    store: &mut S,
+    authenticated_signer: Option<[u8; 32]>,
     instruction: GuestInstruction,
 ) -> Result<InstructionOutput, MosooError> {
     match instruction {
@@ -2126,26 +2140,44 @@ pub fn dispatch_store_instruction<S: AccountStore>(
             chain_id,
             checkpoint_root,
             initial_head_slot,
-        } => handle_register_network_checkpoint_authenticated(
-            store,
-            &caller,
-            chain_id,
-            checkpoint_root,
-            initial_head_slot,
-        ),
+        } => {
+            if authenticated_signer != Some(caller) {
+                return Err(MosooError::DomainSeparationFailed);
+            }
+            handle_register_network_checkpoint_authenticated(
+                store,
+                &caller,
+                chain_id,
+                checkpoint_root,
+                initial_head_slot,
+            )
+        }
 
         GuestInstruction::RegisterTrustedInstance {
             caller,
             chain_id,
             instance_pda,
-        } => handle_register_trusted_instance_authenticated(store, &caller, chain_id, instance_pda),
+        } => {
+            if authenticated_signer != Some(caller) {
+                return Err(MosooError::DomainSeparationFailed);
+            }
+            handle_register_trusted_instance_authenticated(store, &caller, chain_id, instance_pda)
+        }
+
         GuestInstruction::BootstrapAdminAuthority { initial_admin } => {
+            if authenticated_signer != Some(initial_admin) {
+                return Err(MosooError::DomainSeparationFailed);
+            }
             handle_bootstrap_admin_authority(store, initial_admin)
         }
 
+        #[cfg(any(test, feature = "test-harness"))]
         GuestInstruction::StoreBacked { instruction, .. } => {
-            dispatch_store_instruction(store, *instruction)
+            // Ignore any caller-supplied store and drop signer context to prevent nested escalation.
+            dispatch_store_instruction_with_signer(store, None, *instruction)
         }
+        #[cfg(not(any(test, feature = "test-harness")))]
+        GuestInstruction::StoreBacked { .. } => Err(MosooError::UnauthenticatedInstance),
     }
 }
 
@@ -2270,12 +2302,26 @@ impl<S: AccountStore> LezRuntimeAdapter<S> {
         self.store
     }
 
-    /// Dispatches a transaction instruction against the persistent host account store.
+    /// Dispatches an unprivileged transaction instruction against the persistent host account store.
+    /// Privileged bootstrap/admin instructions require [`Self::dispatch_transaction_authenticated`].
     pub fn dispatch_transaction(
         &mut self,
         instruction: GuestInstruction,
     ) -> Result<InstructionOutput, MosooError> {
-        dispatch_store_instruction(&mut self.store, instruction)
+        dispatch_store_instruction_with_signer(&mut self.store, None, instruction)
+    }
+
+    /// Dispatches a transaction instruction alongside a runtime-authenticated signer address.
+    pub fn dispatch_transaction_authenticated(
+        &mut self,
+        authenticated_signer: [u8; 32],
+        instruction: GuestInstruction,
+    ) -> Result<InstructionOutput, MosooError> {
+        dispatch_store_instruction_with_signer(
+            &mut self.store,
+            Some(authenticated_signer),
+            instruction,
+        )
     }
 
     /// Convenience runner for authenticated BeginUpdate transaction.
@@ -2320,39 +2366,51 @@ impl<S: AccountStore> LezRuntimeAdapter<S> {
     /// Convenience runner for registering an authorized network checkpoint.
     pub fn dispatch_register_network_checkpoint(
         &mut self,
+        authenticated_signer: [u8; 32],
         caller: [u8; 32],
         chain_id: u64,
         checkpoint_root: [u8; 32],
         initial_head_slot: u64,
     ) -> Result<InstructionOutput, MosooError> {
-        self.dispatch_transaction(GuestInstruction::RegisterNetworkCheckpoint {
-            caller,
-            chain_id,
-            checkpoint_root,
-            initial_head_slot,
-        })
+        self.dispatch_transaction_authenticated(
+            authenticated_signer,
+            GuestInstruction::RegisterNetworkCheckpoint {
+                caller,
+                chain_id,
+                checkpoint_root,
+                initial_head_slot,
+            },
+        )
     }
 
     /// Convenience runner for registering a trusted instance in the multi-instance registry.
     pub fn dispatch_register_trusted_instance(
         &mut self,
+        authenticated_signer: [u8; 32],
         caller: [u8; 32],
         chain_id: u64,
         instance_pda: [u8; 32],
     ) -> Result<InstructionOutput, MosooError> {
-        self.dispatch_transaction(GuestInstruction::RegisterTrustedInstance {
-            caller,
-            chain_id,
-            instance_pda,
-        })
+        self.dispatch_transaction_authenticated(
+            authenticated_signer,
+            GuestInstruction::RegisterTrustedInstance {
+                caller,
+                chain_id,
+                instance_pda,
+            },
+        )
     }
 
     /// Convenience runner for one-time bootstrap of the bridge admin authority.
     pub fn dispatch_bootstrap_admin_authority(
         &mut self,
+        authenticated_signer: [u8; 32],
         initial_admin: [u8; 32],
     ) -> Result<InstructionOutput, MosooError> {
-        self.dispatch_transaction(GuestInstruction::BootstrapAdminAuthority { initial_admin })
+        self.dispatch_transaction_authenticated(
+            authenticated_signer,
+            GuestInstruction::BootstrapAdminAuthority { initial_admin },
+        )
     }
 }
 
@@ -2743,4 +2801,72 @@ pub fn verify_anchored_checkpoint(
         Some(trusted_block_root),
         network_config,
     )
+}
+
+#[cfg(test)]
+mod signer_auth_tests {
+    use super::*;
+
+    #[test]
+    fn test_runtime_signer_auth_enforced_and_nested_store_escalation_blocked() {
+        let admin = [0x11u8; 32];
+        let attacker = [0x99u8; 32];
+        let store = ProgramAccountStore::new();
+        let mut adapter = LezRuntimeAdapter::new(store);
+
+        // Unauthenticated dispatch fails closed on bootstrap and admin registry operations.
+        assert!(matches!(
+            adapter.dispatch_transaction(GuestInstruction::BootstrapAdminAuthority {
+                initial_admin: admin
+            }),
+            Err(MosooError::DomainSeparationFailed)
+        ));
+
+        // Signer mismatch on BootstrapAdminAuthority rejects.
+        assert!(matches!(
+            adapter.dispatch_transaction_authenticated(
+                attacker,
+                GuestInstruction::BootstrapAdminAuthority {
+                    initial_admin: admin
+                }
+            ),
+            Err(MosooError::DomainSeparationFailed)
+        ));
+
+        // Nested StoreBacked cannot bypass signer checks inside store dispatcher.
+        assert!(matches!(
+            adapter.dispatch_transaction_authenticated(
+                admin,
+                GuestInstruction::StoreBacked {
+                    store: ProgramAccountStore::new(),
+                    instruction: Box::new(GuestInstruction::BootstrapAdminAuthority {
+                        initial_admin: admin,
+                    }),
+                }
+            ),
+            Err(MosooError::DomainSeparationFailed)
+        ));
+
+        // Authenticated bootstrap with matching signer succeeds once, then locks out replays.
+        assert!(matches!(
+            adapter.dispatch_bootstrap_admin_authority(admin, admin),
+            Ok(InstructionOutput::ConfigUpdated)
+        ));
+        assert!(matches!(
+            adapter.dispatch_bootstrap_admin_authority(attacker, attacker),
+            Err(MosooError::AlreadyInitialized { .. })
+        ));
+
+        // Spoofed caller bytes inside RegisterNetworkCheckpoint fail when runtime signer differs.
+        assert!(matches!(
+            adapter.dispatch_register_network_checkpoint(attacker, admin, 1, [0x22u8; 32], 500,),
+            Err(MosooError::DomainSeparationFailed)
+        ));
+
+        // Matching admin signer succeeds.
+        assert!(matches!(
+            adapter.dispatch_register_network_checkpoint(admin, admin, 1, [0x22u8; 32], 500),
+            Ok(InstructionOutput::ConfigUpdated)
+        ));
+    }
 }

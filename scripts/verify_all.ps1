@@ -8,7 +8,7 @@ Write-Host "====================================================================
 Write-Host "`n[1/18] Checking entire workspace compilation..." -ForegroundColor Yellow
 cargo check --workspace
 
-Write-Host "`n[2/18] Running all workspace Rust unit, integration & doc-tests (331 tests)..." -ForegroundColor Yellow
+Write-Host "`n[2/18] Running all workspace Rust unit, integration & doc-tests (334 tests)..." -ForegroundColor Yellow
 cargo test --workspace
 
 Write-Host "`n[3/18] Running Two-Way Bridge End-to-End Integration Suite (23 tests)..." -ForegroundColor Yellow
@@ -32,7 +32,7 @@ cargo test --test sequencer_e2e_tests
 Write-Host "`n[9/18] Running Real Ethereum Beacon Chain Vector Tests (4 tests)..." -ForegroundColor Yellow
 cargo test --test real_chain_vectors_tests
 
-Write-Host "`n[10/18] Running Daemon Operational Tests (17 tests)..." -ForegroundColor Yellow
+Write-Host "`n[10/18] Running Daemon Operational Tests (18 tests)..." -ForegroundColor Yellow
 cargo test -p mosoo-daemon
 
 Write-Host "`n[11/18] Running Live Empirical Benchmark Suite & Emitting JSON Artifact..." -ForegroundColor Yellow
@@ -69,7 +69,7 @@ Write-Host "`n[16/18] Running Python subprocess evidence tamper-detection suite 
 Write-Host "`n[17/18] Verifying Mosoo's own live LEZ v0.3.1 deployment & PDAs (Co5EYuBR...)..." -ForegroundColor Yellow
 & $pyCmd @($pyArgs + @("scripts/verify-mosoo-lez.py", "--allow-offline"))
 
-Write-Host "`n[18/18] Running Foundry Solidity EVM suite (`contracts/test/MosooLocker.t.sol`, 20 tests)..." -ForegroundColor Yellow
+Write-Host "`n[18/18] Running Foundry Solidity EVM suite (`contracts/test/MosooLocker.t.sol`, 24 tests)..." -ForegroundColor Yellow
 $forgeCmd = $null
 if (Get-Command forge -ErrorAction SilentlyContinue) {
     $forgeCmd = (Get-Command forge).Source
@@ -79,10 +79,10 @@ if (Get-Command forge -ErrorAction SilentlyContinue) {
 if ($forgeCmd) {
     & $forgeCmd test -vvv
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $summaryLine = "  [SUCCESS] All 331 Rust + 20 Foundry = 351/351 checks passed!   "
+    $summaryLine = "  [SUCCESS] All 334 Rust + 24 Foundry = 358/358 checks passed!   "
 } else {
-    Write-Warning "Foundry (`forge`) not found on PATH or $env:USERPROFILE\.foundry\bin\forge.exe; skipping 20 Solidity tests (run in CI)."
-    $summaryLine = "  [SUCCESS] All 331 Rust + Python checks passed (Foundry skipped)!  "
+    Write-Warning "Foundry (`forge`) not found on PATH or $env:USERPROFILE\.foundry\bin\forge.exe; skipping 24 Solidity tests (run in CI)."
+    $summaryLine = "  [SUCCESS] All 334 Rust + Python checks passed (Foundry skipped)!  "
 }
 
 Write-Host "`n=====================================================================" -ForegroundColor Green

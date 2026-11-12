@@ -164,6 +164,73 @@ pub struct StateProof {
     pub receipt_value: Option<Vec<u8>>,
 }
 
+/// Maximum MPT nodes permitted in a single account/storage/receipt proof path.
+pub const MAX_PROOF_NODES: usize = 64;
+/// Maximum size in bytes of a single RLP-encoded MPT node.
+pub const MAX_MPT_NODE_BYTES: usize = 16 * 1024;
+/// Maximum size in bytes of an encoded RLP account, storage, or receipt payload.
+pub const MAX_RLP_VALUE_BYTES: usize = 512 * 1024;
+/// Maximum total bytes across all proof nodes and values in a single proof.
+pub const MAX_TOTAL_PROOF_BYTES: usize = 1024 * 1024;
+/// Maximum logs permitted within a single decoded Ethereum receipt.
+pub const MAX_LOGS_PER_RECEIPT: usize = 4096;
+/// Maximum indexed topics allowed in an Ethereum event log (`topic0..topic3`).
+pub const MAX_TOPICS_PER_LOG: usize = 4;
+
+fn validate_mpt_nodes(
+    nodes: &[Bytes],
+    total_bytes: &mut usize,
+    label: &str,
+) -> Result<(), MosooError> {
+    if nodes.len() > MAX_PROOF_NODES {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "{label} exceeds maximum node count ({} > {MAX_PROOF_NODES})",
+            nodes.len()
+        )));
+    }
+    for node in nodes {
+        if node.len() > MAX_MPT_NODE_BYTES {
+            return Err(MosooError::RlpDecodeFailed(format!(
+                "{label} node exceeds maximum size ({} > {MAX_MPT_NODE_BYTES})",
+                node.len()
+            )));
+        }
+        *total_bytes = total_bytes
+            .checked_add(node.len())
+            .filter(|&sum| sum <= MAX_TOTAL_PROOF_BYTES)
+            .ok_or_else(|| {
+                MosooError::RlpDecodeFailed(format!(
+                    "total proof size exceeds {MAX_TOTAL_PROOF_BYTES} byte cap"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
+fn validate_value_len(
+    val: Option<&[u8]>,
+    total_bytes: &mut usize,
+    label: &str,
+) -> Result<(), MosooError> {
+    if let Some(bytes) = val {
+        if bytes.len() > MAX_RLP_VALUE_BYTES {
+            return Err(MosooError::RlpDecodeFailed(format!(
+                "{label} exceeds maximum size ({} > {MAX_RLP_VALUE_BYTES})",
+                bytes.len()
+            )));
+        }
+        *total_bytes = total_bytes
+            .checked_add(bytes.len())
+            .filter(|&sum| sum <= MAX_TOTAL_PROOF_BYTES)
+            .ok_or_else(|| {
+                MosooError::RlpDecodeFailed(format!(
+                    "total proof size exceeds {MAX_TOTAL_PROOF_BYTES} byte cap"
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 /// Verify a state or receipt inclusion proof against a finalized `HeaderRecord`.
 ///
 /// **Security:** `header` must be an authenticated `HeaderRecord` from Mosoo.
@@ -172,6 +239,30 @@ pub fn verify_state_proof(
     proof: &StateProof,
     header: &HeaderRecord,
 ) -> Result<VerifiedValue, MosooError> {
+    let mut total_bytes = 0usize;
+    validate_mpt_nodes(&proof.account_proof, &mut total_bytes, "account_proof")?;
+    if let Some(sp) = &proof.storage_proof {
+        validate_mpt_nodes(sp, &mut total_bytes, "storage_proof")?;
+    }
+    if let Some(rp) = &proof.receipt_proof {
+        validate_mpt_nodes(rp, &mut total_bytes, "receipt_proof")?;
+    }
+    validate_value_len(
+        proof.account_value.as_deref(),
+        &mut total_bytes,
+        "account_value",
+    )?;
+    validate_value_len(
+        proof.storage_value.as_deref(),
+        &mut total_bytes,
+        "storage_value",
+    )?;
+    validate_value_len(
+        proof.receipt_value.as_deref(),
+        &mut total_bytes,
+        "receipt_value",
+    )?;
+
     let state_root = B256::from(header.execution_state_root);
 
     match &proof.target {
@@ -479,6 +570,10 @@ pub fn verify_receipt_log_proof(
     proof: &ReceiptLogProof,
     header: &HeaderRecord,
 ) -> Result<VerifiedLog, MosooError> {
+    let mut total_bytes = 0usize;
+    validate_mpt_nodes(&proof.receipt_proof, &mut total_bytes, "receipt_proof")?;
+    validate_value_len(Some(&proof.receipt_rlp), &mut total_bytes, "receipt_rlp")?;
+
     let receipts_root = B256::from(header.receipts_root);
     if receipts_root == B256::ZERO {
         return Err(MosooError::InvalidTrieProof);
@@ -516,21 +611,37 @@ pub fn decode_and_validate_receipt(
     if receipt_bytes.is_empty() {
         return Err(MosooError::RlpDecodeFailed("empty receipt bytes".into()));
     }
+    if receipt_bytes.len() > MAX_RLP_VALUE_BYTES {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "receipt exceeds {MAX_RLP_VALUE_BYTES} byte limit"
+        )));
+    }
 
     // Handle EIP-2718 typed transaction receipt envelope.
-    // Typed receipts (0x01, 0x02, 0x03) prefix the RLP payload with the 1-byte type flag.
+    // Supported typed receipts (0x01..=0x04) prefix the RLP payload with a 1-byte type flag.
     // Legacy receipts begin with RLP list prefix (>= 0xc0).
     let rlp_payload = if receipt_bytes[0] < 0x80 {
+        if !matches!(receipt_bytes[0], 0x01..=0x04) {
+            return Err(MosooError::RlpDecodeFailed(format!(
+                "unsupported EIP-2718 receipt type 0x{:02x}",
+                receipt_bytes[0]
+            )));
+        }
         &receipt_bytes[1..]
-    } else {
+    } else if receipt_bytes[0] >= 0xc0 {
         receipt_bytes
+    } else {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "invalid legacy receipt RLP prefix 0x{:02x}",
+            receipt_bytes[0]
+        )));
     };
 
     // Parse receipt fields: [status_or_state_root, cumulative_gas_used, logs_bloom, logs]
     let fields = rlp_decode_list_items(rlp_payload)?;
-    if fields.len() < 4 {
+    if fields.len() != 4 {
         return Err(MosooError::RlpDecodeFailed(format!(
-            "receipt must have at least 4 items, got {}",
+            "receipt must have exactly 4 items, got {}",
             fields.len()
         )));
     }
@@ -547,6 +658,12 @@ pub fn decode_and_validate_receipt(
 
     // Parse logs list: [log_0, log_1, ...]
     let raw_logs = rlp_decode_list_items(fields[3])?;
+    if raw_logs.len() > MAX_LOGS_PER_RECEIPT {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "receipt log count {} exceeds maximum {MAX_LOGS_PER_RECEIPT}",
+            raw_logs.len()
+        )));
+    }
     if target_log_index >= raw_logs.len() {
         return Err(MosooError::LogIndexOutOfBounds {
             log_index: target_log_index,
@@ -556,9 +673,9 @@ pub fn decode_and_validate_receipt(
 
     // Parse target log: [address, [topic0, topic1, ...], data]
     let log_fields = rlp_decode_list_items(raw_logs[target_log_index])?;
-    if log_fields.len() < 3 {
+    if log_fields.len() != 3 {
         return Err(MosooError::RlpDecodeFailed(format!(
-            "log must have 3 items (address, topics, data), got {}",
+            "log must have exactly 3 items (address, topics, data), got {}",
             log_fields.len()
         )));
     }
@@ -582,6 +699,12 @@ pub fn decode_and_validate_receipt(
     }
 
     let topic_items = rlp_decode_list_items(log_fields[1])?;
+    if topic_items.len() > MAX_TOPICS_PER_LOG {
+        return Err(MosooError::RlpDecodeFailed(format!(
+            "log has {} topics, maximum allowed is {MAX_TOPICS_PER_LOG}",
+            topic_items.len()
+        )));
+    }
     let mut topics = Vec::with_capacity(topic_items.len());
     for item in topic_items {
         let topic_bytes = rlp_strip_prefix(item);
@@ -877,6 +1000,11 @@ pub fn rlp_decode_list_items(buf: &[u8]) -> Result<Vec<&[u8]>, MosooError> {
         if buf.len() < total {
             return Err(MosooError::RlpDecodeFailed("truncated list payload".into()));
         }
+        if buf.len() != total {
+            return Err(MosooError::RlpDecodeFailed(
+                "trailing bytes after RLP list".into(),
+            ));
+        }
         &buf[1 + ll..total]
     } else if first >= 0xc0 {
         let len = (first - 0xc0) as usize;
@@ -885,6 +1013,11 @@ pub fn rlp_decode_list_items(buf: &[u8]) -> Result<Vec<&[u8]>, MosooError> {
             .ok_or_else(|| MosooError::RlpDecodeFailed("RLP list length overflow".into()))?;
         if buf.len() < total {
             return Err(MosooError::RlpDecodeFailed("truncated list payload".into()));
+        }
+        if buf.len() != total {
+            return Err(MosooError::RlpDecodeFailed(
+                "trailing bytes after RLP list".into(),
+            ));
         }
         &buf[1..total]
     } else {
@@ -2653,6 +2786,77 @@ mod tests {
         assert!(matches!(
             decode_deposit_committed_log(&malformed_log),
             Err(MosooError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn test_strict_rlp_fields_trailing_bytes_and_proof_bounds() {
+        use alloy_rlp::Encodable as _;
+        let mut inner = Vec::new();
+        alloy_primitives::Bytes::from_static(&[0x01]).encode(&mut inner);
+        alloy_primitives::Bytes::from_static(&[0x01]).encode(&mut inner);
+        alloy_primitives::Bytes::from_static(&[0u8; 256]).encode(&mut inner);
+        inner.push(0xc0); // empty logs list
+
+        let mut valid_4 = Vec::new();
+        alloy_rlp::Header {
+            list: true,
+            payload_length: inner.len(),
+        }
+        .encode(&mut valid_4);
+        valid_4.extend_from_slice(&inner);
+
+        // 5-field receipt list (extra 5th item) -> must be rejected by exact == 4 check.
+        let mut inner_5 = inner.clone();
+        inner_5.push(0x01);
+        let mut typed_5 = vec![0x02u8];
+        alloy_rlp::Header {
+            list: true,
+            payload_length: inner_5.len(),
+        }
+        .encode(&mut typed_5);
+        typed_5.extend_from_slice(&inner_5);
+        assert!(matches!(
+            decode_and_validate_receipt(&typed_5, 0, 0, None, None),
+            Err(MosooError::RlpDecodeFailed(_))
+        ));
+
+        // Unknown EIP-2718 receipt type (0x05) -> rejected.
+        let mut typed_unknown = vec![0x05u8];
+        typed_unknown.extend_from_slice(&valid_4);
+        assert!(matches!(
+            decode_and_validate_receipt(&typed_unknown, 0, 0, None, None),
+            Err(MosooError::RlpDecodeFailed(_))
+        ));
+
+        // Trailing bytes after RLP list -> rejected.
+        let mut trailing = valid_4.clone();
+        trailing.extend_from_slice(&[0xde, 0xad]);
+        assert!(matches!(
+            rlp_decode_list_items(&trailing),
+            Err(MosooError::RlpDecodeFailed(_))
+        ));
+
+        // Proof exceeding MAX_PROOF_NODES -> rejected before trie traversal.
+        let oversized = ReceiptLogProof {
+            tx_index: 0,
+            log_index: 0,
+            expected_emitter: None,
+            expected_topic0: None,
+            receipt_proof: vec![Bytes::from_static(&[0x80]); MAX_PROOF_NODES + 1],
+            receipt_rlp: typed_unknown,
+        };
+        let dummy_header = HeaderRecord {
+            chain_id: 1,
+            slot: 1,
+            beacon_block_root: [1u8; 32],
+            execution_block_hash: [1u8; 32],
+            execution_state_root: [1u8; 32],
+            receipts_root: [1u8; 32],
+        };
+        assert!(matches!(
+            verify_receipt_log_proof(&oversized, &dummy_header),
+            Err(MosooError::RlpDecodeFailed(_))
         ));
     }
 }
