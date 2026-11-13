@@ -1847,7 +1847,11 @@ pub fn verify_commitment_merkle_inclusion(
     siblings: &[[u8; 32]; 20],
     expected_root: &[u8; 32],
 ) -> bool {
-    if *commitment == [0u8; 32] || *expected_root == [0u8; 32] {
+    const MERKLE_DEPTH: u32 = 20;
+    if *commitment == [0u8; 32]
+        || *expected_root == [0u8; 32]
+        || leaf_index >= (1u32 << MERKLE_DEPTH)
+    {
         return false;
     }
     let mut idx = leaf_index;

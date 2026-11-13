@@ -8,10 +8,10 @@ Write-Host "====================================================================
 Write-Host "`n[1/18] Checking entire workspace compilation..." -ForegroundColor Yellow
 cargo check --workspace
 
-Write-Host "`n[2/18] Running all workspace Rust unit, integration & doc-tests (339 tests)..." -ForegroundColor Yellow
+Write-Host "`n[2/18] Running all workspace Rust unit, integration & doc-tests (340 tests)..." -ForegroundColor Yellow
 cargo test --workspace
 
-Write-Host "`n[3/18] Running Two-Way Bridge End-to-End Integration Suite (23 tests)..." -ForegroundColor Yellow
+Write-Host "`n[3/18] Running Two-Way Bridge End-to-End Integration Suite (25 tests)..." -ForegroundColor Yellow
 cargo test --test two_way_bridge_tests
 
 Write-Host "`n[4/18] Running Adversarial & Mutation Test Suite (50 tests, 42 attack vectors)..." -ForegroundColor Yellow
@@ -79,10 +79,10 @@ if (Get-Command forge -ErrorAction SilentlyContinue) {
 if ($forgeCmd) {
     & $forgeCmd test -vvv
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $summaryLine = "  [SUCCESS] All 339 Rust + 31 Foundry = 370/370 checks passed!   "
+    $summaryLine = "  [SUCCESS] All 340 Rust + 31 Foundry = 371/371 checks passed!   "
 } else {
     Write-Warning "Foundry (`forge`) not found on PATH or $env:USERPROFILE\.foundry\bin\forge.exe; skipping 31 Solidity tests (run in CI)."
-    $summaryLine = "  [SUCCESS] All 339 Rust + Python checks passed (Foundry skipped)!  "
+    $summaryLine = "  [SUCCESS] All 340 Rust + Python checks passed (Foundry skipped)!  "
 }
 
 Write-Host "`n=====================================================================" -ForegroundColor Green

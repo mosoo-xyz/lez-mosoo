@@ -115,6 +115,7 @@ contract MosooZkBurnVerifier is IMosooZkBurnVerifier {
     error ZkStrictModeActive();
     error Unauthorized();
     error InvalidQuorumSignatures();
+    error NonCanonicalParentRoot();
 
     constructor(
         address _riscZeroVerifier,
@@ -194,9 +195,10 @@ contract MosooZkBurnVerifier is IMosooZkBurnVerifier {
     /// @notice Permissionlessly advance the accepted LEZ state root using a RISC Zero validity proof.
     function advanceLezStateRootWithProof(bytes calldata stateSeal, bytes calldata stateJournal) external {
         if (stateJournal.length != STATE_TRANSITION_JOURNAL_LEN) revert InvalidJournalLength();
-        // Verify canonical upper-zero padding for `address verifier` (word 1), `uint64 prevSlot` (word 5), and `uint64 newSlot` (word 6).
+        // Verify canonical upper-zero padding for `uint64 chainId` (word 0), `address verifier` (word 1), `uint64 prevSlot` (word 5), and `uint64 newSlot` (word 6).
         if (
-            !_hasZeroPrefix(stateJournal, 32, 12)
+            !_hasZeroPrefix(stateJournal, 0, 24)
+                || !_hasZeroPrefix(stateJournal, 32, 12)
                 || !_hasZeroPrefix(stateJournal, 160, 24)
                 || !_hasZeroPrefix(stateJournal, 192, 24)
         ) {
@@ -216,6 +218,8 @@ contract MosooZkBurnVerifier is IMosooZkBurnVerifier {
         if (chainId != block.chainid || chainId != boundChainId) revert InvalidChainBinding();
         if (verifierAddr != address(this)) revert InvalidLockerBinding();
         if (sourceInstance != expectedSourceInstance) revert InvalidSourceInstance();
+        bytes32 expectedParent = zkStrictMode ? latestPureZkRoot : latestProvenRoot;
+        if (prevStateRoot != expectedParent) revert NonCanonicalParentRoot();
         if (!acceptedLezStateRoots[prevStateRoot]) revert UnknownPreviousRoot();
         bool parentPureZk = isPureZkRoot[prevStateRoot];
         if (zkStrictMode && !parentPureZk) {
@@ -231,14 +235,12 @@ contract MosooZkBurnVerifier is IMosooZkBurnVerifier {
         rootOrigin[newStateRoot] = RootOrigin.ZkStateTransition;
         isPureZkRoot[newStateRoot] = parentPureZk;
         rootSlot[newStateRoot] = newSlot;
-        if (parentPureZk && newSlot > latestPureZkSlot) {
+        if (parentPureZk) {
             latestPureZkRoot = newStateRoot;
             latestPureZkSlot = newSlot;
         }
-        if (newSlot > latestProvenSlot) {
-            latestProvenRoot = newStateRoot;
-            latestProvenSlot = newSlot;
-        }
+        latestProvenRoot = newStateRoot;
+        latestProvenSlot = newSlot;
 
         emit LezStateRootAdvanced(sourceInstance, prevStateRoot, newStateRoot, prevSlot, newSlot, msg.sender);
     }
@@ -299,11 +301,13 @@ contract MosooZkBurnVerifier is IMosooZkBurnVerifier {
         )
     {
         if (journal.length != OUTBOUND_BURN_JOURNAL_LEN) revert InvalidJournalLength();
-        // Verify canonical upper-zero padding on word 1 (locker), word 5 (assetToken), word 6 (recipient), and word 8 (uint64 lezSlot).
+        // Verify canonical upper-zero padding on word 0 (uint64 chainId), word 1 (locker), word 5 (assetToken), word 6 (recipient), word 7 (uint128 amount), and word 8 (uint64 lezSlot).
         if (
-            !_hasZeroPrefix(journal, 32, 12)
+            !_hasZeroPrefix(journal, 0, 24)
+                || !_hasZeroPrefix(journal, 32, 12)
                 || !_hasZeroPrefix(journal, 160, 12)
                 || !_hasZeroPrefix(journal, 192, 12)
+                || !_hasZeroPrefix(journal, 224, 16)
                 || !_hasZeroPrefix(journal, 256, 24)
         ) {
             revert InvalidJournalPadding();

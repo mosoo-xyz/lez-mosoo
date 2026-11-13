@@ -64,7 +64,7 @@ lez-mosoo/
 │       ├── adversarial_mutation_tests/  # 50 tests across 4 submodules
 │       ├── security_hardening_tests/    # 58 regression tests across 4 submodules
 │       ├── real_chain_vectors_tests.rs  # 4 tests on real Mainnet Fulu, Sepolia Gloas & Hoodi Fulu vectors
-│       └── ...                          # bridge (24), lc (22), privacy (6), seq (4), e2e (2)
+│       └── ...                          # bridge (25), lc (22), privacy (6), seq (4), e2e (2)
 ├── daemon/                    # Autonomous consensus update daemon (`mosoo-daemon`)
 │   └── src/                   # main.rs (polling, jitter 1.0x–2.5x, proxy routing) + tests.rs (18 tests)
 ├── cli/                       # Developer command-line interface (`mosoo-cli`)
@@ -73,8 +73,8 @@ lez-mosoo/
 │   ├── erc20-receiver/src/    # lib.rs + tests.rs (event-log proof consumer, shielded claims, nullifiers)
 │   └── ether-receiver/src/    # lib.rs + tests.rs (account balance / ETH deposit consumer, mETH ledger)
 ├── contracts/                 # Ethereum escrow & settlement contracts
-│   ├── MosooLocker.sol        # EIP-170 hardened v4 live on Sepolia (0xF94eA0F9...); source adds ZK unlock (24,374 B)
-│   ├── MosooZkBurnVerifier.sol# Modular RISC Zero IRiscZeroVerifier outbound burn & root verifier (5,996 B)
+│   ├── MosooLocker.sol        # EIP-170 hardened v4 live on Sepolia (0xF94eA0F9...); source adds ZK unlock (24,375 B)
+│   ├── MosooZkBurnVerifier.sol# Modular RISC Zero IRiscZeroVerifier outbound burn & root verifier (6,199 B)
 │   └── test/                  # 31/31 Foundry tests (MosooLocker.t.sol 27 + MosooZkBurnVerifier.t.sol 4)
 ├── vectors/                   # Live Ethereum Beacon Chain JSON fixtures (Sepolia Gloas, Hoodi Fulu)
 └── docs/                      # Architectural, deployment, migration, and security documentation

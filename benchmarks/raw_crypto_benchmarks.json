@@ -15,11 +15,11 @@
     "tx3_finish_gas": 3740000
   },
   "measured_durations_ns": {
-    "final_exponentiation_ns": 782890,
-    "hash_to_g2_ns": 295254,
-    "miller_loop_ns": 897748,
-    "ssz_committee_merkleization_ns": 17669848,
-    "total_bls_verification_ns": 1975892
+    "final_exponentiation_ns": 448776,
+    "hash_to_g2_ns": 192936,
+    "miller_loop_ns": 687104,
+    "ssz_committee_merkleization_ns": 13285212,
+    "total_bls_verification_ns": 1328816
   },
   "timestamp_utc": 1792649000
 }

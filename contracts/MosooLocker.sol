@@ -371,6 +371,10 @@ contract MosooLocker {
         if (paused) revert ContractPaused();
     }
 
+    function _requireNonZero(address addr) internal pure {
+        if (addr == address(0)) revert ZeroAddress();
+    }
+
     function _nonReentrantBefore() internal {
         if (_status == _ENTERED) revert ReentrancyGuardReentrantCall();
         _status = _ENTERED;
@@ -399,7 +403,7 @@ contract MosooLocker {
         if (additionalAttesters.length == 0) revert ZeroAmount();
         for (uint256 i = 0; i < additionalAttesters.length; i++) {
             address att = additionalAttesters[i];
-            if (att == address(0)) revert ZeroAddress();
+            _requireNonZero(att);
             if (isAttester[att]) revert AttesterAlreadyExists();
             isAttester[att] = true;
             attesterCount += 1;
@@ -434,7 +438,7 @@ contract MosooLocker {
      * @param _guardian The independent emergency guardian address (must NOT be owner).
      */
     constructor(address _attesterAuthority, address _guardian) {
-        if (_attesterAuthority == address(0)) revert ZeroAddress();
+        _requireNonZero(_attesterAuthority);
         if (_guardian == address(0)) revert InvalidGuardian();
         if (_guardian == msg.sender) revert GuardianMustNotBeOwner();
         owner = msg.sender;
@@ -597,7 +601,7 @@ contract MosooLocker {
 
     function _pullERC20Deposit(address token, uint256 amount) internal returns (uint256 actualAmount) {
         if (amount == 0) revert ZeroAmount();
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         if (token.code.length == 0) revert ZeroAddress();
         if (tokenAllowlistEnabled && !isTokenAllowed[token]) revert TokenNotAllowed();
 
@@ -920,7 +924,7 @@ contract MosooLocker {
 
     function _validateETHUnlock(bytes32 burnId, uint256 amount, address recipient) internal view {
         if (amount == 0) revert ZeroAmount();
-        if (recipient == address(0)) revert ZeroAddress();
+        _requireNonZero(recipient);
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
         if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedETH < amount || address(this).balance < amount) revert InsufficientLockedETH();
@@ -928,7 +932,9 @@ contract MosooLocker {
 
     function _validateERC20Unlock(bytes32 burnId, address token, uint256 amount, address recipient) internal view {
         if (amount == 0) revert ZeroAmount();
-        if (token == address(0) || recipient == address(0) || token.code.length == 0) revert ZeroAddress();
+        _requireNonZero(token);
+        _requireNonZero(recipient);
+        if (token.code.length == 0) revert ZeroAddress();
         if (executedBurns[burnId]) revert BurnAlreadyExecuted();
         if (cancelledBurns[burnId]) revert BurnCancelled();
         if (totalLockedERC20[token] < amount) revert InsufficientLockedERC20();
@@ -1065,7 +1071,7 @@ contract MosooLocker {
 
     /// @notice Propose rolling daily withdrawal volume cap for an ERC-20 token subject to 2-day timelock
     function proposeDailyWithdrawalLimitERC20(address token, uint256 newLimit) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         if (newLimit == 0) revert InvalidDailyLimit();
         pendingDailyLimitERC20[token] = newLimit;
         hasPendingDailyLimitERC20[token] = true;
@@ -1075,7 +1081,7 @@ contract MosooLocker {
 
     /// @notice Execute proposed daily withdrawal limit for an ERC-20 token after timelock delay
     function executeDailyWithdrawalLimitERC20(address token) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         _requireFlaggedTimelock(hasPendingDailyLimitERC20[token], dailyLimitERC20TimelockUnlock[token]);
         if (pendingDailyLimitERC20[token] == 0) revert InvalidDailyLimit();
         uint256 oldLimit = dailyWithdrawalLimitERC20[token];
@@ -1099,7 +1105,7 @@ contract MosooLocker {
     /// @notice Pre-commissioning direct configuration for ERC-20 large-withdrawal 24h queue threshold (0 disables).
     function setLargeWithdrawalThresholdERC20(address token, uint256 threshold) external onlyOwner {
         if (productionCommissioned) revert DirectGovernanceDeprecated();
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         uint256 oldThreshold = largeWithdrawalThresholdERC20[token];
         largeWithdrawalThresholdERC20[token] = threshold;
         emit LargeWithdrawalThresholdERC20Updated(token, oldThreshold, threshold);
@@ -1107,7 +1113,7 @@ contract MosooLocker {
 
     /// @notice Propose an ERC-20 large-withdrawal 24h queue threshold change subject to 2-day timelock.
     function proposeLargeWithdrawalThresholdERC20(address token, uint256 newThreshold) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         if (productionCommissioned && newThreshold == 0) revert ZeroAmount();
         pendingLargeThresholdERC20[token] = newThreshold;
         hasPendingLargeThresholdERC20[token] = true;
@@ -1122,7 +1128,7 @@ contract MosooLocker {
 
     /// @notice Execute proposed ERC-20 large-withdrawal threshold after 2-day timelock delay.
     function executeLargeWithdrawalThresholdERC20(address token) external onlyOwner {
-        if (token == address(0)) revert ZeroAddress();
+        _requireNonZero(token);
         _requireFlaggedTimelock(hasPendingLargeThresholdERC20[token], largeThresholdERC20TimelockUnlock[token]);
         if (productionCommissioned && pendingLargeThresholdERC20[token] == 0) revert ZeroAmount();
         uint256 oldThreshold = largeWithdrawalThresholdERC20[token];
@@ -1428,7 +1434,7 @@ contract MosooLocker {
     // --- Admin & Emergency Functions ---
 
     function proposeAttesterAuthority(address _newAuthority) external onlyOwner {
-        if (_newAuthority == address(0)) revert ZeroAddress();
+        _requireNonZero(_newAuthority);
         pendingAttesterAuthority = _newAuthority;
         authorityTimelockUnlock = block.timestamp + AUTHORITY_CHANGE_DELAY;
         emit AttesterAuthorityChangeProposed(attesterAuthority, _newAuthority, authorityTimelockUnlock);
@@ -1500,7 +1506,7 @@ contract MosooLocker {
     }
 
     function proposeAddAttester(address _attester) external onlyOwner {
-        if (_attester == address(0)) revert ZeroAddress();
+        _requireNonZero(_attester);
         if (isAttester[_attester]) revert AttesterAlreadyExists();
         pendingAddAttester = _attester;
         addAttesterTimelockUnlock = block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
@@ -1598,10 +1604,6 @@ contract MosooLocker {
             revert NoPendingGovernanceAction();
         }
         emit PendingGovernanceCancelled(action, msg.sender);
-    }
-
-    function _requireNonZero(address addr) internal pure {
-        if (addr == address(0)) revert ZeroAddress();
     }
 
     function _requirePreCommissioned() internal view {
@@ -1846,7 +1848,7 @@ contract MosooLocker {
 
     // Two-step ownership transfer preventing accidental ownership loss
     function transferOwnership(address _newOwner) external onlyOwner {
-        if (_newOwner == address(0)) revert ZeroAddress();
+        _requireNonZero(_newOwner);
         if (_newOwner == guardian || _newOwner == pendingGuardian) revert GuardianMustNotBeOwner();
         pendingOwner = _newOwner;
         emit OwnershipTransferStarted(owner, _newOwner);

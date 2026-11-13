@@ -10,11 +10,11 @@ echo "[1/18] Checking entire workspace compilation..."
 cargo check --workspace
 
 echo ""
-echo "[2/18] Running all workspace Rust unit, integration & doc-tests (339 tests)..."
+echo "[2/18] Running all workspace Rust unit, integration & doc-tests (340 tests)..."
 cargo test --workspace
 
 echo ""
-echo "[3/18] Running Two-Way Bridge End-to-End Integration Suite (24 tests)..."
+echo "[3/18] Running Two-Way Bridge End-to-End Integration Suite (25 tests)..."
 cargo test --test two_way_bridge_tests
 
 echo ""
@@ -91,10 +91,10 @@ elif [[ -x "${HOME}/.foundry/bin/forge" ]]; then
 fi
 if [[ -n "${FORGE_BIN}" ]]; then
     "${FORGE_BIN}" test -vvv
-    SUMMARY="  [SUCCESS] All 339 Rust + 31 Foundry = 370/370 checks passed!   "
+    SUMMARY="  [SUCCESS] All 340 Rust + 31 Foundry = 371/371 checks passed!   "
 else
     echo "[!] Warning: Foundry (forge) not found; skipping 31 Solidity tests (run in CI)." >&2
-    SUMMARY="  [SUCCESS] All 339 Rust + Python checks passed (Foundry skipped)!  "
+    SUMMARY="  [SUCCESS] All 340 Rust + Python checks passed (Foundry skipped)!  "
 fi
 
 echo ""

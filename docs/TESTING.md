@@ -7,7 +7,7 @@ Automated verification spans Rust workspace unit and integration tests, Solidity
 ## Quick Verification Commands
 
 ```powershell
-# Windows (runs cargo fmt, clippy -D warnings, all 339 Rust tests, and 31 Foundry tests)
+# Windows (runs cargo fmt, clippy -D warnings, all 340 Rust tests, and 31 Foundry tests)
 .\scripts\verify_all.ps1
 ```
 
@@ -35,7 +35,7 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 
 ---
 
-## Rust Workspace Test Inventory (339 Total)
+## Rust Workspace Test Inventory (340 Total)
 
 ### Unit & Doc Tests (`162` unit + `3` doc = `165`)
 
@@ -47,13 +47,13 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 | `mosoo-daemon` | `daemon/src/{main,tests}.rs` | 18 | 0 | Beacon API parsing, period-boundary sync fail-closed guards, jittered submission, private key isolation, health endpoints |
 | `mosoo-cli` | `cli/src/{main,tests}.rs` | 7 | 0 | CLI subcommands (`demo`, `attest`, `dry-run`, `submit-update`, `config`, `verify-checkpoint`, `benchmarks`) |
 
-### Integration & Adversarial Suites (`mosoo-core/tests/`, `174` total)
+### Integration & Adversarial Suites (`mosoo-core/tests/`, `175` total)
 
 | Suite | File / Directory | Count | Focus |
 | :--- | :--- | :---: | :--- |
 | Security Hardening | `mosoo-core/tests/security_hardening_tests/` | 58 | Account ownership, instance/checkpoint pinning, weak-subjectivity bounds, fork adapters (`guest_and_store`, `privacy_and_instance`, `deposit_and_forks`, `freshness_and_adapter`) |
 | Adversarial Mutation | `mosoo-core/tests/adversarial_mutation_tests/` | 50 | Mutated headers, quorum deficits, period skips, Gloas RLP mismatch, replay, storage/job tampering (`consensus_and_branches`, `state_and_replay`, `pipeline_and_storage`, `instance_and_config`) |
-| Two-Way Bridge | `mosoo-core/tests/two_way_bridge_tests.rs` | 24 | EIP-712 attester separation, burn-to-unlock flow, `outbound_zk` burn witness & 288-byte journal roundtrip, rate caps, guardian veto paths |
+| Two-Way Bridge | `mosoo-core/tests/two_way_bridge_tests.rs` | 25 | EIP-712 attester separation, burn-to-unlock flow, `outbound_zk` burn witness & 288-byte journal roundtrip, rate caps, guardian veto paths |
 | Light Client | `mosoo-core/tests/light_client_tests.rs` | 22 | End-to-end Altair–Gloas updates, 3-tx `JobAccount` execution, receipt inclusion |
 | Privacy & Correlation | `mosoo-core/tests/privacy_and_correlation_tests.rs` | 6 | Confidential commitment salts, `DepositCommitted` unlinkability checks |
 | LEZ v0.4 Acceptance | `mosoo-core/tests/lez_v04_acceptance_tests.rs` | 4 | Offline LEZ v0.4-target conformance, isolated instances, 10M gas ceilings |
@@ -79,6 +79,6 @@ py -3 scripts/testnet-two-way-bridge.py --mode simulated
 
 ## Scope & Honest Test Boundaries
 
-- **Verified locally & in CI (`370/370` automated tests):** `339` Rust workspace tests + `31` Foundry tests (`27` `MosooLockerTest` + `4` `MosooZkBurnVerifierTest`; note that `MosooZkBurnVerifierTest` uses `MockRiscZeroVerifier` binding `(imageId, sha256(journal))` ahead of live `RiscZeroVerifierRouter` wiring).
+- **Verified locally & in CI (`371/371` automated tests):** `340` Rust workspace tests + `31` Foundry tests (`27` `MosooLockerTest` + `4` `MosooZkBurnVerifierTest`; note that `MosooZkBurnVerifierTest` uses `MockRiscZeroVerifier` binding `(imageId, sha256(journal))` ahead of live `RiscZeroVerifierRouter` wiring).
 - **Verified live on public testnets (`v0.3.1` + Sepolia `v4`):** Immutable `mosoo_lc` on LEZ v0.3.1 (`Co5EYuBRRS21wiawBQRXjMyEBUbbzquZM6LmNHYYo7Fg`) and hardened EIP-170 commissioned `2-of-2` `MosooLocker` v4 on Sepolia (`0xF94eA0F9Ecbf5c0edB780F871552164ad68d14Cd`). See [`docs/DEPLOYMENTS.md`](DEPLOYMENTS.md).
 - **Not yet run against public network:** Live public LEZ `v0.4` deployment awaits upstream LEZ `v0.4` testnet availability; the `v0.4` target guest is verified today against offline sequencer harnesses and local unit/integration suites.

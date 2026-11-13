@@ -2745,3 +2745,45 @@ fn test_rfp022_outbound_zk_burn_witness_and_journal_roundtrip() {
         .windows(32)
         .any(|w| w == lez_user || w == burn_secret));
 }
+
+#[test]
+fn test_outbound_burn_merkle_index_upper_bound_rejection() {
+    use mosoo_core::types::verify_commitment_merkle_inclusion;
+    let commitment = [0x42u8; 32];
+    let siblings = [[0u8; 32]; 20];
+    let mut cur = commitment;
+    for sib in siblings.iter() {
+        let mut packed = [0u8; 15 + 32 + 32];
+        packed[..15].copy_from_slice(b"mosoo_merkle_v1");
+        packed[15..47].copy_from_slice(&cur);
+        packed[47..79].copy_from_slice(sib);
+        cur = alloy_primitives::keccak256(packed).0;
+    }
+
+    // Valid index 0 succeeds
+    assert!(verify_commitment_merkle_inclusion(
+        &commitment,
+        0,
+        &siblings,
+        &cur
+    ));
+    // M-01: Index >= 2^20 (1 << 20) MUST be rejected fail-closed
+    assert!(!verify_commitment_merkle_inclusion(
+        &commitment,
+        1 << 20,
+        &siblings,
+        &cur
+    ));
+    assert!(!verify_commitment_merkle_inclusion(
+        &commitment,
+        (1 << 20) + 5,
+        &siblings,
+        &cur
+    ));
+    assert!(!verify_commitment_merkle_inclusion(
+        &commitment,
+        u32::MAX,
+        &siblings,
+        &cur
+    ));
+}

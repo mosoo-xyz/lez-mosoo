@@ -152,6 +152,22 @@ contract MosooZkBurnVerifierTest is Test {
         assertEq(zkVerifier.latestProvenRoot(), root1, "latest root updated");
         assertEq(uint256(zkVerifier.latestProvenSlot()), uint256(slot1), "latest slot updated");
 
+        // ZK-02 regression: Competing stale/fork branch from GENESIS_ROOT MUST revert with NonCanonicalParentRoot
+        bytes32 forkRoot = keccak256("lez_state_root_fork");
+        bytes memory forkJournal = _encodeStateJournal(
+            block.chainid,
+            address(zkVerifier),
+            SOURCE_INSTANCE,
+            GENESIS_ROOT, // Stale parent root (canonical tip is already root1)
+            forkRoot,
+            GENESIS_SLOT,
+            slot1
+        );
+        bytes memory forkSeal = risc0.expectedSeal(STATE_IMAGE_ID, sha256(forkJournal));
+        try zkVerifier.advanceLezStateRootWithProof(forkSeal, forkJournal) {
+            revert("competing stale/fork state transition MUST revert");
+        } catch {}
+
         // 3. Trustless permissionless ETH unlock via ZK proof (NO attester signatures!)
         bytes32 nullifier1 = keccak256("burn_nullifier_eth_1");
         address recipient = address(0xBEEF01);
@@ -314,7 +330,23 @@ contract MosooZkBurnVerifierTest is Test {
         dirtyJournal[32] = 0x01; // non-zero upper padding byte on address locker
         bytes memory dirtySeal = risc0.expectedSeal(OUTBOUND_IMAGE_ID, sha256(dirtyJournal));
         try locker.unlockShieldedWithZkProof(dirtySeal, dirtyJournal) {
-            revert("dirty upper ABI padding MUST revert");
+            revert("dirty upper ABI padding on locker MUST revert");
+        } catch {}
+
+        // ZK-03 regression: Dirty upper padding on chainId (word 0, bytes 0..23) MUST revert
+        dirtyJournal[32] = 0x00;
+        dirtyJournal[0] = 0x01;
+        dirtySeal = risc0.expectedSeal(OUTBOUND_IMAGE_ID, sha256(dirtyJournal));
+        try locker.unlockShieldedWithZkProof(dirtySeal, dirtyJournal) {
+            revert("dirty upper ABI padding on chainId MUST revert");
+        } catch {}
+
+        // ZK-03 regression: Dirty upper padding on amount (word 7, bytes 224..239) MUST revert
+        dirtyJournal[0] = 0x00;
+        dirtyJournal[224] = 0x01;
+        dirtySeal = risc0.expectedSeal(OUTBOUND_IMAGE_ID, sha256(dirtyJournal));
+        try locker.unlockShieldedWithZkProof(dirtySeal, dirtyJournal) {
+            revert("dirty upper ABI padding on amount MUST revert");
         } catch {}
 
         // 3. Future slot claim (`lezSlot > rootSlot[lezStateRoot]`) MUST revert

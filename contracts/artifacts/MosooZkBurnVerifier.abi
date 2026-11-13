@@ -588,6 +588,11 @@
   },
   {
     "type": "error",
+    "name": "NonCanonicalParentRoot",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "Unauthorized",
     "inputs": []
   },
