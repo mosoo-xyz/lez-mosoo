@@ -37,6 +37,7 @@ function parseArgs() {
     privateKey: process.env.DEPLOYER_PRIVATE_KEY || null,
     attester: null,
     guardian: process.env.GUARDIAN_ADDRESS || ethers.ZeroAddress,
+    zkVerifier: process.env.ZK_BURN_VERIFIER_ADDRESS || null,
     dryRun: false
   };
 
@@ -51,6 +52,8 @@ function parseArgs() {
       options.attester = args[++i];
     } else if (args[i] === '--guardian' && args[i + 1]) {
       options.guardian = args[++i];
+    } else if (args[i] === '--zk-verifier' && args[i + 1]) {
+      options.zkVerifier = args[++i];
     } else if (args[i] === '--dry-run') {
       options.dryRun = true;
     }
@@ -170,18 +173,28 @@ async function main() {
 
   // Verify on-chain contract state
   console.log('\nVerifying on-chain contract parameters...');
-  const deployedInstance = new ethers.Contract(deployedAddress, abi, provider);
+  const deployedInstance = new ethers.Contract(deployedAddress, abi, wallet);
   const owner = await deployedInstance.owner();
   const attester = await deployedInstance.attesterAuthority();
   const quorum = await deployedInstance.requiredQuorum();
   const isDeployerAttester = await deployedInstance.isAttester(attesterAuthority);
   const tokenAllowlist = await deployedInstance.tokenAllowlistEnabled();
 
+  // One-time immutable ZK verifier configuration (RFP-022 Security Rule #8)
+  if (options.zkVerifier) {
+    console.log(`\nBinding one-time immutable zkBurnVerifier: ${options.zkVerifier}...`);
+    const tx = await deployedInstance.setZkBurnVerifier(options.zkVerifier);
+    await tx.wait(1);
+    console.log('zkBurnVerifier bound successfully.');
+  }
+
+  const configuredVerifier = await deployedInstance.zkBurnVerifier();
   console.log(`  Contract Owner    : ${owner} (${owner === deployerAddress ? 'MATCH' : 'MISMATCH'})`);
   console.log(`  Attester Authority: ${attester} (${attester === attesterAuthority ? 'MATCH' : 'MISMATCH'})`);
   console.log(`  Quorum Requirement: ${quorum.toString()}`);
   console.log(`  Is Attester Active: ${isDeployerAttester}`);
   console.log(`  Allowlist Enabled : ${tokenAllowlist}`);
+  console.log(`  ZK Burn Verifier  : ${configuredVerifier}`);
 
   // Write deployment artifact
   const deploymentsDir = path.join(rootDir, 'contracts', 'deployments');
