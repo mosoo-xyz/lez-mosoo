@@ -47,7 +47,7 @@ contract MosooZkBurnVerifierTest is Test {
         attester2 = vm.addr(ATTESTER2_PK);
         guardian = vm.addr(GUARDIAN_PK);
 
-        locker = new MosooLocker(attester1, guardian);
+        locker = new MosooLocker(attester1, guardian, address(0));
         risc0 = new MockRiscZeroVerifier();
 
         address[] memory emptyCommittee = new address[](0);
@@ -501,5 +501,16 @@ contract MosooZkBurnVerifierTest is Test {
 
         // Verifier remains bound to original zkVerifier
         assertEq(locker.zkBurnVerifier(), address(zkVerifier), "zkBurnVerifier remains immutably bound");
+    }
+
+    function test_zk_verifier_constructor_binding() public {
+        // Direct constructor binding when verifier is deployed first
+        MosooLocker directLocker = new MosooLocker(attester1, guardian, address(zkVerifier));
+        assertEq(directLocker.zkBurnVerifier(), address(zkVerifier), "bound directly in constructor");
+
+        // Overwrite attempts MUST revert with VerifierAlreadyConfigured
+        try directLocker.setZkBurnVerifier(address(zkVerifier)) {
+            revert("cannot overwrite constructor-bound verifier");
+        } catch {}
     }
 }

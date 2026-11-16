@@ -129,8 +129,11 @@ async function main() {
   const balance = await provider.getBalance(deployerAddress);
   console.log(`Deployer Balance    : ${ethers.formatEther(balance)} ETH`);
 
+  const initialVerifier = options.zkVerifier || ethers.ZeroAddress;
+  console.log(`ZK Verifier Address : ${initialVerifier}`);
+
   const factory = new ethers.ContractFactory(abi, bin, wallet);
-  const deployTx = await factory.getDeployTransaction(attesterAuthority, guardianAddress);
+  const deployTx = await factory.getDeployTransaction(attesterAuthority, guardianAddress, initialVerifier);
 
   const estimatedGas = await provider.estimateGas(deployTx);
   const feeData = await provider.getFeeData();
@@ -154,7 +157,7 @@ async function main() {
   console.log('\nBroadcasting deployment transaction...');
   // Add 10% gas buffer to estimatedGas to prevent out-of-gas under block variation
   const gasLimit = (estimatedGas * 110n) / 100n;
-  const contract = await factory.deploy(attesterAuthority, guardianAddress, { gasLimit });
+  const contract = await factory.deploy(attesterAuthority, guardianAddress, initialVerifier, { gasLimit });
 
   console.log(`Transaction Hash    : ${contract.deploymentTransaction().hash}`);
   console.log('Waiting for block confirmation...');

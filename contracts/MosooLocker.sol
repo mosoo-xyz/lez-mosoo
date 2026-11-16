@@ -424,7 +424,7 @@ contract MosooLocker {
     // --- Constructor ---
 
     /**
-     * @notice Initializes MosooLocker vault and sets initial governance addresses.
+     * @notice Initializes MosooLocker vault, sets initial governance addresses, and binds optional verifier.
      * @dev Note on Governance & Multi-Signer Quorum Threshold:
      *      Initial deployment sets `attesterCount = 1` and `requiredQuorum = 1` for bootstrap commissioning.
      *      For production mainnet operation, the operator executes a 3-step timelocked governance transition:
@@ -435,8 +435,9 @@ contract MosooLocker {
      *      to prevent single-key administrative takeovers.
      * @param _attesterAuthority The initial bootstrap attester authority address.
      * @param _guardian The independent emergency guardian address (must NOT be owner).
+     * @param _initialZkBurnVerifier The initial RISC Zero outbound burn verifier contract (or address(0) for two-step binding).
      */
-    constructor(address _attesterAuthority, address _guardian) {
+    constructor(address _attesterAuthority, address _guardian, address _initialZkBurnVerifier) {
         _requireNonZero(_attesterAuthority);
         if (_guardian == address(0)) revert InvalidGuardian();
         if (_guardian == msg.sender) revert GuardianMustNotBeOwner();
@@ -448,6 +449,13 @@ contract MosooLocker {
         requiredQuorum = 1;
         tokenAllowlistEnabled = true; // Enabled by default for strict production safety
         dailyWithdrawalLimitETH = 100 ether; // Safe default daily withdrawal rate limit (Finding M-03/M-05 hardening)
+
+        // One-time immutable binding in constructor when verifier address is known at deployment
+        if (_initialZkBurnVerifier != address(0)) {
+            if (_initialZkBurnVerifier.code.length == 0) revert ZeroAddress();
+            zkBurnVerifier = _initialZkBurnVerifier;
+            emit ZkBurnVerifierUpdated(address(0), _initialZkBurnVerifier);
+        }
 
         // Finding M-05 hardening: Configure explicit default daily caps for registered canonical testnet tokens
         address sepoliaUSDC = 0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238;

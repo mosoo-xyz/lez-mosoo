@@ -74,7 +74,7 @@ contract MosooLockerTest is Test {
 
     function setUp() public {
         attesterAuthority = vm.addr(attesterPk);
-        locker = new MosooLocker(attesterAuthority, guardian);
+        locker = new MosooLocker(attesterAuthority, guardian, address(0));
         token = new MockERC20();
         locker.setTokenAllowed(address(token), true);
         vm.deal(user, 100 ether);
