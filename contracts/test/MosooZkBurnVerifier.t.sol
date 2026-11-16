@@ -465,8 +465,10 @@ contract MosooZkBurnVerifierTest is Test {
         } catch {}
     }
 
-    function test_zk_verifier_timelock_governance_and_guardian_cancel() public {
+    function test_zk_verifier_one_time_binding_and_immutability() public {
         _commissionDefault();
+        assertEq(locker.zkBurnVerifier(), address(zkVerifier), "zkBurnVerifier must be configured");
+
         address[] memory empty = new address[](0);
         MosooZkBurnVerifier nextVerifier = new MosooZkBurnVerifier(
             address(risc0),
@@ -481,26 +483,23 @@ contract MosooZkBurnVerifierTest is Test {
             0
         );
 
-        locker.proposeZkBurnVerifier(address(nextVerifier));
-        try locker.executeZkBurnVerifier() {
-            revert("executeZkBurnVerifier before 2-day timelock MUST revert");
+        // RFP-022 Security Rule #8: Verifier replacement is strictly disabled.
+        // Attempting to overwrite the verifier MUST revert with VerifierAlreadyConfigured.
+        try locker.setZkBurnVerifier(address(nextVerifier)) {
+            revert("overwriting zkBurnVerifier MUST revert");
         } catch {}
 
-        // Guardian cancels via actionType 12
-        vm.prank(guardian);
-        locker.cancelPendingGovernance(12);
-
-        uint256 govDelay = locker.GOVERNANCE_TIMELOCK_DELAY();
-        uint256 t0 = block.timestamp;
-        vm.warp(t0 + govDelay + 1);
-        try locker.executeZkBurnVerifier() {
-            revert("cancelled zkBurnVerifier proposal MUST revert");
+        // Setting to address(0) MUST revert with ZeroAddress
+        try locker.setZkBurnVerifier(address(0)) {
+            revert("setting zero address verifier MUST revert");
         } catch {}
 
-        // Re-propose and execute after timelock
-        locker.proposeZkBurnVerifier(address(nextVerifier));
-        vm.warp(t0 + 2 * govDelay + 2);
-        locker.executeZkBurnVerifier();
-        assertEq(locker.zkBurnVerifier(), address(nextVerifier), "zkBurnVerifier upgraded after timelock");
+        // Setting to EOA with zero code length MUST revert
+        try locker.setZkBurnVerifier(address(0x1337)) {
+            revert("setting EOA verifier MUST revert");
+        } catch {}
+
+        // Verifier remains bound to original zkVerifier
+        assertEq(locker.zkBurnVerifier(), address(zkVerifier), "zkBurnVerifier remains immutably bound");
     }
 }

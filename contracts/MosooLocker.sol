@@ -142,10 +142,8 @@ contract MosooLocker {
     /// @notice Permanently cancelled burns (cannot be re-queued or unlocked by anyone)
     mapping(bytes32 => bool) public cancelledBurns;
 
-    /// @notice Optional RISC Zero proof-based outbound burn verifier (RFP-022 trustless unlock path)
+    /// @notice Permanently bound RISC Zero proof-based outbound burn verifier (RFP-022 trustless unlock path)
     address public zkBurnVerifier;
-    address private pendingZkBurnVerifier;
-    uint256 public zkBurnVerifierTimelockUnlock;
 
     // --- EIP-712 Domain Separation ---
     bytes32 private constant EIP712_DOMAIN_TYPEHASH = keccak256(
@@ -344,6 +342,7 @@ contract MosooLocker {
     error WithdrawalPayloadMismatch();
     error PrivacySettingLocked();
     error ZkBurnVerifierNotConfigured();
+    error VerifierAlreadyConfigured();
 
     // --- Modifiers ---
 
@@ -1596,10 +1595,6 @@ contract MosooLocker {
             pendingDenomAllowed = false;
             denomTimelockUnlock = 0;
             action = "standardDenom";
-        } else if (actionType == 12) {
-            pendingZkBurnVerifier = address(0);
-            zkBurnVerifierTimelockUnlock = 0;
-            action = "zkBurnVerifier";
         } else {
             revert NoPendingGovernanceAction();
         }
@@ -1614,36 +1609,13 @@ contract MosooLocker {
         return block.timestamp + GOVERNANCE_TIMELOCK_DELAY;
     }
 
-    function _setZkBurnVerifier(address nextVerifier) internal {
-        if (nextVerifier == address(0) || nextVerifier.code.length == 0) revert ZeroAddress();
-        address oldVerifier = zkBurnVerifier;
-        zkBurnVerifier = nextVerifier;
-        emit ZkBurnVerifierUpdated(oldVerifier, nextVerifier);
-    }
-
-    /// @notice Pre-commissioning configuration of the RISC Zero outbound burn verifier contract.
+    /// @notice Permanently binds the RISC Zero outbound burn verifier contract (RFP-022 Security Rule #8).
+    /// @dev One-time initialization: once set to a verified contract address, it can NEVER be overwritten or replaced.
     function setZkBurnVerifier(address _verifier) external onlyOwner {
-        _requirePreCommissioned();
-        _setZkBurnVerifier(_verifier);
-    }
-
-    /// @notice Propose upgrading/setting the RISC Zero outbound burn verifier subject to 2-day governance timelock.
-    function proposeZkBurnVerifier(address _newVerifier) external onlyOwner {
-        _requirePreCommissioned();
-        if (_newVerifier == address(0) || _newVerifier.code.length == 0) revert ZeroAddress();
-        pendingZkBurnVerifier = _newVerifier;
-        zkBurnVerifierTimelockUnlock = _govUnlock();
-        emit ZkBurnVerifierChangeProposed(zkBurnVerifier, _newVerifier, zkBurnVerifierTimelockUnlock);
-    }
-
-    /// @notice Execute a timelocked RISC Zero outbound burn verifier update.
-    function executeZkBurnVerifier() external onlyOwner {
-        _requirePreCommissioned();
-        _requireFlaggedTimelock(pendingZkBurnVerifier != address(0), zkBurnVerifierTimelockUnlock);
-        address nextVerifier = pendingZkBurnVerifier;
-        pendingZkBurnVerifier = address(0);
-        zkBurnVerifierTimelockUnlock = 0;
-        _setZkBurnVerifier(nextVerifier);
+        if (zkBurnVerifier != address(0)) revert VerifierAlreadyConfigured();
+        if (_verifier == address(0) || _verifier.code.length == 0) revert ZeroAddress();
+        zkBurnVerifier = _verifier;
+        emit ZkBurnVerifierUpdated(address(0), _verifier);
     }
 
     function cancelPendingGovernanceERC20(address token) external {
