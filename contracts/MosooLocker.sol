@@ -1629,6 +1629,7 @@ contract MosooLocker {
 
     /// @notice Propose upgrading/setting the RISC Zero outbound burn verifier subject to 2-day governance timelock.
     function proposeZkBurnVerifier(address _newVerifier) external onlyOwner {
+        _requirePreCommissioned();
         if (_newVerifier == address(0) || _newVerifier.code.length == 0) revert ZeroAddress();
         pendingZkBurnVerifier = _newVerifier;
         zkBurnVerifierTimelockUnlock = _govUnlock();
@@ -1637,6 +1638,7 @@ contract MosooLocker {
 
     /// @notice Execute a timelocked RISC Zero outbound burn verifier update.
     function executeZkBurnVerifier() external onlyOwner {
+        _requirePreCommissioned();
         _requireFlaggedTimelock(pendingZkBurnVerifier != address(0), zkBurnVerifierTimelockUnlock);
         address nextVerifier = pendingZkBurnVerifier;
         pendingZkBurnVerifier = address(0);
