@@ -67,7 +67,7 @@ impl SpelModuleDefinition {
         Self {
             module_name: "mosoo_ethereum_attester".to_string(),
             version: "0.1.0".to_string(),
-            author: "Mosoo Contributors (Omkar Chavan)".to_string(),
+            author: "Mosoo Contributors (Sourabh Kumbhar)".to_string(),
             program_id: "0x01ab35fda434bdfe7af601eabc14992b9ca807bc4ddfec46c896d81dc4961e1c".to_string(),
             methods: vec![
                 SpelMethod {
